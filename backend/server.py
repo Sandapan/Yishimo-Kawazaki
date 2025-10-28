@@ -1070,6 +1070,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         player["immobilized_next_turn"] = True
                         # Mark room as trap triggered for survivors
                         game["rooms"][room_name]["trap_triggered"] = True
+                        
+                        # NEW: Send trap notification immediately to the survivor
+                        await websocket.send_json({
+                            "type": "trapped_notification",
+                            "message": "🕸️ Vous êtes tombé dans un piège ! Vous ne pourrez pas bouger au prochain tour."
+                        })
 
                     # Notify all players
                     await broadcast_to_session(session_id, {

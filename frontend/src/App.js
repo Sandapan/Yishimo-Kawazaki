@@ -653,8 +653,12 @@ const Game = () => {
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
   const [keyFoundMessage, setKeyFoundMessage] = useState("");
   
+  // NEW: Trap popup state
+  const [showTrapPopup, setShowTrapPopup] = useState(false);
+  
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
+  const hasShownRoleNotification = useRef(false); // Track if role notification was shown
 
   useEffect(() => {
     // Get player_id from URL query params or localStorage
@@ -693,24 +697,31 @@ const Game = () => {
       const data = JSON.parse(event.data);
 
       if (data.type === "state_update") {
-        // NEW: Check if conspiracy mode and game just started - show role notification
-        const prevGameState = gameState;
         setGameState(data.game);
         
+        // NEW: Check if conspiracy mode and game just started - show role notification ONCE
         if (data.game.conspiracy_mode && 
             data.game.game_started && 
             storedPlayerId in data.game.players &&
-            (!prevGameState || !prevGameState.game_started)) {
-          // Game just started in conspiracy mode - show role notification
+            !hasShownRoleNotification.current) {
+          // Game just started in conspiracy mode - show role notification once
           const myRole = data.game.players[storedPlayerId].role;
           setAssignedRole(myRole);
           setShowRoleNotification(true);
+          hasShownRoleNotification.current = true; // Mark as shown
           
           // Auto-hide after 5 seconds
           setTimeout(() => {
             setShowRoleNotification(false);
           }, 5000);
         }
+      } else if (data.type === "trapped_notification") {
+        // NEW: Show trap popup for survivor who entered trapped room
+        setShowTrapPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowTrapPopup(false);
+        }, 5000);
       } else if (data.type === "event") {
         toast.info(data.message);
       } else if (data.type === "new_turn") {
@@ -908,6 +919,33 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
                 {keyFoundMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Trap Popup */}
+      {showTrapPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowTrapPopup(false)}
+          data-testid="trap-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '500px', backgroundColor: '#4a2a2a', borderColor: '#dc2626' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
+                🕸️
+                <span>Vous êtes piégé !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                Vous êtes tombé dans un piège ! Vous ne pourrez pas bouger au prochain tour.
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
