@@ -283,11 +283,66 @@ async def apply_powers(session_id: str):
         
         # Apply power-specific logic
         if power_name == "vision":
-            # Highlight rooms not searched since last key
+            # Highlight rooms not searched since last key - distributed across floors
             rooms_searched = game.get("rooms_searched_this_key", [])
+            
+            # Group unsearched rooms by floor for better distribution
+            unsearched_by_floor = {
+                "basement": [],
+                "ground_floor": [],
+                "upper_floor": []
+            }
+            
             for room_name, room_data in game["rooms"].items():
                 if room_name not in rooms_searched:
-                    room_data["highlighted"] = True
+                    floor = room_data.get("floor", "ground_floor")
+                    unsearched_by_floor[floor].append(room_name)
+            
+            # Calculate total number to highlight (50% rounded down)
+            total_unsearched = sum(len(rooms) for rooms in unsearched_by_floor.values())
+            num_to_highlight = total_unsearched // 2
+            
+            # Select rooms with better distribution across floors
+            rooms_to_highlight = []
+            if num_to_highlight > 0 and total_unsearched > 0:
+                # Create a list of all unsearched rooms with their floor info
+                all_unsearched_with_floor = []
+                for floor, rooms in unsearched_by_floor.items():
+                    for room in rooms:
+                        all_unsearched_with_floor.append((room, floor))
+                
+                # Shuffle to randomize
+                random.shuffle(all_unsearched_with_floor)
+                
+                # Use round-robin selection to distribute across floors
+                selected_count = 0
+                floor_indices = {floor: 0 for floor in unsearched_by_floor.keys()}
+                
+                # Keep cycling through floors until we have enough selections
+                while selected_count < num_to_highlight:
+                    # Shuffle floor order for each round to add more randomness
+                    floors = [f for f in unsearched_by_floor.keys() if unsearched_by_floor[f]]
+                    random.shuffle(floors)
+                    
+                    for floor in floors:
+                        if selected_count >= num_to_highlight:
+                            break
+                        
+                        floor_rooms = unsearched_by_floor[floor]
+                        if floor_indices[floor] < len(floor_rooms):
+                            # Select next room from this floor
+                            room = floor_rooms[floor_indices[floor]]
+                            rooms_to_highlight.append(room)
+                            floor_indices[floor] += 1
+                            selected_count += 1
+                    
+                    # Safety check to avoid infinite loop
+                    if all(floor_indices[f] >= len(unsearched_by_floor[f]) for f in floors):
+                        break
+                
+                # Highlight selected rooms
+                for room_name in rooms_to_highlight:
+                    game["rooms"][room_name]["highlighted"] = True
             
             event_msg = f"👁️ {player['name']} utilise Vision !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
@@ -519,8 +574,20 @@ async def process_turn(session_id: str):
             game["keys_collected"] += 1
             keys_left = game["keys_needed"] - game["keys_collected"]
             event_msg = f"🔑 {player['name']} a trouvé une clef ! Il reste {keys_left} clef(s) à trouver."
-            game["events"].append({"message": event_msg, "type": "key_found"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+            game["events"].append({"message": event_msg, "type": "key_found", "for_role": "survivor"})
+            # Notify only survivors about key found
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+            
+            # Send popup notification to the player who found the key
+            if player_id in active_connections.get(session_id, {}):
+                try:
+                    await active_connections[session_id][player_id].send_json({
+                        "type": "key_found_popup",
+                        "message": f"Vous avez trouvé une clef ! Plus que {keys_left} clef(s) pour vous enfuir !",
+                        "keys_left": keys_left
+                    })
+                except:
+                    pass
             
             key_found_this_turn = True
             # Reset rooms searched for Vision power
@@ -530,10 +597,11 @@ async def process_turn(session_id: str):
             if game["keys_collected"] < game["keys_needed"]:
                 game["should_place_next_key"] = True
         else:
-            # Log unsuccessful search
+            # Log unsuccessful search - only visible to survivors
             event_msg = f"🔍 {player['name']} fouille {action['room']} mais ne trouve aucune clef."
-            game["events"].append({"message": event_msg, "type": "search_no_key"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+            game["events"].append({"message": event_msg, "type": "search_no_key", "for_role": "survivor"})
+            # Notify only survivors about unsuccessful search
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
 
         # Check for medikit
         if room["has_medikit"]:
@@ -881,6 +949,12 @@ async def reset_game(session_id: str):
     await broadcast_to_session(session_id, {
         "type": "game_reset",
         "message": "La partie est terminée. Prêts pour une revanche ?"
+    })
+    
+    # Send updated state to all players so they see the correct lobby state
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
     })
     
     return {"status": "reset"}

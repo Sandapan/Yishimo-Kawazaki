@@ -545,7 +545,7 @@ const PowerSelectionOverlay = ({
             </p>
             
             <div className="rooms-selection-grid">
-              {["basement", "ground_floor", "upper_floor"].map(floor => (
+              {["upper_floor", "ground_floor", "basement"].map(floor => (
                 <div key={floor} className="floor-section-mini">
                   <h4>{FLOOR_NAMES[floor]}</h4>
                   <div className="rooms-mini-grid">
@@ -649,6 +649,10 @@ const Game = () => {
   const [showPowerAction, setShowPowerAction] = useState(false);
   const [powerDefinitions, setPowerDefinitions] = useState({});
   
+  // NEW: Key found popup state
+  const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
+  const [keyFoundMessage, setKeyFoundMessage] = useState("");
+  
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
 
@@ -727,6 +731,14 @@ const Game = () => {
         toast.info(data.message);
       } else if (data.type === "game_over") {
         toast.success(data.message);
+      } else if (data.type === "key_found_popup") {
+        // Show popup for key found
+        setKeyFoundMessage(data.message);
+        setShowKeyFoundPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowKeyFoundPopup(false);
+        }, 5000);
       } else if (data.type === "player_action") {
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
@@ -871,6 +883,33 @@ const Game = () => {
                   : "Vous êtes tueur, trouvez les survivants et débarrassez-vous d'eux !"}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#888', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Key Found Popup */}
+      {showKeyFoundPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowKeyFoundPopup(false)}
+          data-testid="key-found-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '500px', backgroundColor: '#2a5934', borderColor: '#4ade80' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#4ade80' }}>
+                🔑
+                <span>Clef trouvée !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {keyFoundMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
               </p>
             </CardContent>
@@ -1070,6 +1109,11 @@ const Game = () => {
                       // Filter game_over messages based on role
                       if (event.type === "game_over" && event.for_role && event.for_role !== currentPlayerRole) {
                         return null; // Don't show game_over messages meant for other role
+                      }
+
+                      // Filter key_found and search_no_key messages - only for survivors
+                      if ((event.type === "key_found" || event.type === "search_no_key") && event.for_role && event.for_role !== currentPlayerRole) {
+                        return null; // Don't show search events meant for survivors to killers
                       }
 
                       return (
