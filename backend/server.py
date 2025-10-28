@@ -79,7 +79,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_key": False,
             "has_medikit": False,
             "locked": False,
-            "eliminated_players": []
+            "eliminated_players": [],
+            "trapped": False,  # NEW: for piege power
+            "highlighted": False  # NEW: for vision power
         }
 
     return {
@@ -94,7 +96,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "eliminated": False,
                 "current_room": None,
                 "has_medikit": False,
-                "role": host_role  # "survivor" or "killer"
+                "role": host_role,  # "survivor" or "killer"
+                "immobilized_next_turn": False  # NEW: for piege power
             }
         },
         "rooms": rooms_state,
@@ -102,11 +105,14 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "keys_needed": 1,
         "game_started": False,
         "turn": 0,
-        "phase": "waiting",  # waiting, survivor_selection, killer_selection, processing, game_over
+        "phase": "waiting",  # waiting, survivor_selection, killer_power_selection, killer_selection, processing, game_over
         "events": [],
         "pending_actions": {},
         "should_place_next_key": False,
         "conspiracy_mode": False,  # NEW: conspiracy mode flag
+        "active_powers": {},  # NEW: {power_name: {used_by: [player_ids], data: {...}}}
+        "pending_power_selections": {},  # NEW: {player_id: {selected_power: str, options: [str], action_data: {...}}}
+        "rooms_searched_this_key": [],  # NEW: track rooms searched since last key found (for vision power)
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -157,16 +163,210 @@ def respawn_medikit(game_state: dict) -> Optional[str]:
 
     return None
 
+def get_survivor_floor_hints(game_state: dict) -> dict:
+    """
+    Get floor hints for survivors' positions.
+    This function is kept for future use (e.g., Traque power).
+    Returns: {floor: [player_names]}
+    """
+    floor_hints = {}
+    
+    for player_id, action in game_state.get("pending_actions", {}).items():
+        if player_id in game_state["players"]:
+            player = game_state["players"][player_id]
+            if player["role"] == "survivor" and action.get("room"):
+                room_name = action["room"]
+                floor = game_state["rooms"][room_name]["floor"]
+                if floor not in floor_hints:
+                    floor_hints[floor] = []
+                floor_hints[floor].append(player["name"])
+    
+    return floor_hints
+
+# Power definitions
+POWERS = {
+    "vision": {
+        "name": "👁️ Vision",
+        "description": "Révèle en surbrillance les pièces que les survivants n'ont pas encore fouillé depuis l'obtention de la précédente clef",
+        "icon": "vision.svg",
+        "requires_action": False
+    },
+    "secousse": {
+        "name": "↩️ Secousse",
+        "description": "Si la clef n'est pas trouvée après le tour des tueurs, alors sa localisation change de pièce",
+        "icon": "secousse.svg",
+        "requires_action": False
+    },
+    "piege": {
+        "name": "🕸️ Piège",
+        "description": "Vous permet de piéger au choix une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
+        "icon": "piege.svg",
+        "requires_action": True,
+        "action_type": "select_rooms_per_floor"  # select one room per floor
+    },
+    "traque": {
+        "name": "🔊 Traque",
+        "description": "Notifie les tueurs dans le journal d'événement de la présence de joueurs survivants selon l'étage",
+        "icon": "traque.svg",
+        "requires_action": False
+    },
+    "barricade": {
+        "name": "🔒 Barricade",
+        "description": "Vous permet de verrouiller au choix 2 pièces pour le prochain tour",
+        "icon": "barricade.svg",
+        "requires_action": True,
+        "action_type": "select_rooms",  # select 2 rooms
+        "rooms_count": 2
+    }
+}
+
+def get_random_powers(exclude_powers: list = []) -> list:
+    """Get 3 random unique powers"""
+    available = [p for p in POWERS.keys() if p not in exclude_powers]
+    return random.sample(available, min(3, len(available)))
+
+async def check_power_selection_complete(session_id: str):
+    """Check if all killers have completed their power selection"""
+    game = game_sessions[session_id]
+    
+    alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
+    
+    all_complete = True
+    for killer in alive_killers:
+        killer_id = killer["id"]
+        if killer_id not in game["pending_power_selections"]:
+            all_complete = False
+            break
+        selection = game["pending_power_selections"][killer_id]
+        if not selection.get("action_complete", False):
+            all_complete = False
+            break
+    
+    if all_complete:
+        # Apply all selected powers
+        await apply_powers(session_id)
+        
+        # Move to killer selection phase
+        game["phase"] = "killer_selection"
+        await broadcast_to_session(session_id, {
+            "type": "phase_change",
+            "phase": "killer_selection",
+            "message": f"🔪 Les tueurs sélectionnent leur pièce"
+        })
+
+async def apply_powers(session_id: str):
+    """Apply all selected powers"""
+    game = game_sessions[session_id]
+    game["active_powers"] = {}
+    
+    floor_names = {
+        "basement": "au sous-sol",
+        "ground_floor": "au rez-de-chaussée",
+        "upper_floor": "à l'étage"
+    }
+    
+    for player_id, selection in game["pending_power_selections"].items():
+        power_name = selection["selected_power"]
+        if not power_name:
+            continue
+        
+        player = game["players"][player_id]
+        
+        # Initialize power in active_powers if not exists
+        if power_name not in game["active_powers"]:
+            game["active_powers"][power_name] = {
+                "used_by": [],
+                "data": {}
+            }
+        
+        game["active_powers"][power_name]["used_by"].append(player_id)
+        
+        # Apply power-specific logic
+        if power_name == "vision":
+            # Highlight rooms not searched since last key
+            rooms_searched = game.get("rooms_searched_this_key", [])
+            for room_name, room_data in game["rooms"].items():
+                if room_name not in rooms_searched:
+                    room_data["highlighted"] = True
+            
+            event_msg = f"👁️ {player['name']} utilise Vision !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "secousse":
+            # Mark that key should move if not found
+            game["active_powers"][power_name]["data"]["should_relocate_key"] = True
+            
+            event_msg = f"↩️ {player['name']} utilise Secousse !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "piege":
+            # Trap selected rooms
+            action_data = selection.get("action_data", {})
+            trapped_rooms = action_data.get("rooms", [])
+            
+            for room_name in trapped_rooms:
+                if room_name in game["rooms"]:
+                    game["rooms"][room_name]["trapped"] = True
+            
+            game["active_powers"][power_name]["data"]["trapped_rooms"] = trapped_rooms
+            
+            event_msg = f"🕸️ {player['name']} utilise Piège !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "traque":
+            # Get floor hints and send to killers
+            floor_hints = get_survivor_floor_hints(game)
+            
+            for floor, names in floor_hints.items():
+                floor_name_fr = floor_names.get(floor, floor)
+                sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}..."
+                game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+            
+            event_msg = f"🔊 {player['name']} utilise Traque !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "barricade":
+            # Lock selected rooms for next turn
+            action_data = selection.get("action_data", {})
+            locked_rooms = action_data.get("rooms", [])
+            
+            game["active_powers"][power_name]["data"]["locked_rooms_next_turn"] = locked_rooms
+            
+            event_msg = f"🔒 {player['name']} utilise Barricade !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
 def filter_game_state(game_state: dict, player_role: str) -> dict:
     """
     Filter game state based on player role for visibility rules:
     - Survivors see: other survivors' positions + eliminated players
-    - Killers see: other killers' positions + eliminated players
+    - Killers see: other killers' positions + eliminated players + highlighted rooms (Vision power)
     - pending_actions are filtered to only show actions from same role
     """
     filtered_state = game_state.copy()
     filtered_state["players"] = {}
     filtered_state["pending_actions"] = {}
+    
+    # Filter rooms based on role
+    filtered_state["rooms"] = {}
+    for room_name, room_data in game_state["rooms"].items():
+        room_copy = room_data.copy()
+        
+        if player_role == "survivor":
+            # Survivors see trap_triggered but not highlighted or just trapped
+            room_copy["highlighted"] = False
+            if not room_copy.get("trap_triggered", False):
+                room_copy["trapped"] = False
+        elif player_role == "killer":
+            # Killers see trapped and highlighted, but not trap_triggered
+            room_copy.pop("trap_triggered", None)
+        
+        filtered_state["rooms"][room_name] = room_copy
 
     for pid, player_data in game_state["players"].items():
         player_copy = player_data.copy()
@@ -195,6 +395,12 @@ def filter_game_state(game_state: dict, player_role: str) -> dict:
             player = game_state["players"][pid]
             if player["role"] == player_role:
                 filtered_state["pending_actions"][pid] = action
+    
+    # Filter pending_power_selections: only show to killers
+    if player_role == "killer":
+        filtered_state["pending_power_selections"] = game_state.get("pending_power_selections", {})
+    else:
+        filtered_state["pending_power_selections"] = {}
 
     return filtered_state
 
@@ -238,6 +444,8 @@ async def broadcast_to_session(session_id: str, message: dict, role_filter: Opti
 async def process_turn(session_id: str):
     """Process a complete turn - survivors and killers have already selected their rooms"""
     game = game_sessions[session_id]
+    
+    key_found_this_turn = False
 
     # At the start of the turn, place a new key if needed
     if game["should_place_next_key"]:
@@ -245,10 +453,35 @@ async def process_turn(session_id: str):
         if placed_room:
             game["should_place_next_key"] = False
 
-    # Unlock previously locked rooms
+    # Unlock previously locked rooms (except those locked by Barricade)
+    barricade_locked_rooms = []
+    if "barricade" in game.get("active_powers", {}):
+        barricade_locked_rooms = game["active_powers"]["barricade"]["data"].get("locked_rooms_next_turn", [])
+    
     for room_name, room_data in game["rooms"].items():
-        if room_data["locked"]:
+        if room_data["locked"] and room_name not in barricade_locked_rooms:
             room_data["locked"] = False
+    
+    # Apply Barricade locked rooms for next turn
+    for room_name in barricade_locked_rooms:
+        if room_name in game["rooms"]:
+            game["rooms"][room_name]["locked"] = True
+            event_msg = f"🔒 La pièce {room_name} est barricadée pour ce tour."
+            game["events"].append({"message": event_msg, "type": "room_locked"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Clear vision highlights from rooms
+    for room_name, room_data in game["rooms"].items():
+        room_data["highlighted"] = False
+    
+    # Clear traps and reset immobilization flags
+    for room_name, room_data in game["rooms"].items():
+        room_data["trapped"] = False
+        room_data.pop("trap_triggered", None)
+    
+    for player_id, player in game["players"].items():
+        if player.get("immobilized_next_turn", False):
+            player["immobilized_next_turn"] = False
 
     # Separate survivors and killers actions
     survivors_actions = {}
@@ -288,6 +521,10 @@ async def process_turn(session_id: str):
             event_msg = f"🔑 {player['name']} a trouvé une clef ! Il reste {keys_left} clef(s) à trouver."
             game["events"].append({"message": event_msg, "type": "key_found"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+            
+            key_found_this_turn = True
+            # Reset rooms searched for Vision power
+            game["rooms_searched_this_key"] = []
 
             # Set flag to place next key
             if game["keys_collected"] < game["keys_needed"]:
@@ -372,6 +609,25 @@ async def process_turn(session_id: str):
         event_msg = f"⚠️ La pièce {room_name} est condamnée pour ce tour."
         game["events"].append({"message": event_msg, "type": "room_locked"})
         await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Apply Secousse power: relocate key if not found this turn
+    if not key_found_this_turn and "secousse" in game.get("active_powers", {}):
+        if game["active_powers"]["secousse"]["data"].get("should_relocate_key", False):
+            # Find current key location and remove it
+            current_key_room = None
+            for room_name, room_data in game["rooms"].items():
+                if room_data.get("has_key", False):
+                    room_data["has_key"] = False
+                    current_key_room = room_name
+                    break
+            
+            # Place key in new location
+            if current_key_room:
+                new_key_room = place_next_key(game)
+                if new_key_room:
+                    event_msg = f"↩️ La clef s'est déplacée vers une nouvelle pièce !"
+                    game["events"].append({"message": event_msg, "type": "key_relocated"})
+                    await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
 
     # Check victory conditions
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
@@ -413,6 +669,9 @@ async def process_turn(session_id: str):
         game["turn"] += 1
         game["phase"] = "survivor_selection"
         game["pending_actions"] = {}
+        # Clear active powers
+        game["active_powers"] = {}
+        game["pending_power_selections"] = {}
         await broadcast_to_session(session_id, {
             "type": "new_turn",
             "turn": game["turn"],
@@ -473,7 +732,8 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "eliminated": False,
         "current_room": None,
         "has_medikit": False,
-        "role": request.role  # "survivor" or "killer"
+        "role": request.role,  # "survivor" or "killer"
+        "immobilized_next_turn": False  # NEW: for piege power
     }
 
     # Broadcast new player joined
@@ -572,6 +832,11 @@ async def get_game_state(session_id: str, player_id: Optional[str] = None):
 
     return game
 
+@api_router.get("/powers")
+async def get_powers():
+    """Get all available powers"""
+    return POWERS
+
 @api_router.post("/game/{session_id}/reset")
 async def reset_game(session_id: str):
     """Reset the game to lobby state for a rematch"""
@@ -585,6 +850,7 @@ async def reset_game(session_id: str):
         player["eliminated"] = False
         player["current_room"] = None
         player["has_medikit"] = False
+        player["immobilized_next_turn"] = False  # NEW: reset immobilization
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
@@ -592,6 +858,9 @@ async def reset_game(session_id: str):
         room_data["has_medikit"] = False
         room_data["locked"] = False
         room_data["eliminated_players"] = []
+        room_data["trapped"] = False  # NEW: reset traps
+        room_data["highlighted"] = False  # NEW: reset highlights
+        room_data.pop("trap_triggered", None)  # NEW: remove trap_triggered
     
     # Reset game state
     game["keys_collected"] = 0
@@ -602,6 +871,9 @@ async def reset_game(session_id: str):
     game["events"] = []
     game["pending_actions"] = {}
     game["should_place_next_key"] = False
+    game["active_powers"] = {}  # NEW: reset powers
+    game["pending_power_selections"] = {}  # NEW: reset power selections
+    game["rooms_searched_this_key"] = []  # NEW: reset searched rooms
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -690,19 +962,40 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     continue
 
                 room_name = data["room"]
+                
+                # Check immobilization for survivors
+                if player["role"] == "survivor" and player.get("immobilized_next_turn", False):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "🕸️ Vous êtes immobilisé par un piège ! Vous ne pouvez pas vous déplacer ce tour."
+                    })
+                    continue
+                
                 if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
                     game["pending_actions"][player_id] = {
                         "action": "select_room",
                         "room": room_name
                     }
 
-                    # CORRECTION: Generate sound clue immediately when survivor selects room
-                    if player["role"] == "survivor":
-                        survivor_floor = game["rooms"][room_name]["floor"]
-                        sound_event_msg = f"👂 Vous entendez du bruit {floor_names[survivor_floor]}..."
-                        game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
-                        # Send sound clue ONLY to killers
-                        await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+                    # DISABLED: Sound clue functionality kept for Traque power
+                    # The get_survivor_floor_hints() function can be used when Traque is activated
+                    # if player["role"] == "survivor":
+                    #     survivor_floor = game["rooms"][room_name]["floor"]
+                    #     sound_event_msg = f"👂 Vous entendez du bruit {floor_names[survivor_floor]}..."
+                    #     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                    #     await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+                    
+                    # Track rooms searched for Vision power
+                    if player["role"] == "survivor" and room_name not in game.get("rooms_searched_this_key", []):
+                        if "rooms_searched_this_key" not in game:
+                            game["rooms_searched_this_key"] = []
+                        game["rooms_searched_this_key"].append(room_name)
+                    
+                    # Check if survivor enters trapped room
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("trapped", False):
+                        player["immobilized_next_turn"] = True
+                        # Mark room as trap triggered for survivors
+                        game["rooms"][room_name]["trap_triggered"] = True
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
@@ -720,12 +1013,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             if game["players"][pid]["role"] == "survivor"]
 
                         if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, move to killer selection
-                            game["phase"] = "killer_selection"
+                            # All survivors have selected, move to killer power selection
+                            game["phase"] = "killer_power_selection"
+                            game["pending_power_selections"] = {}
+                            
+                            # Assign 3 random powers to each killer
+                            alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
+                            for killer in alive_killers:
+                                killer_id = killer["id"]
+                                power_options = get_random_powers()
+                                game["pending_power_selections"][killer_id] = {
+                                    "options": power_options,
+                                    "selected_power": None,
+                                    "action_data": None,
+                                    "action_complete": False
+                                }
+                            
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
-                                "phase": "killer_selection",
-                                "message": f"🔪 Les tueurs sélectionnent leur pièce"
+                                "phase": "killer_power_selection",
+                                "message": f"🎴 Les tueurs choisissent leur pouvoir"
                             })
 
                     elif game["phase"] == "killer_selection":
@@ -738,6 +1045,67 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             # All killers have selected, process the turn
                             game["phase"] = "processing"
                             await process_turn(session_id)
+            
+            elif data["type"] == "select_power":
+                # Only killers can select powers during power selection phase
+                if player["role"] != "killer" or game["phase"] != "killer_power_selection":
+                    continue
+                
+                if player_id not in game["pending_power_selections"]:
+                    continue
+                
+                power_name = data["power"]
+                if power_name not in game["pending_power_selections"][player_id]["options"]:
+                    continue
+                
+                game["pending_power_selections"][player_id]["selected_power"] = power_name
+                
+                # Check if power requires action
+                power_def = POWERS[power_name]
+                if power_def["requires_action"]:
+                    game["pending_power_selections"][player_id]["action_complete"] = False
+                    await websocket.send_json({
+                        "type": "power_action_required",
+                        "power": power_name,
+                        "action_type": power_def["action_type"],
+                        "rooms_count": power_def.get("rooms_count", 1)
+                    })
+                else:
+                    game["pending_power_selections"][player_id]["action_complete"] = True
+                    await broadcast_to_session(session_id, {
+                        "type": "player_action",
+                        "player_id": player_id,
+                        "player_name": game["players"][player_id]["name"],
+                        "message": f"✅ {game['players'][player_id]['name']} a choisi son pouvoir"
+                    })
+                    
+                    # Check if all killers have completed their power selection
+                    await check_power_selection_complete(session_id)
+            
+            elif data["type"] == "power_action":
+                # Handle power actions (e.g., selecting rooms for piege or barricade)
+                if player["role"] != "killer" or game["phase"] != "killer_power_selection":
+                    continue
+                
+                if player_id not in game["pending_power_selections"]:
+                    continue
+                
+                power_selection = game["pending_power_selections"][player_id]
+                if not power_selection["selected_power"]:
+                    continue
+                
+                power_selection["action_data"] = data["action_data"]
+                power_selection["action_complete"] = True
+                
+                await broadcast_to_session(session_id, {
+                    "type": "player_action",
+                    "player_id": player_id,
+                    "player_name": game["players"][player_id]["name"],
+                    "message": f"✅ {game['players'][player_id]['name']} a configuré son pouvoir"
+                })
+                
+                # Check if all killers have completed their power selection
+                await check_power_selection_complete(session_id)
 
             elif data["type"] == "use_medikit":
                 # Only survivors can use medikits

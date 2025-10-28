@@ -452,6 +452,187 @@ const Lobby = () => {
   );
 };
 
+// Power Selection Overlay Component
+const PowerSelectionOverlay = ({ 
+  gameState, 
+  playerId, 
+  powerDefinitions, 
+  selectedPower, 
+  selectPower, 
+  showPowerAction, 
+  confirmPowerAction,
+  powerActionData 
+}) => {
+  const [tempRoomSelections, setTempRoomSelections] = useState([]);
+  
+  const myPowerSelection = gameState.pending_power_selections?.[playerId];
+  if (!myPowerSelection) return null;
+  
+  const powerOptions = myPowerSelection.options || [];
+  const hasCompletedSelection = myPowerSelection.action_complete;
+  
+  // Room selection for powers that require it
+  const selectedPowerDef = powerDefinitions[selectedPower];
+  const requiresAction = selectedPowerDef?.requires_action;
+  const actionType = selectedPowerDef?.action_type;
+  
+  const handleRoomSelection = (roomName) => {
+    if (actionType === "select_rooms_per_floor") {
+      // Piege: 1 room per floor
+      const room = gameState.rooms[roomName];
+      const floor = room.floor;
+      
+      // Check if we already have a room from this floor
+      const existingRoomFromFloor = tempRoomSelections.find(r => gameState.rooms[r].floor === floor);
+      if (existingRoomFromFloor) {
+        // Replace it
+        setTempRoomSelections(tempRoomSelections.filter(r => r !== existingRoomFromFloor).concat([roomName]));
+      } else {
+        setTempRoomSelections([...tempRoomSelections, roomName]);
+      }
+    } else if (actionType === "select_rooms") {
+      // Barricade: 2 rooms
+      const roomsCount = selectedPowerDef.rooms_count || 2;
+      if (tempRoomSelections.includes(roomName)) {
+        setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
+      } else if (tempRoomSelections.length < roomsCount) {
+        setTempRoomSelections([...tempRoomSelections, roomName]);
+      }
+    }
+  };
+  
+  const canConfirmAction = () => {
+    if (actionType === "select_rooms_per_floor") {
+      // Must select from at least one floor
+      return tempRoomSelections.length > 0;
+    } else if (actionType === "select_rooms") {
+      // Must select exactly the required number
+      return tempRoomSelections.length === (selectedPowerDef.rooms_count || 2);
+    }
+    return false;
+  };
+  
+  if (hasCompletedSelection && !showPowerAction) {
+    return (
+      <div className="power-selection-overlay">
+        <Card className="power-waiting-card">
+          <CardContent className="text-center" style={{ padding: '2rem' }}>
+            <h2 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>✅ Pouvoir sélectionné</h2>
+            <p>En attente des autres tueurs...</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  
+  if (showPowerAction && requiresAction) {
+    // Show room selection interface
+    return (
+      <div className="power-selection-overlay">
+        <Card className="power-action-card">
+          <CardHeader>
+            <CardTitle className="text-center">
+              {selectedPowerDef.name}
+            </CardTitle>
+            <CardDescription className="text-center">
+              {selectedPowerDef.description}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-center mb-4">
+              {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
+              {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
+            </p>
+            
+            <div className="rooms-selection-grid">
+              {["basement", "ground_floor", "upper_floor"].map(floor => (
+                <div key={floor} className="floor-section-mini">
+                  <h4>{FLOOR_NAMES[floor]}</h4>
+                  <div className="rooms-mini-grid">
+                    {Object.entries(gameState.rooms)
+                      .filter(([_, data]) => data.floor === floor)
+                      .map(([roomName, roomData]) => {
+                        const isSelected = tempRoomSelections.includes(roomName);
+                        const isLocked = roomData.locked;
+                        
+                        return (
+                          <button
+                            key={roomName}
+                            className={`room-mini-btn ${isSelected ? 'selected' : ''} ${isLocked ? 'locked' : ''}`}
+                            onClick={() => !isLocked && handleRoomSelection(roomName)}
+                            disabled={isLocked}
+                          >
+                            {roomName}
+                            {isSelected && " ✓"}
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            <Button
+              onClick={() => confirmPowerAction({ rooms: tempRoomSelections })}
+              disabled={!canConfirmAction()}
+              className="w-full mt-4"
+              style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
+            >
+              Confirmer
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="power-selection-overlay">
+      <Card className="power-selection-card">
+        <CardHeader>
+          <CardTitle className="text-center power-selection-title">
+            🎴 Choisissez votre pouvoir
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="power-cards-container">
+            {powerOptions.map((powerName, index) => {
+              const power = powerDefinitions[powerName];
+              if (!power) return null;
+              
+              const isSelected = selectedPower === powerName;
+              
+              return (
+                <div 
+                  key={powerName} 
+                  className={`power-card ${isSelected ? 'power-card-selected' : ''}`}
+                  onClick={() => !selectedPower && selectPower(powerName)}
+                  style={{ animationDelay: `${index * 0.15}s` }}
+                >
+                  <div className="power-card-image">
+                    <img 
+                      src={`/powers/${power.icon}`} 
+                      alt={power.name}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  </div>
+                  <div className="power-card-content">
+                    <h3 className="power-card-name">{power.name}</h3>
+                    <p className="power-card-description">{power.description}</p>
+                  </div>
+                  {isSelected && (
+                    <div className="power-card-selected-badge">✓</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 // Game Page - Main gameplay
 const Game = () => {
   const { sessionId } = useParams();
@@ -461,6 +642,13 @@ const Game = () => {
   const [hasSelectedRoom, setHasSelectedRoom] = useState(false);
   const [showRoleNotification, setShowRoleNotification] = useState(false); // NEW: role notification
   const [assignedRole, setAssignedRole] = useState(null); // NEW: assigned role
+  
+  // NEW: Power selection states
+  const [selectedPower, setSelectedPower] = useState(null);
+  const [powerActionData, setPowerActionData] = useState(null);
+  const [showPowerAction, setShowPowerAction] = useState(false);
+  const [powerDefinitions, setPowerDefinitions] = useState({});
+  
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
 
@@ -470,6 +658,17 @@ const Game = () => {
     const pidFromUrl = urlParams.get('pid');
     const storedPlayerId = pidFromUrl || localStorage.getItem('player_id');
     setPlayerId(storedPlayerId);
+
+    // Fetch power definitions
+    const fetchPowers = async () => {
+      try {
+        const response = await axios.get(`${API}/powers`);
+        setPowerDefinitions(response.data);
+      } catch (error) {
+        console.error("Error fetching powers:", error);
+      }
+    };
+    fetchPowers();
 
     // Fetch initial game state
     const fetchGameState = async () => {
@@ -513,15 +712,28 @@ const Game = () => {
       } else if (data.type === "new_turn") {
         setHasSelectedRoom(false);
         setSelectedRoom(null);
+        setSelectedPower(null);
+        setPowerActionData(null);
+        setShowPowerAction(false);
         toast.info(data.message);
       } else if (data.type === "phase_change") {
         setHasSelectedRoom(false);
         setSelectedRoom(null);
+        if (data.phase !== "killer_power_selection") {
+          setSelectedPower(null);
+          setPowerActionData(null);
+          setShowPowerAction(false);
+        }
         toast.info(data.message);
       } else if (data.type === "game_over") {
         toast.success(data.message);
       } else if (data.type === "player_action") {
         toast.info(data.message);
+      } else if (data.type === "power_action_required") {
+        // Show power action interface
+        setShowPowerAction(true);
+      } else if (data.type === "error") {
+        toast.error(data.message);
       }
     };
 
@@ -583,6 +795,35 @@ const Game = () => {
       ws.current.send(JSON.stringify({
         type: "use_medikit",
         target_player_id: targetPlayerId
+      }));
+    }
+  };
+  
+  // NEW: Power selection functions
+  const selectPower = (powerName) => {
+    if (!gameState || gameState.phase !== "killer_power_selection") return;
+    if (selectedPower) return; // Already selected
+    
+    setSelectedPower(powerName);
+    
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "select_power",
+        power: powerName
+      }));
+    }
+  };
+  
+  const confirmPowerAction = (actionData) => {
+    if (!gameState || gameState.phase !== "killer_power_selection") return;
+    
+    setPowerActionData(actionData);
+    setShowPowerAction(false);
+    
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "power_action",
+        action_data: actionData
       }));
     }
   };
@@ -649,6 +890,11 @@ const Game = () => {
               🛡️ Tour des survivants
             </div>
           )}
+          {gameState.phase === "killer_power_selection" && (
+            <div className="phase-indicator killer-phase" data-testid="phase-indicator">
+              🎴 Sélection de pouvoir
+            </div>
+          )}
           {gameState.phase === "killer_selection" && (
             <div className="phase-indicator killer-phase" data-testid="phase-indicator">
               🔪 Tour des tueurs
@@ -668,8 +914,23 @@ const Game = () => {
           {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
           {currentPlayer?.has_medikit && <span className="medikit-badge">🩺</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
+          {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
         </div>
       </div>
+
+      {/* Power Selection Screen */}
+      {gameState.phase === "killer_power_selection" && currentPlayerRole === "killer" && !isEliminated && (
+        <PowerSelectionOverlay 
+          gameState={gameState}
+          playerId={playerId}
+          powerDefinitions={powerDefinitions}
+          selectedPower={selectedPower}
+          selectPower={selectPower}
+          showPowerAction={showPowerAction}
+          confirmPowerAction={confirmPowerAction}
+          powerActionData={powerActionData}
+        />
+      )}
 
       {/* Game Over Screen */}
       {gameState.phase === "game_over" && (
@@ -749,6 +1010,11 @@ const Game = () => {
                   }
 
                   const eliminatedInRoom = room.eliminated_players || [];
+                  
+                  // Check for power effects
+                  const isHighlighted = room.highlighted && currentPlayerRole === "killer";
+                  const isTrapped = room.trapped && currentPlayerRole === "killer";
+                  const isTrapTriggered = room.trap_triggered && currentPlayerRole === "survivor";
 
                   return (
                     <button
@@ -757,7 +1023,7 @@ const Game = () => {
                       className={`room-card ${
                         selectedRoom === room.name ? 'selected' :
                         room.locked ? 'locked' : ''
-                      }`}
+                      } ${isHighlighted ? 'room-highlighted' : ''}`}
                       onClick={() => selectRoom(room.name)}
                       disabled={isEliminated || hasSelectedRoom || room.locked}
                     >
@@ -765,6 +1031,8 @@ const Game = () => {
                       <div className="room-indicators">
                         {room.locked && <span className="room-icon locked-icon">❌</span>}
                         {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
+                        {isTrapped && <span className="room-icon room-trap-indicator" title="Piégé">🕸️</span>}
+                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Piège activé">🕸️</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (
