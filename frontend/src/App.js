@@ -554,6 +554,7 @@ const PowerSelectionOverlay = ({
                       .map(([roomName, roomData]) => {
                         const isSelected = tempRoomSelections.includes(roomName);
                         const isLocked = roomData.locked;
+                        const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
                         
                         return (
                           <button
@@ -564,6 +565,7 @@ const PowerSelectionOverlay = ({
                           >
                             {roomName}
                             {isSelected && " ✓"}
+                            {isTrapped && " 🕸️"}
                           </button>
                         );
                       })}

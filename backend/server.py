@@ -529,14 +529,11 @@ async def process_turn(session_id: str):
     for room_name, room_data in game["rooms"].items():
         room_data["highlighted"] = False
     
-    # Clear traps and reset immobilization flags
+    # Clear traps - FIXED: Do NOT reset immobilization flags here
+    # Immobilization will be reset AFTER blocking the player's movement
     for room_name, room_data in game["rooms"].items():
         room_data["trapped"] = False
         room_data.pop("trap_triggered", None)
-    
-    for player_id, player in game["players"].items():
-        if player.get("immobilized_next_turn", False):
-            player["immobilized_next_turn"] = False
 
     # Separate survivors and killers actions
     survivors_actions = {}
@@ -1043,6 +1040,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "type": "error",
                         "message": "🕸️ Vous êtes immobilisé par un piège ! Vous ne pouvez pas vous déplacer ce tour."
                     })
+                    # FIXED: Reset immobilization flag AFTER blocking the movement
+                    player["immobilized_next_turn"] = False
                     continue
                 
                 if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
