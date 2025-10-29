@@ -529,11 +529,9 @@ async def process_turn(session_id: str):
     for room_name, room_data in game["rooms"].items():
         room_data["highlighted"] = False
     
-    # Clear traps - FIXED: Do NOT reset immobilization flags here
-    # Immobilization will be reset AFTER blocking the player's movement
-    for room_name, room_data in game["rooms"].items():
-        room_data["trapped"] = False
-        room_data.pop("trap_triggered", None)
+    # NOTE: Traps are NOT cleared here anymore!
+    # They need to persist until AFTER survivors make their selection in the next turn
+    # Traps will be cleared in the survivor_selection phase after all survivors have selected
 
     # Separate survivors and killers actions
     survivors_actions = {}
@@ -1092,7 +1090,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             if game["players"][pid]["role"] == "survivor"]
 
                         if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, move to killer power selection
+                            # All survivors have selected, NOW clear traps from previous turn
+                            # This ensures traps persist for exactly one turn after being set
+                            for room_name, room_data in game["rooms"].items():
+                                room_data["trapped"] = False
+                                room_data.pop("trap_triggered", None)
+                            
+                            # Move to killer power selection
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
                             
