@@ -757,8 +757,17 @@ const Game = () => {
       } else if (data.type === "power_action_required") {
         // Show power action interface
         setShowPowerAction(true);
+      } else if (data.type === "game_reset") {
+        // Redirect all players back to lobby when game is reset
+        toast.info(data.message);
+        setTimeout(() => {
+          window.location.href = `/lobby/${sessionId}`;
+        }, 1500); // Small delay to show the toast message
       } else if (data.type === "error") {
         toast.error(data.message);
+        // Reset hasSelectedRoom to allow player to try again after error
+        setHasSelectedRoom(false);
+        setSelectedRoom(null);
       }
     };
 
