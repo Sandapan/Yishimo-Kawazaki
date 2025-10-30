@@ -1034,12 +1034,82 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 
                 # Check immobilization for survivors
                 if player["role"] == "survivor" and player.get("immobilized_next_turn", False):
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "🕸️ Vous êtes immobilisé par un piège ! Vous ne pouvez pas vous déplacer ce tour."
-                    })
-                    # FIXED: Reset immobilization flag AFTER blocking the movement
+                    current_room = player.get("current_room")
+                    
+                    # If player tries to select a different room, block it
+                    if room_name != current_room:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"🕸️ Vous êtes immobilisé par un piège ! Cliquez sur '{current_room}' pour passer votre tour."
+                        })
+                        # Broadcast updated state even on error so frontend stays responsive
+                        await broadcast_to_session(session_id, {
+                            "type": "state_update",
+                            "game": game_sessions[session_id]
+                        })
+                        continue
+                    
+                    # Player selected their current room - they pass their turn
                     player["immobilized_next_turn"] = False
+                    game["pending_actions"][player_id] = {
+                        "action": "select_room",
+                        "room": room_name
+                    }
+                    
+                    # Notify the player they've passed their turn
+                    await websocket.send_json({
+                        "type": "turn_skipped",
+                        "message": "🕸️ Vous passez votre tour car vous êtes immobilisé."
+                    })
+                    
+                    # Notify all players
+                    await broadcast_to_session(session_id, {
+                        "type": "player_action",
+                        "player_id": player_id,
+                        "player_name": game["players"][player_id]["name"],
+                        "message": f"✅ {game['players'][player_id]['name']} a fait son choix"
+                    })
+                    
+                    # Check if all survivors have selected
+                    if game["phase"] == "survivor_selection":
+                        alive_survivors = [p for p in game["players"].values()\
+                                         if p["role"] == "survivor" and not p["eliminated"]]
+                        survivors_selected = [pid for pid in game["pending_actions"].keys()\
+                                            if game["players"][pid]["role"] == "survivor"]
+
+                        if len(survivors_selected) == len(alive_survivors):
+                            # All survivors have selected, NOW clear traps from previous turn
+                            for room_name_clear, room_data in game["rooms"].items():
+                                room_data["trapped"] = False
+                                room_data.pop("trap_triggered", None)
+                            
+                            # Move to killer power selection
+                            game["phase"] = "killer_power_selection"
+                            game["pending_power_selections"] = {}
+                            
+                            # Assign 3 random powers to each killer
+                            alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
+                            for killer in alive_killers:
+                                killer_id = killer["id"]
+                                power_options = get_random_powers()
+                                game["pending_power_selections"][killer_id] = {
+                                    "options": power_options,
+                                    "selected_power": None,
+                                    "action_data": None,
+                                    "action_complete": False
+                                }
+                            
+                            await broadcast_to_session(session_id, {
+                                "type": "phase_change",
+                                "phase": "killer_power_selection",
+                                "message": f"🎴 Les tueurs choisissent leur pouvoir"
+                            })
+                    
+                    # Broadcast updated state
+                    await broadcast_to_session(session_id, {
+                        "type": "state_update",
+                        "game": game_sessions[session_id]
+                    })
                     continue
                 
                 if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
