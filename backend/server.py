@@ -1024,15 +1024,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
             player = game["players"][player_id]
 
             if data["type"] == "select_room":
-                # Check if it's the player's turn based on their role and current phase
-                if player["role"] == "survivor" and game["phase"] != "survivor_selection":
-                    continue
-                if player["role"] == "killer" and game["phase"] != "killer_selection":
-                    continue
-
                 room_name = data["room"]
                 
-                # Check immobilization for survivors
+                # Check immobilization for survivors FIRST (before phase check)
                 if player["role"] == "survivor" and player.get("immobilized_next_turn", False):
                     current_room = player.get("current_room")
                     
@@ -1110,6 +1104,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "type": "state_update",
                         "game": game_sessions[session_id]
                     })
+                    continue
+                
+                # Check if it's the player's turn based on their role and current phase (AFTER immobilization check)
+                if player["role"] == "survivor" and game["phase"] != "survivor_selection":
+                    continue
+                if player["role"] == "killer" and game["phase"] != "killer_selection":
                     continue
                 
                 if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
