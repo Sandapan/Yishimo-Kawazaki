@@ -31,7 +31,25 @@ ROOMS_CONFIG = {
     "upper_floor": ["Master Bedroom", "Guest Room", "Bathroom", "Attic"]
 }
 
-AVATARS = ["👤", "👨", "👩", "🧑", "👦", "👧", "🧓", "👨‍🦰", "👩‍🦰", "👨‍🦱"]
+# Avatar images by role
+SURVIVOR_AVATARS = [
+    "/avatars/Archère.png",
+    "/avatars/Assassin.png",
+    "/avatars/Barbare.png",
+    "/avatars/Barde.png",
+    "/avatars/Elfe.png",
+    "/avatars/Guerrier.png",
+    "/avatars/Mage.png"
+]
+
+KILLER_AVATARS = [
+    "/avatars/Orc Berzerker.png",
+    "/avatars/Orc Chaman.png",
+    "/avatars/Orc Roi.png"
+]
+
+# All avatars (for validation)
+ALL_AVATARS = SURVIVOR_AVATARS + KILLER_AVATARS
 
 # Models
 class CreateGameRequest(BaseModel):

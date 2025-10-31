@@ -12,7 +12,22 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
-const AVATARS = ["👤", "👨", "👩", "🧑", "👦", "👧", "🧓", "👨‍🦰", "👩‍🦰", "👨‍🦱"];
+// Avatar images by role
+const SURVIVOR_AVATARS = [
+  "/avatars/Archère.png",
+  "/avatars/Assassin.png",
+  "/avatars/Barbare.png",
+  "/avatars/Barde.png",
+  "/avatars/Elfe.png",
+  "/avatars/Guerrier.png",
+  "/avatars/Mage.png"
+];
+
+const KILLER_AVATARS = [
+  "/avatars/Orc Berzerker.png",
+  "/avatars/Orc Chaman.png",
+  "/avatars/Orc Roi.png"
+];
 
 const FLOOR_NAMES = {
   "basement": "Sous-sol",
@@ -52,13 +67,22 @@ const copyToClipboard = (text) => {
 // Home Page - Create or Join Game
 const Home = () => {
   const [playerName, setPlayerName] = useState("");
-  const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
   const [selectedRole, setSelectedRole] = useState("survivor"); // "survivor" or "killer"
+  const [selectedAvatar, setSelectedAvatar] = useState(SURVIVOR_AVATARS[0]);
   const [conspiracyMode, setConspiracyMode] = useState(false); // NEW: conspiracy mode
   const [joinSessionId, setJoinSessionId] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const navigate = useNavigate();
+
+  // Get available avatars based on selected role
+  const availableAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
+
+  // Update selected avatar when role changes
+  useEffect(() => {
+    const newAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
+    setSelectedAvatar(newAvatars[0]);
+  }, [selectedRole]);
 
   const createGame = async () => {
     if (!playerName.trim()) {
@@ -142,14 +166,14 @@ const Home = () => {
             <div>
               <label className="input-label">Choisissez votre avatar</label>
               <div className="avatar-grid">
-                {AVATARS.map((avatar, idx) => (
+                {availableAvatars.map((avatar, idx) => (
                   <button
                     key={idx}
                     data-testid={`avatar-option-${idx}`}
                     className={`avatar-option ${selectedAvatar === avatar ? 'selected' : ''}`}
                     onClick={() => setSelectedAvatar(avatar)}
                   >
-                    {avatar}
+                    <img src={avatar} alt={`Avatar ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                   </button>
                 ))}
               </div>
@@ -401,7 +425,9 @@ const Lobby = () => {
                 
                 return (
                   <div key={player.id} className="player-item" data-testid={`player-${player.id}`}>
-                    <span className="player-avatar">{player.avatar}</span>
+                    <span className="player-avatar">
+                      <img src={player.avatar} alt={player.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
+                    </span>
                     <span className="player-name">{player.name}</span>
                     {/* MODIFIED: Non-clickable role badges */}
                     {!gameState.conspiracy_mode && player.role === "killer" && (
@@ -996,7 +1022,9 @@ const Game = () => {
         </div>
 
         <div className="player-status">
-          <span className="player-avatar-display">{currentPlayer?.avatar}</span>
+          <span className="player-avatar-display">
+            <img src={currentPlayer?.avatar} alt={currentPlayer?.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
+          </span>
           <span className="player-name-display">{currentPlayer?.name}</span>
           {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
           {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
@@ -1124,7 +1152,9 @@ const Game = () => {
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (
-                              <span key={p.id} className="room-player-avatar" title={p.name}>{p.avatar}</span>
+                              <span key={p.id} className="room-player-avatar" title={p.name}>
+                                <img src={p.avatar} alt={p.name} style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                              </span>
                             ))}
                           </div>
                         )}
@@ -1195,7 +1225,9 @@ const Game = () => {
                     className={`player-status-item ${player.eliminated ? 'eliminated' : 'alive'}`}
                     data-testid={`player-status-${player.id}`}
                   >
-                    <span className="status-avatar">{player.avatar}</span>
+                    <span className="status-avatar">
+                      <img src={player.avatar} alt={player.name} style={{ width: '1.8rem', height: '1.8rem', objectFit: 'contain' }} />
+                    </span>
                     <span className="status-name">{player.name}</span>
                     {player.role === "killer" && <span className="status-role killer">🔪</span>}
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
