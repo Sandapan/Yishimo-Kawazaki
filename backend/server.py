@@ -510,13 +510,18 @@ async def broadcast_to_session(session_id: str, message: dict, role_filter: Opti
                 continue
 
         try:
-            # If sending state_update, filter it based on player's role
+            # If sending state_update, filter it based on player's role (only during active game)
             if message.get("type") == "state_update" and player_id in game["players"]:
-                player_role = game["players"][player_id]["role"]
-                filtered_game = filter_game_state(game, player_role)
-                filtered_message = message.copy()
-                filtered_message["game"] = filtered_game
-                await websocket.send_json(filtered_message)
+                # Only filter game state during active gameplay, not in lobby
+                if game.get("game_started", False):
+                    player_role = game["players"][player_id]["role"]
+                    filtered_game = filter_game_state(game, player_role)
+                    filtered_message = message.copy()
+                    filtered_message["game"] = filtered_game
+                    await websocket.send_json(filtered_message)
+                else:
+                    # In lobby, send unfiltered state so everyone sees all players with is_host property
+                    await websocket.send_json(message)
             else:
                 await websocket.send_json(message)
         except:
@@ -923,8 +928,8 @@ async def get_game_state(session_id: str, player_id: Optional[str] = None):
 
     game = game_sessions[session_id]
 
-    # If player_id provided, filter state based on role
-    if player_id and player_id in game["players"]:
+    # If player_id provided, filter state based on role (only during active game, not in lobby)
+    if player_id and player_id in game["players"] and game.get("game_started", False):
         player_role = game["players"][player_id]["role"]
         return filter_game_state(game, player_role)
 
@@ -1079,15 +1084,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
     }
 
     try:
-        # Send current game state (filtered by player role)
+        # Send current game state (filtered by player role only during active game)
         game = game_sessions[session_id]
         if player_id in game["players"]:
-            player_role = game["players"][player_id]["role"]
-            filtered_game = filter_game_state(game, player_role)
-            await websocket.send_json({
-                "type": "state_update",
-                "game": filtered_game
-            })
+            # Only filter during active game, not in lobby
+            if game.get("game_started", False):
+                player_role = game["players"][player_id]["role"]
+                filtered_game = filter_game_state(game, player_role)
+                await websocket.send_json({
+                    "type": "state_update",
+                    "game": filtered_game
+                })
+            else:
+                # In lobby, send unfiltered state
+                await websocket.send_json({
+                    "type": "state_update",
+                    "game": game
+                })
 
         while True:
             data = await websocket.receive_json()
