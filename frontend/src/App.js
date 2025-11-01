@@ -239,8 +239,8 @@ const Home = () => {
   return (
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
-        <h1 className="game-title" data-testid="game-title">Yishimo Kawazaki's Game</h1>
-        <p className="game-subtitle">Un jeu de survie coopératif</p>
+        <h1 className="game-title" data-testid="game-title">Le donjon</h1>
+        <p className="game-subtitle">Rendez les bijoux de la couronne !</p>
 
         <Card className="setup-card">
           <CardHeader>
@@ -313,7 +313,7 @@ const Home = () => {
                   onClick={() => setSelectedRole('survivor')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">🛡️</span>
+                  <span className="role-icon">⚔️</span>
                   <span className="role-name">Survivant</span>
                 </button>
                 <button
@@ -322,7 +322,7 @@ const Home = () => {
                   onClick={() => setSelectedRole('killer')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">🔪</span>
+                  <span className="role-icon">👑</span>
                   <span className="role-name">Tueur</span>
                 </button>
               </div>
@@ -557,12 +557,12 @@ const Lobby = () => {
                     {/* MODIFIED: Non-clickable role badges */}
                     {!gameState.conspiracy_mode && player.role === "killer" && (
                       <span className="killer-badge">
-                        🔪 Tueur
+                        👑 Tueur
                       </span>
                     )}
                     {!gameState.conspiracy_mode && player.role === "survivor" && (
                       <span className="survivor-badge">
-                        🛡️ Survivant
+                        ⚔️ Survivant
                       </span>
                     )}
                     {/* MODIFIED: Button to return to role/avatar selection */}
@@ -1045,7 +1045,7 @@ const Game = () => {
           <Card className="game-over-card" style={{ maxWidth: '500px' }}>
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
-                {assignedRole === "survivor" ? "🛡️" : "🔪"}
+                {assignedRole === "survivor" ? "⚔️" : "👑"}
                 <span>Votre rôle</span>
               </CardTitle>
             </CardHeader>
@@ -1126,7 +1126,7 @@ const Game = () => {
           </div>
           {gameState.phase === "survivor_selection" && (
             <div className="phase-indicator survivor-phase" data-testid="phase-indicator">
-              🛡️ Tour des survivants
+              ⚔️ Tour des survivants
             </div>
           )}
           {gameState.phase === "killer_power_selection" && (
@@ -1136,7 +1136,7 @@ const Game = () => {
           )}
           {gameState.phase === "killer_selection" && (
             <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-              🔪 Tour des tueurs
+              👑 Tour des tueurs
             </div>
           )}
           {gameState.phase === "processing" && (
@@ -1151,8 +1151,8 @@ const Game = () => {
             <img src={currentPlayer?.avatar} alt={currentPlayer?.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
           </span>
           <span className="player-name-display">{currentPlayer?.name}</span>
-          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
-          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
+          {currentPlayerRole === "killer" && <span className="role-badge killer-role">👑 Tueur</span>}
+          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">⚔️ Survivant</span>}
           {currentPlayer?.has_medikit && <span className="medikit-badge">🩺</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
           {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
@@ -1224,7 +1224,7 @@ const Game = () => {
       <div className="game-main">
         {/* Map Section */}
         <div className="map-section">
-          <h3 className="map-title">Carte de la maison</h3>
+          <h3 className="map-title">Carte du donjon</h3>
 
           {["upper_floor", "ground_floor", "basement"].map((floor) => (
             <div key={floor} className="floor-section">
@@ -1354,8 +1354,8 @@ const Game = () => {
                       <img src={player.avatar} alt={player.name} style={{ width: '1.8rem', height: '1.8rem', objectFit: 'contain' }} />
                     </span>
                     <span className="status-name">{player.name}</span>
-                    {player.role === "killer" && <span className="status-role killer">🔪</span>}
-                    {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
+                    {player.role === "killer" && <span className="status-role killer">👑</span>}
+                    {player.role === "survivor" && <span className="status-role survivor">⚔️</span>}
                     {player.has_medikit && <span className="status-medikit">🩺</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                   </div>

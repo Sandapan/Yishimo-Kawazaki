@@ -591,6 +591,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 1px;
   font-family: 'Cinzel', serif;
+  text-align: center;
 }
 
 .rooms-grid {
