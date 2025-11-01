@@ -629,7 +629,7 @@ const PowerSelectionOverlay = ({
   
   const handleRoomSelection = (roomName) => {
     if (actionType === "select_rooms_per_floor") {
-      // Piege: 1 room per floor
+      // Embuscade: 1 room per floor
       const room = gameState.rooms[roomName];
       const floor = room.floor;
       
@@ -1102,12 +1102,12 @@ const Game = () => {
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
                 🕸️
-                <span>Vous êtes piégé !</span>
+                <span>C'est une embuscade !</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                Vous êtes tombé dans un piège ! Vous ne pourrez pas bouger au prochain tour.
+                C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -1272,8 +1272,8 @@ const Game = () => {
                       <div className="room-indicators">
                         {room.locked && <span className="room-icon locked-icon">❌</span>}
                         {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
-                        {isTrapped && <span className="room-icon room-trap-indicator" title="Piégé">🕸️</span>}
-                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Piège activé">🕸️</span>}
+                        {isTrapped && <span className="room-icon room-trap-indicator" title="Embuscade">🕸️</span>}
+                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Embuscade activée">🕸️</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (

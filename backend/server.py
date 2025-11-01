@@ -228,9 +228,9 @@ POWERS = {
         "requires_action": False
     },
     "piege": {
-        "name": "🕸️ Piège",
-        "description": "Vous permet de piéger au choix une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
-        "icon": "piege.svg",
+        "name": "🕸️ Embuscade",
+        "description": "Déployez une embuscade dans une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
+        "icon": "embuscade.jpeg",
         "requires_action": True,
         "action_type": "select_rooms_per_floor"  # select one room per floor
     },
@@ -397,7 +397,7 @@ async def apply_powers(session_id: str):
             
             game["active_powers"][power_name]["data"]["trapped_rooms"] = trapped_rooms
             
-            event_msg = f"🕸️ {player['name']} utilise Piège !"
+            event_msg = f"🕸️ {player['name']} utilise Embuscade !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
@@ -1118,7 +1118,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if room_name != current_room:
                         await websocket.send_json({
                             "type": "error",
-                            "message": f"🕸️ Vous êtes immobilisé par un piège ! Cliquez sur '{current_room}' pour passer votre tour."
+                            "message": f"🕸️ Vous êtes immobilisé par une embuscade ! Cliquez sur '{current_room}' pour passer votre tour."
                         })
                         # Broadcast updated state even on error so frontend stays responsive
                         await broadcast_to_session(session_id, {
@@ -1225,7 +1225,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         # NEW: Send trap notification immediately to the survivor
                         await websocket.send_json({
                             "type": "trapped_notification",
-                            "message": "🕸️ Vous êtes tombé dans un piège ! Vous ne pourrez pas bouger au prochain tour."
+                            "message": "🕸️ C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci."
                         })
 
                     # Notify all players
