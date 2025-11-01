@@ -12,21 +12,61 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
-// Avatar images by role with their associated classes
+// Avatar images by role with their associated classes and descriptions
 const SURVIVOR_AVATARS = [
-  { path: "/avatars/Archère.png", class: "Archère" },
-  { path: "/avatars/Assassin.png", class: "Assassin" },
-  { path: "/avatars/Barbare.png", class: "Barbare" },
-  { path: "/avatars/Barde.png", class: "Barde" },
-  { path: "/avatars/Elfe.png", class: "Elfe" },
-  { path: "/avatars/Guerrier.png", class: "Guerrier" },
-  { path: "/avatars/Mage.png", class: "Mage" }
+  { 
+    path: "/avatars/Archère.png", 
+    class: "Archère",
+    description: "Ses flèches atteignent les cibles les plus éloignées avec une précision redoutable…"
+  },
+  { 
+    path: "/avatars/Assassin.png", 
+    class: "Assassin",
+    description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé."
+  },
+  { 
+    path: "/avatars/Barbare.png", 
+    class: "Barbare",
+    description: "Un vrai bourrin qui résout tous les problèmes à coups de hache. Même ceux qui demandent juste un peu de diplomatie."
+  },
+  { 
+    path: "/avatars/Barde.png", 
+    class: "Barde",
+    description: "Le musicien raté du groupe. Son instrument ? Une arme sonore capable d'endormir certaines créatures."
+  },
+  { 
+    path: "/avatars/Elfe.png", 
+    class: "Elfe",
+    description: "Elle seule sait lire l'elfique. Ça tombe bien : elle ne sait lire que ça."
+  },
+  { 
+    path: "/avatars/Guerrier.png", 
+    class: "Guerrier",
+    description: "Vaillant et téméraire, il est élu de cette aventure. Enfin ça c'est ce qu'il croit."
+  },
+  { 
+    path: "/avatars/Mage.png", 
+    class: "Mage",
+    description: "Son bâton magique peut incendier certains décors… parfois même sa propre barbe."
+  }
 ];
 
 const KILLER_AVATARS = [
-  { path: "/avatars/Orc Berzerker.png", class: "Orc Berzerker" },
-  { path: "/avatars/Orc Chaman.png", class: "Orc Chaman" },
-  { path: "/avatars/Orc Roi.png", class: "Orc Roi" }
+  { 
+    path: "/avatars/Orc Berzerker.png", 
+    class: "Orc Berzerker",
+    description: "Votre soif de vengeance n'a d'yeux que pour ces sales petits voleurs. Et parfois, pour le buffet après la bataille."
+  },
+  { 
+    path: "/avatars/Orc Chaman.png", 
+    class: "Orc Chaman",
+    description: "Traquer les intrus, très peu pour vous. Vous préférez laisser ce travail à vos morts-vivants — ils sont bien moins bavards."
+  },
+  { 
+    path: "/avatars/Orc Roi.png", 
+    class: "Orc Roi",
+    description: "« Rendez les bijoux de la couronne ! Bande de losers, de voleurs, de crapules !» hurlez-vous avec rage."
+  }
 ];
 
 // Helper function to get class from avatar path
@@ -184,6 +224,36 @@ const Home = () => {
                   </button>
                 ))}
               </div>
+              
+              {/* Character class description */}
+              {selectedAvatar && (
+                <div style={{ 
+                  marginTop: '1rem', 
+                  padding: '1rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.2)',
+                  border: '2px solid rgba(139, 92, 46, 0.5)',
+                  borderRadius: '8px',
+                  textAlign: 'center'
+                }}>
+                  <h3 style={{ 
+                    fontSize: '1.2em', 
+                    fontWeight: 'bold', 
+                    color: '#d4af37',
+                    marginBottom: '0.5rem',
+                    textShadow: '1px 1px 2px rgba(0,0,0,0.5)'
+                  }}>
+                    {selectedAvatar.class}
+                  </h3>
+                  <p style={{ 
+                    fontSize: '0.95em', 
+                    color: '#e0e0e0',
+                    fontStyle: 'italic',
+                    lineHeight: '1.4'
+                  }}>
+                    {selectedAvatar.description}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>
