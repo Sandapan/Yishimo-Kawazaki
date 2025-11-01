@@ -12,22 +12,29 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
-// Avatar images by role
+// Avatar images by role with their associated classes
 const SURVIVOR_AVATARS = [
-  "/avatars/Archère.png",
-  "/avatars/Assassin.png",
-  "/avatars/Barbare.png",
-  "/avatars/Barde.png",
-  "/avatars/Elfe.png",
-  "/avatars/Guerrier.png",
-  "/avatars/Mage.png"
+  { path: "/avatars/Archère.png", class: "Archère" },
+  { path: "/avatars/Assassin.png", class: "Assassin" },
+  { path: "/avatars/Barbare.png", class: "Barbare" },
+  { path: "/avatars/Barde.png", class: "Barde" },
+  { path: "/avatars/Elfe.png", class: "Elfe" },
+  { path: "/avatars/Guerrier.png", class: "Guerrier" },
+  { path: "/avatars/Mage.png", class: "Mage" }
 ];
 
 const KILLER_AVATARS = [
-  "/avatars/Orc Berzerker.png",
-  "/avatars/Orc Chaman.png",
-  "/avatars/Orc Roi.png"
+  { path: "/avatars/Orc Berzerker.png", class: "Orc Berzerker" },
+  { path: "/avatars/Orc Chaman.png", class: "Orc Chaman" },
+  { path: "/avatars/Orc Roi.png", class: "Orc Roi" }
 ];
+
+// Helper function to get class from avatar path
+const getAvatarClass = (avatarPath) => {
+  const allAvatars = [...SURVIVOR_AVATARS, ...KILLER_AVATARS];
+  const avatar = allAvatars.find(a => a.path === avatarPath);
+  return avatar ? avatar.class : null;
+};
 
 const FLOOR_NAMES = {
   "basement": "Sous-sol",
@@ -94,7 +101,7 @@ const Home = () => {
     try {
       const response = await axios.post(`${API}/game/create`, {
         host_name: playerName,
-        host_avatar: selectedAvatar,
+        host_avatar: selectedAvatar.path,  // MODIFIED: send path instead of full object
         role: selectedRole,
         conspiracy_mode: conspiracyMode // NEW: send conspiracy mode
       });
@@ -125,7 +132,7 @@ const Home = () => {
     try {
       const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
         player_name: playerName,
-        player_avatar: selectedAvatar,
+        player_avatar: selectedAvatar.path,  // MODIFIED: send path instead of full object
         role: selectedRole
       });
 
@@ -170,10 +177,10 @@ const Home = () => {
                   <button
                     key={idx}
                     data-testid={`avatar-option-${idx}`}
-                    className={`avatar-option ${selectedAvatar === avatar ? 'selected' : ''}`}
+                    className={`avatar-option ${selectedAvatar.path === avatar.path ? 'selected' : ''}`}
                     onClick={() => setSelectedAvatar(avatar)}
                   >
-                    <img src={avatar} alt={`Avatar ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    <img src={avatar.path} alt={`Avatar ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                   </button>
                 ))}
               </div>

@@ -31,25 +31,33 @@ ROOMS_CONFIG = {
     "upper_floor": ["Master Bedroom", "Guest Room", "Bathroom", "Attic"]
 }
 
-# Avatar images by role
+# Avatar images by role with their associated classes
 SURVIVOR_AVATARS = [
-    "/avatars/Archère.png",
-    "/avatars/Assassin.png",
-    "/avatars/Barbare.png",
-    "/avatars/Barde.png",
-    "/avatars/Elfe.png",
-    "/avatars/Guerrier.png",
-    "/avatars/Mage.png"
+    {"path": "/avatars/Archère.png", "class": "Archère"},
+    {"path": "/avatars/Assassin.png", "class": "Assassin"},
+    {"path": "/avatars/Barbare.png", "class": "Barbare"},
+    {"path": "/avatars/Barde.png", "class": "Barde"},
+    {"path": "/avatars/Elfe.png", "class": "Elfe"},
+    {"path": "/avatars/Guerrier.png", "class": "Guerrier"},
+    {"path": "/avatars/Mage.png", "class": "Mage"}
 ]
 
 KILLER_AVATARS = [
-    "/avatars/Orc Berzerker.png",
-    "/avatars/Orc Chaman.png",
-    "/avatars/Orc Roi.png"
+    {"path": "/avatars/Orc Berzerker.png", "class": "Orc Berzerker"},
+    {"path": "/avatars/Orc Chaman.png", "class": "Orc Chaman"},
+    {"path": "/avatars/Orc Roi.png", "class": "Orc Roi"}
 ]
 
 # All avatars (for validation)
 ALL_AVATARS = SURVIVOR_AVATARS + KILLER_AVATARS
+
+# Helper function to get class from avatar path
+def get_avatar_class(avatar_path: str) -> Optional[str]:
+    """Get the class associated with an avatar path"""
+    for avatar in ALL_AVATARS:
+        if avatar["path"] == avatar_path:
+            return avatar["class"]
+    return None
 
 # Models
 class CreateGameRequest(BaseModel):
@@ -102,6 +110,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "highlighted": False  # NEW: for vision power
         }
 
+    # Get character class from avatar
+    character_class = get_avatar_class(host_avatar)
+
     return {
         "session_id": generate_short_code(),  # MODIFIED: Use short code instead of UUID
         "host_id": host_id,
@@ -110,6 +121,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "id": host_id,
                 "name": host_name,
                 "avatar": host_avatar,
+                "character_class": character_class,  # NEW: character class based on avatar
                 "is_host": True,
                 "eliminated": False,
                 "current_room": None,
@@ -269,7 +281,7 @@ async def check_power_selection_complete(session_id: str):
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "killer_selection",
-            "message": f"🔪 Les tueurs sélectionnent leur pièce"
+            "message": "🔪 Les tueurs sélectionnent leur pièce"
         })
 
 async def apply_powers(session_id: str):
@@ -641,7 +653,7 @@ async def process_turn(session_id: str):
                 # Respawn the medikit
                 new_medikit_room = respawn_medikit(game)
                 if new_medikit_room:
-                    respawn_msg = f"🩺 Le medikit réapparaît quelque part dans la maison..."
+                    respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
                     game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                     await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
@@ -680,7 +692,7 @@ async def process_turn(session_id: str):
                     survivor["has_medikit"] = False
                     new_medikit_room = respawn_medikit(game)
                     if new_medikit_room:
-                        respawn_msg = f"🩺 Le medikit réapparaît quelque part dans la maison..."
+                        respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
                         game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                         await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
@@ -706,7 +718,7 @@ async def process_turn(session_id: str):
             if current_key_room:
                 new_key_room = place_next_key(game)
                 if new_key_room:
-                    event_msg = f"↩️ La clef s'est déplacée vers une nouvelle pièce !"
+                    event_msg = "↩️ La clef s'est déplacée vers une nouvelle pièce !"
                     game["events"].append({"message": event_msg, "type": "key_relocated"})
                     await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
 
@@ -805,10 +817,15 @@ async def join_game(session_id: str, request: JoinGameRequest):
         raise HTTPException(status_code=400, detail="Game is full")
 
     player_id = str(uuid.uuid4())
+    
+    # Get character class from avatar
+    character_class = get_avatar_class(request.player_avatar)
+    
     game["players"][player_id] = {
         "id": player_id,
         "name": request.player_name,
         "avatar": request.player_avatar,
+        "character_class": character_class,  # NEW: character class based on avatar
         "is_host": False,
         "eliminated": False,
         "current_room": None,
@@ -1114,7 +1131,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": f"🎴 Les tueurs choisissent leur pouvoir"
+                                "message": "🎴 Les tueurs choisissent leur pouvoir"
                             })
                     
                     # Broadcast updated state
@@ -1203,7 +1220,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": f"🎴 Les tueurs choisissent leur pouvoir"
+                                "message": "🎴 Les tueurs choisissent leur pouvoir"
                             })
 
                     elif game["phase"] == "killer_selection":
@@ -1307,7 +1324,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         # Respawn the medikit
                         new_medikit_room = respawn_medikit(game)
                         if new_medikit_room:
-                            respawn_msg = f"🩺 Le medikit réapparaît quelque part dans la maison..."
+                            respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
                             game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                             await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
@@ -1324,6 +1341,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 @api_router.get("/")
 async def root():
     return {"message": "Yishimo Kawazaki's Game API"}
+
+@api_router.get("/avatars")
+async def get_avatars():
+    """Get all available avatars with their classes"""
+    return {
+        "survivors": SURVIVOR_AVATARS,
+        "killers": KILLER_AVATARS
+    }
 
 # Include the router
 app.include_router(api_router)
