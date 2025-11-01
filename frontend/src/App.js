@@ -191,8 +191,8 @@ const Home = () => {
   return (
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
-        <h1 className="game-title" data-testid="game-title">Yishimo Kawazaki's Game</h1>
-        <p className="game-subtitle">Un jeu de survie coopératif</p>
+        <h1 className="game-title" data-testid="game-title">Le donjon</h1>
+        <p className="game-subtitle">Partez à l'aventure !</p>
 
         <Card className="setup-card">
           <CardHeader>
@@ -265,8 +265,8 @@ const Home = () => {
                   onClick={() => setSelectedRole('survivor')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">🛡️</span>
-                  <span className="role-name">Survivant</span>
+                  <span className="role-icon">⚔️</span>
+                  <span className="role-name">Aventurier</span>
                 </button>
                 <button
                   data-testid="role-killer-btn"
@@ -274,8 +274,8 @@ const Home = () => {
                   onClick={() => setSelectedRole('killer')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">🔪</span>
-                  <span className="role-name">Tueur</span>
+                  <span className="role-icon">🧌</span>
+                  <span className="role-name">Gardien</span>
                 </button>
               </div>
             </div>
@@ -425,7 +425,7 @@ const Lobby = () => {
           new_role: newRole
         }
       });
-      toast.success(`Rôle changé : ${newRole === "survivor" ? "🛡️ Survivant" : "🔪 Tueur"}`);
+      toast.success(`Rôle changé : ${newRole === "survivor" ? "⚔️ Aventurier" : "🧌 Gardien"}`);
     } catch (error) {
       console.error("Error changing role:", error);
       toast.error("Erreur lors du changement de rôle");
@@ -509,12 +509,12 @@ const Lobby = () => {
                     {/* MODIFIED: Non-clickable role badges */}
                     {!gameState.conspiracy_mode && player.role === "killer" && (
                       <span className="killer-badge">
-                        🔪 Tueur
+                        🧌 Gardien
                       </span>
                     )}
                     {!gameState.conspiracy_mode && player.role === "survivor" && (
                       <span className="survivor-badge">
-                        🛡️ Survivant
+                        ⚔️ Aventurier
                       </span>
                     )}
                     {/* NEW: Switch role button only for current player */}
@@ -898,9 +898,9 @@ const Game = () => {
 
     if (!isMyTurn) {
       if (currentPlayer.role === "survivor" && gameState.phase === "killer_selection") {
-        toast.error("C'est le tour des tueurs !");
+        toast.error("C'est le tour des gardiens !");
       } else if (currentPlayer.role === "killer" && gameState.phase === "survivor_selection") {
-        toast.error("C'est le tour des survivants !");
+        toast.error("C'est le tour des aventuriers !");
       }
       return;
     }
@@ -997,15 +997,15 @@ const Game = () => {
           <Card className="game-over-card" style={{ maxWidth: '500px' }}>
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
-                {assignedRole === "survivor" ? "🛡️" : "🔪"}
+                {assignedRole === "survivor" ? "⚔️" : "🧌"}
                 <span>Votre rôle</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center' }}>
                 {assignedRole === "survivor" 
-                  ? "Vous êtes survivant, trouvez les clefs et échappez-vous d'ici !" 
-                  : "Vous êtes tueur, trouvez les survivants et débarrassez-vous d'eux !"}
+                  ? "Vous êtes aventurier, trouvez les clefs et échappez-vous d'ici !" 
+                  : "Vous êtes gardien, trouvez les aventuriers et débarrassez-vous d'eux !"}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#888', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -1078,7 +1078,7 @@ const Game = () => {
           </div>
           {gameState.phase === "survivor_selection" && (
             <div className="phase-indicator survivor-phase" data-testid="phase-indicator">
-              🛡️ Tour des survivants
+              ⚔️ Tour des aventuriers
             </div>
           )}
           {gameState.phase === "killer_power_selection" && (
@@ -1088,7 +1088,7 @@ const Game = () => {
           )}
           {gameState.phase === "killer_selection" && (
             <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-              🔪 Tour des tueurs
+              🧌 Tour des gardiens
             </div>
           )}
           {gameState.phase === "processing" && (
@@ -1103,8 +1103,8 @@ const Game = () => {
             <img src={currentPlayer?.avatar} alt={currentPlayer?.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
           </span>
           <span className="player-name-display">{currentPlayer?.name}</span>
-          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
-          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
+          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🧌 Gardien</span>}
+          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">⚔️ Aventurier</span>}
           {currentPlayer?.has_medikit && <span className="medikit-badge">🩺</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
           {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
@@ -1139,8 +1139,8 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message">
                 {gameState.winner === "survivors"
-                  ? "Les survivants ont collecté toutes les clefs !"
-                  : "Les tueurs ont éliminé tous les survivants..."}
+                  ? "Les aventuriers ont collecté toutes les clefs !"
+                  : "Les gardiens ont éliminé tous les aventuriers..."}
               </p>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
                 <Button
@@ -1176,7 +1176,7 @@ const Game = () => {
       <div className="game-main">
         {/* Map Section */}
         <div className="map-section">
-          <h3 className="map-title">Carte de la maison</h3>
+          <h3 className="map-title">Plan du donjon</h3>
 
           {["upper_floor", "ground_floor", "basement"].map((floor) => (
             <div key={floor} className="floor-section">
@@ -1306,8 +1306,8 @@ const Game = () => {
                       <img src={player.avatar} alt={player.name} style={{ width: '1.8rem', height: '1.8rem', objectFit: 'contain' }} />
                     </span>
                     <span className="status-name">{player.name}</span>
-                    {player.role === "killer" && <span className="status-role killer">🔪</span>}
-                    {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
+                    {player.role === "killer" && <span className="status-role killer">🧌</span>}
+                    {player.role === "survivor" && <span className="status-role survivor">⚔️</span>}
                     {player.has_medikit && <span className="status-medikit">🩺</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                   </div>

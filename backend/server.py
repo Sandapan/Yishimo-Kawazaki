@@ -26,9 +26,9 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 
 # Game configuration
 ROOMS_CONFIG = {
-    "basement": ["Cave", "Wine Cellar", "Boiler Room", "Storage"],
-    "ground_floor": ["Kitchen", "Living Room", "Dining Room", "Hallway"],
-    "upper_floor": ["Master Bedroom", "Guest Room", "Bathroom", "Attic"]
+    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Runes"],
+    "ground_floor": ["Hall principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
+    "upper_floor": ["Chambre du Roi", "Observatoire", "Salle des Miroirs", "Sanctuaire"]
 }
 
 # Avatar images by role with their associated classes
