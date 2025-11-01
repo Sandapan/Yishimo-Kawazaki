@@ -26,9 +26,9 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 
 # Game configuration
 ROOMS_CONFIG = {
-    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Runes"],
-    "ground_floor": ["Hall principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
-    "upper_floor": ["Chambre du Roi", "Observatoire", "Salle des Miroirs", "Sanctuaire"]
+    "basement": ["Cave", "Wine Cellar", "Boiler Room", "Storage"],
+    "ground_floor": ["Kitchen", "Living Room", "Dining Room", "Hallway"],
+    "upper_floor": ["Master Bedroom", "Guest Room", "Bathroom", "Attic"]
 }
 
 # Avatar images by role with their associated classes
@@ -1020,6 +1020,42 @@ async def change_role(session_id: str, player_id: str, new_role: str):
     })
     
     return {"status": "success", "new_role": new_role}
+
+@api_router.post("/game/{session_id}/update_player")
+async def update_player(session_id: str, player_id: str, request: JoinGameRequest):
+    """Update player's avatar and role in the lobby"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+    
+    if game["game_started"]:
+        raise HTTPException(status_code=400, detail="Cannot update player during game")
+    
+    if player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    if request.role not in ["survivor", "killer"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    # Get character class from new avatar
+    character_class = get_avatar_class(request.player_avatar)
+    
+    # Update the player's profile
+    game["players"][player_id]["name"] = request.player_name
+    game["players"][player_id]["avatar"] = request.player_avatar
+    game["players"][player_id]["character_class"] = character_class
+    game["players"][player_id]["role"] = request.role
+    
+    logger.info(f"Player {player_id} updated profile in session {session_id}")
+    
+    # Broadcast player update to all players
+    await broadcast_to_session(session_id, {
+        "type": "player_updated",
+        "player": game["players"][player_id]
+    })
+    
+    return {"status": "success", "player_id": player_id}
 
 # WebSocket endpoint
 @app.websocket("/api/ws/{session_id}/{player_id}")

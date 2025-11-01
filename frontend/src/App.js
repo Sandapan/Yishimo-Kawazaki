@@ -125,6 +125,31 @@ const Home = () => {
   // Get available avatars based on selected role
   const availableAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
 
+  // Check if returning from lobby to change role/avatar
+  useEffect(() => {
+    const returningFromLobby = localStorage.getItem('returning_from_lobby');
+    const pendingSessionId = localStorage.getItem('pending_session_id');
+    const currentPlayerName = localStorage.getItem('player_name');
+
+    if (returningFromLobby === 'true' && pendingSessionId) {
+      // Pre-fill the form with existing data
+      setJoinSessionId(pendingSessionId);
+      if (currentPlayerName) {
+        setPlayerName(currentPlayerName);
+      }
+      
+      // Mark that we're updating an existing player
+      localStorage.setItem('is_updating_player', 'true');
+      
+      // Show info message
+      toast.info("Choisissez un nouveau rôle et avatar pour rejoindre le lobby");
+      
+      // Clean up the flags
+      localStorage.removeItem('returning_from_lobby');
+      localStorage.removeItem('pending_session_id');
+    }
+  }, []);
+
   // Update selected avatar when role changes
   useEffect(() => {
     const newAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
@@ -170,16 +195,39 @@ const Home = () => {
 
     setIsJoining(true);
     try {
-      const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
-        player_name: playerName,
-        player_avatar: selectedAvatar.path,  // MODIFIED: send path instead of full object
-        role: selectedRole
-      });
+      const existingPlayerId = localStorage.getItem('player_id');
+      const isUpdatingPlayer = localStorage.getItem('is_updating_player') === 'true';
+      
+      // If we're updating an existing player (coming back from lobby)
+      if (isUpdatingPlayer && existingPlayerId) {
+        await axios.post(`${API}/game/${joinSessionId}/update_player`, {
+          player_name: playerName,
+          player_avatar: selectedAvatar.path,
+          role: selectedRole
+        }, {
+          params: {
+            player_id: existingPlayerId
+          }
+        });
+        
+        // Keep the same player_id
+        localStorage.setItem('player_name', playerName);
+        localStorage.removeItem('is_updating_player');
+        toast.success("Profil mis à jour !");
+        navigate(`/lobby/${joinSessionId}`);
+      } else {
+        // Normal join for a new player
+        const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
+          player_name: playerName,
+          player_avatar: selectedAvatar.path,
+          role: selectedRole
+        });
 
-      const { session_id, player_id } = response.data;
-      localStorage.setItem('player_id', player_id);
-      localStorage.setItem('player_name', playerName);
-      navigate(`/lobby/${session_id}`);
+        const { session_id, player_id } = response.data;
+        localStorage.setItem('player_id', player_id);
+        localStorage.setItem('player_name', playerName);
+        navigate(`/lobby/${session_id}`);
+      }
     } catch (error) {
       console.error("Error joining game:", error);
       toast.error("Erreur : session introuvable ou partie déjà commencée");
@@ -191,8 +239,8 @@ const Home = () => {
   return (
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
-        <h1 className="game-title" data-testid="game-title">Le donjon</h1>
-        <p className="game-subtitle">Partez à l'aventure !</p>
+        <h1 className="game-title" data-testid="game-title">Yishimo Kawazaki's Game</h1>
+        <p className="game-subtitle">Un jeu de survie coopératif</p>
 
         <Card className="setup-card">
           <CardHeader>
@@ -265,8 +313,8 @@ const Home = () => {
                   onClick={() => setSelectedRole('survivor')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">⚔️</span>
-                  <span className="role-name">Aventurier</span>
+                  <span className="role-icon">🛡️</span>
+                  <span className="role-name">Survivant</span>
                 </button>
                 <button
                   data-testid="role-killer-btn"
@@ -274,8 +322,8 @@ const Home = () => {
                   onClick={() => setSelectedRole('killer')}
                   disabled={conspiracyMode}
                 >
-                  <span className="role-icon">🧌</span>
-                  <span className="role-name">Gardien</span>
+                  <span className="role-icon">🔪</span>
+                  <span className="role-name">Tueur</span>
                 </button>
               </div>
             </div>
@@ -380,6 +428,9 @@ const Lobby = () => {
         fetchGameState();
       } else if (data.type === "role_changed") {
         toast.info(`${data.player_name} a changé de rôle`);
+      } else if (data.type === "player_updated") {
+        toast.info(`${data.player.name} a mis à jour son profil`);
+        fetchGameState();
       }
     };
 
@@ -403,8 +454,8 @@ const Lobby = () => {
     }
   };
 
-  // NEW: Change role function
-  const changeRole = async (targetPlayerId, currentRole) => {
+  // MODIFIED: Redirect to role selection instead of changing role directly
+  const changeRole = (targetPlayerId, currentRole) => {
     // Only allow changing own role
     if (targetPlayerId !== playerId) {
       return;
@@ -416,20 +467,17 @@ const Lobby = () => {
       return;
     }
     
-    const newRole = currentRole === "survivor" ? "killer" : "survivor";
+    // Store the session ID for rejoining after role/avatar selection
+    localStorage.setItem('returning_from_lobby', 'true');
+    localStorage.setItem('pending_session_id', sessionId);
     
-    try {
-      await axios.post(`${API}/game/${sessionId}/change_role`, null, {
-        params: {
-          player_id: targetPlayerId,
-          new_role: newRole
-        }
-      });
-      toast.success(`Rôle changé : ${newRole === "survivor" ? "⚔️ Aventurier" : "🧌 Gardien"}`);
-    } catch (error) {
-      console.error("Error changing role:", error);
-      toast.error("Erreur lors du changement de rôle");
+    // Close WebSocket connection before leaving
+    if (ws.current) {
+      ws.current.close();
     }
+    
+    // Navigate back to home for role/avatar selection
+    navigate('/');
   };
 
   // MODIFIED: Copy function with fallback
@@ -509,20 +557,20 @@ const Lobby = () => {
                     {/* MODIFIED: Non-clickable role badges */}
                     {!gameState.conspiracy_mode && player.role === "killer" && (
                       <span className="killer-badge">
-                        🧌 Gardien
+                        🔪 Tueur
                       </span>
                     )}
                     {!gameState.conspiracy_mode && player.role === "survivor" && (
                       <span className="survivor-badge">
-                        ⚔️ Aventurier
+                        🛡️ Survivant
                       </span>
                     )}
-                    {/* NEW: Switch role button only for current player */}
+                    {/* MODIFIED: Button to return to role/avatar selection */}
                     {!gameState.conspiracy_mode && isCurrentPlayer && (
                       <button
                         className="switch-role-btn"
                         onClick={() => changeRole(player.id, player.role)}
-                        title="Changer de rôle"
+                        title="Changer de rôle et d'avatar"
                         data-testid="switch-role-btn"
                       >
                         🔄
@@ -898,9 +946,9 @@ const Game = () => {
 
     if (!isMyTurn) {
       if (currentPlayer.role === "survivor" && gameState.phase === "killer_selection") {
-        toast.error("C'est le tour des gardiens !");
+        toast.error("C'est le tour des tueurs !");
       } else if (currentPlayer.role === "killer" && gameState.phase === "survivor_selection") {
-        toast.error("C'est le tour des aventuriers !");
+        toast.error("C'est le tour des survivants !");
       }
       return;
     }
@@ -997,15 +1045,15 @@ const Game = () => {
           <Card className="game-over-card" style={{ maxWidth: '500px' }}>
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
-                {assignedRole === "survivor" ? "⚔️" : "🧌"}
+                {assignedRole === "survivor" ? "🛡️" : "🔪"}
                 <span>Votre rôle</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center' }}>
                 {assignedRole === "survivor" 
-                  ? "Vous êtes aventurier, trouvez les clefs et échappez-vous d'ici !" 
-                  : "Vous êtes gardien, trouvez les aventuriers et débarrassez-vous d'eux !"}
+                  ? "Vous êtes survivant, trouvez les clefs et échappez-vous d'ici !" 
+                  : "Vous êtes tueur, trouvez les survivants et débarrassez-vous d'eux !"}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#888', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -1078,7 +1126,7 @@ const Game = () => {
           </div>
           {gameState.phase === "survivor_selection" && (
             <div className="phase-indicator survivor-phase" data-testid="phase-indicator">
-              ⚔️ Tour des aventuriers
+              🛡️ Tour des survivants
             </div>
           )}
           {gameState.phase === "killer_power_selection" && (
@@ -1088,7 +1136,7 @@ const Game = () => {
           )}
           {gameState.phase === "killer_selection" && (
             <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-              🧌 Tour des gardiens
+              🔪 Tour des tueurs
             </div>
           )}
           {gameState.phase === "processing" && (
@@ -1103,8 +1151,8 @@ const Game = () => {
             <img src={currentPlayer?.avatar} alt={currentPlayer?.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
           </span>
           <span className="player-name-display">{currentPlayer?.name}</span>
-          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🧌 Gardien</span>}
-          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">⚔️ Aventurier</span>}
+          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
+          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
           {currentPlayer?.has_medikit && <span className="medikit-badge">🩺</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
           {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
@@ -1139,8 +1187,8 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message">
                 {gameState.winner === "survivors"
-                  ? "Les aventuriers ont collecté toutes les clefs !"
-                  : "Les gardiens ont éliminé tous les aventuriers..."}
+                  ? "Les survivants ont collecté toutes les clefs !"
+                  : "Les tueurs ont éliminé tous les survivants..."}
               </p>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
                 <Button
@@ -1176,7 +1224,7 @@ const Game = () => {
       <div className="game-main">
         {/* Map Section */}
         <div className="map-section">
-          <h3 className="map-title">Plan du donjon</h3>
+          <h3 className="map-title">Carte de la maison</h3>
 
           {["upper_floor", "ground_floor", "basement"].map((floor) => (
             <div key={floor} className="floor-section">
@@ -1306,8 +1354,8 @@ const Game = () => {
                       <img src={player.avatar} alt={player.name} style={{ width: '1.8rem', height: '1.8rem', objectFit: 'contain' }} />
                     </span>
                     <span className="status-name">{player.name}</span>
-                    {player.role === "killer" && <span className="status-role killer">🧌</span>}
-                    {player.role === "survivor" && <span className="status-role survivor">⚔️</span>}
+                    {player.role === "killer" && <span className="status-role killer">🔪</span>}
+                    {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
                     {player.has_medikit && <span className="status-medikit">🩺</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                   </div>
