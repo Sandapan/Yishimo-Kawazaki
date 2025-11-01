@@ -77,9 +77,9 @@ const getAvatarClass = (avatarPath) => {
 };
 
 const FLOOR_NAMES = {
-  "basement": "Sous-sol",
-  "ground_floor": "Rez-de-chaussée",
-  "upper_floor": "Étage"
+  "basement": "🕳️ Sous-sol",
+  "ground_floor": "🏰 Rez-de-chaussée",
+  "upper_floor": "🕯️ Étage"
 };
 
 // MODIFIED: Helper function to copy text with fallback

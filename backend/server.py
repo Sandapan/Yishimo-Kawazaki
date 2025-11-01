@@ -26,9 +26,9 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 
 # Game configuration
 ROOMS_CONFIG = {
-    "basement": ["Cave", "Wine Cellar", "Boiler Room", "Storage"],
-    "ground_floor": ["Kitchen", "Living Room", "Dining Room", "Hallway"],
-    "upper_floor": ["Master Bedroom", "Guest Room", "Bathroom", "Attic"]
+    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Runes"],
+    "ground_floor": ["Hall principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
+    "upper_floor": ["Chambre du Roi", "Observatoire", "Salle des Miroirs", "Sanctuaire"]
 }
 
 # Avatar images by role with their associated classes
@@ -290,9 +290,9 @@ async def apply_powers(session_id: str):
     game["active_powers"] = {}
     
     floor_names = {
-        "basement": "au sous-sol",
-        "ground_floor": "au rez-de-chaussée",
-        "upper_floor": "à l'étage"
+        "basement": "🕳️ Sous-sol",
+        "ground_floor": "🏰 Rez-de-chaussée",
+        "upper_floor": "🕯️ Étage"
     }
     
     for player_id, selection in game["pending_power_selections"].items():
@@ -575,9 +575,9 @@ async def process_turn(session_id: str):
             killers_actions[player_id] = action
 
     floor_names = {
-        "basement": "au sous-sol",
-        "ground_floor": "au rez-de-chaussée",
-        "upper_floor": "à l'étage"
+        "basement": "🕳️ Sous-sol",
+        "ground_floor": "🏰 Rez-de-chaussée",
+        "upper_floor": "🕯️ Étage"
     }
 
     # ============================================
@@ -1073,9 +1073,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
     active_connections[session_id][player_id] = websocket
 
     floor_names = {
-        "basement": "au sous-sol",
-        "ground_floor": "au rez-de-chaussée",
-        "upper_floor": "à l'étage"
+        "basement": "🕳️ Sous-sol",
+        "ground_floor": "🏰 Rez-de-chaussée",
+        "upper_floor": "🕯️ Étage"
     }
 
     try:
@@ -1404,3 +1404,4 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+s
