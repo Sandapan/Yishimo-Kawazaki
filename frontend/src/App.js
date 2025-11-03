@@ -1225,7 +1225,13 @@ const Game = () => {
       <div className="game-main">
         {/* Map Section */}
         <div className="map-section">
-          <h3 className="map-title">Carte de la maison</h3>
+          <div className="map-title-image-container">
+            <img 
+              src="https://customer-assets.emergentagent.com/job_22c98cef-8e46-4a3c-b053-dd9b7974c6d7/artifacts/kpq9i7pa_carte%20du%20donjon.png" 
+              alt="Carte du donjon" 
+              className="map-title-image"
+            />
+          </div>
 
           {["upper_floor", "ground_floor", "basement"].map((floor) => (
             <div key={floor} className="floor-section">

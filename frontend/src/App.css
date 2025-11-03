@@ -8,12 +8,12 @@
 
 body {
   font-family: 'Roboto', sans-serif;
-  background: linear-gradient(180deg, #1a1410 0%, #2d2419 50%, #1a1410 100%);
+  background: #1a1410;
   color: #e8dcc4;
   min-height: 100vh;
-  background-image: 
-    repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(0, 0, 0, 0.1) 2px, rgba(0, 0, 0, 0.1) 4px),
-    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 0, 0, 0.1) 2px, rgba(0, 0, 0, 0.1) 4px);
+  background-image: url('https://customer-assets.emergentagent.com/job_22c98cef-8e46-4a3c-b053-dd9b7974c6d7/artifacts/yqtdkc57_wallbackground.png');
+  background-repeat: repeat;
+  background-size: auto;
 }
 
 .App {
@@ -565,6 +565,21 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.map-title-image-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.map-title-image {
+  max-width: 400px;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(2px 2px 8px rgba(0, 0, 0, 0.5));
 }
 
 .map-title {
