@@ -239,8 +239,8 @@ const Home = () => {
   return (
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
-        <h1 className="game-title" data-testid="game-title">Yishimo Kawazaki's Game</h1>
-        <p className="game-subtitle">Un jeu de survie coopératif</p>
+        <h1 className="game-title" data-testid="game-title">Le Donjon</h1>
+        <p className="game-subtitle">Qui conservera les joyaux de la couronne ?</p>
 
         <Card className="setup-card">
           <CardHeader>
@@ -710,6 +710,7 @@ const PowerSelectionOverlay = ({
                         return (
                           <button
                             key={roomName}
+                            data-room-name={roomName}
                             className={`room-mini-btn ${isSelected ? 'selected' : ''} ${isLocked ? 'locked' : ''}`}
                             onClick={() => !isLocked && handleRoomSelection(roomName)}
                             disabled={isLocked}
@@ -1261,6 +1262,7 @@ const Game = () => {
                     <button
                       key={room.name}
                       data-testid={`room-${room.name.replace(/\s+/g, '-').toLowerCase()}`}
+                      data-room-name={room.name}
                       className={`room-card ${
                         selectedRoom === room.name ? 'selected' :
                         room.locked ? 'locked' : ''

@@ -27,7 +27,7 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 # Game configuration
 ROOMS_CONFIG = {
     "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Ruines"],
-    "ground_floor": ["Hall principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
+    "ground_floor": ["Hall Principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
     "upper_floor": ["Chambre Cérémoniale", "Laboratoire", "Salle des Miroirs", "Sanctuaire"]
 }
 
