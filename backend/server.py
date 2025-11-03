@@ -26,9 +26,9 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 
 # Game configuration
 ROOMS_CONFIG = {
-    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Runes"],
+    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Ruines"],
     "ground_floor": ["Hall principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
-    "upper_floor": ["Chambre du Roi", "Observatoire", "Salle des Miroirs", "Sanctuaire"]
+    "upper_floor": ["Chambre Cérémoniale", "Laboratoire", "Salle des Miroirs", "Sanctuaire"]
 }
 
 # Avatar images by role with their associated classes
@@ -1134,6 +1134,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "room": room_name
                     }
                     
+                    # LOG: Player room selection (immobilized case)
+                    logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}' (immobilisé)")
+                    
                     # Notify the player they've passed their turn
                     await websocket.send_json({
                         "type": "turn_skipped",
@@ -1201,6 +1204,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "action": "select_room",
                         "room": room_name
                     }
+                    
+                    # LOG: Player room selection
+                    logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}'")
 
                     # DISABLED: Sound clue functionality kept for Traque power
                     # The get_survivor_floor_hints() function can be used when Traque is activated
