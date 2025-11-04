@@ -17,37 +17,44 @@ const SURVIVOR_AVATARS = [
   { 
     path: "/avatars/Archère.png", 
     class: "Archère",
-    description: "Ses flèches atteignent les cibles les plus éloignées avec une précision redoutable…"
+    description: "Ses flèches atteignent les cibles les plus éloignées avec une précision redoutable…",
+    illustration: "/illustrations/Archère.png"
   },
   { 
     path: "/avatars/Assassin.png", 
     class: "Assassin",
-    description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé."
+    description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé.",
+    illustration: "/illustrations/Assassin.png"
   },
   { 
     path: "/avatars/Barbare.png", 
     class: "Barbare",
-    description: "Un vrai bourrin qui résout tous les problèmes à coups de hache. Même ceux qui demandent juste un peu de diplomatie."
+    description: "Un vrai bourrin qui résout tous les problèmes à coups de hache. Même ceux qui demandent juste un peu de diplomatie.",
+    illustration: "/illustrations/Barbare.png"
   },
   { 
     path: "/avatars/Barde.png", 
     class: "Barde",
-    description: "Le musicien raté du groupe. Son instrument ? Une arme sonore capable d'endormir certaines créatures."
+    description: "Le musicien raté du groupe. Son instrument ? Une arme sonore capable d'endormir certaines créatures.",
+    illustration: "/illustrations/Barde.png"
   },
   { 
     path: "/avatars/Elfe.png", 
     class: "Elfe",
-    description: "Elle seule sait lire l'elfique. Ça tombe bien : elle ne sait lire que ça."
+    description: "Elle seule sait lire l'elfique. Ça tombe bien : elle ne sait lire que ça.",
+    illustration: "/illustrations/Elfe.png"
   },
   { 
     path: "/avatars/Guerrier.png", 
     class: "Guerrier",
-    description: "Vaillant et téméraire, il est élu de cette aventure. Enfin ça c'est ce qu'il croit."
+    description: "Vaillant et téméraire, il est élu de cette aventure. Enfin ça c'est ce qu'il croit.",
+    illustration: "/illustrations/Guerrier.png"
   },
   { 
     path: "/avatars/Mage.png", 
     class: "Mage",
-    description: "Son bâton magique peut incendier certains décors… parfois même sa propre barbe."
+    description: "Son bâton magique peut incendier certains décors… parfois même sa propre barbe.",
+    illustration: "/illustrations/Mage.png"
   }
 ];
 
@@ -55,17 +62,20 @@ const KILLER_AVATARS = [
   { 
     path: "/avatars/Orc Berzerker.png", 
     class: "Orc Berzerker",
-    description: "Votre soif de vengeance n'a d'yeux que pour ces sales petits voleurs. Et parfois, pour le buffet après la bataille."
+    description: "Votre soif de vengeance n'a d'yeux que pour ces sales petits voleurs. Et parfois, pour le buffet après la bataille.",
+    illustration: "/illustrations/Orc Berzerker.png"
   },
   { 
     path: "/avatars/Orc Chaman.png", 
     class: "Orc Chaman",
-    description: "Traquer les intrus, très peu pour vous. Vous préférez laisser ce travail à vos morts-vivants — ils sont bien moins bavards."
+    description: "Traquer les intrus, très peu pour vous. Vous préférez laisser ce travail à vos morts-vivants — ils sont bien moins bavards.",
+    illustration: "/illustrations/Orc Chaman.png"
   },
   { 
     path: "/avatars/Orc Roi.png", 
     class: "Orc Roi",
-    description: "« Rendez les bijoux de la couronne ! Bande de losers, de voleurs, de crapules !» hurlez-vous avec rage."
+    description: "« Rendez les bijoux de la couronne ! Bande de losers, de voleurs, de crapules !» hurlez-vous avec rage.",
+    illustration: "/illustrations/Orc Roi.png"
   }
 ];
 
@@ -292,6 +302,32 @@ const Home = () => {
                   }}>
                     {selectedAvatar.class}
                   </h3>
+                  
+                  {/* Character illustration */}
+                  {selectedAvatar.illustration && (
+                    <div 
+                      key={selectedAvatar.class}
+                      className="character-illustration-enter"
+                      style={{
+                        margin: '1rem auto',
+                        maxWidth: '400px',
+                        borderRadius: '8px',
+                        overflow: 'hidden',
+                        boxShadow: '0 4px 8px rgba(0,0,0,0.3)'
+                      }}
+                    >
+                      <img 
+                        src={selectedAvatar.illustration} 
+                        alt={`Illustration de ${selectedAvatar.class}`}
+                        style={{
+                          width: '100%',
+                          height: 'auto',
+                          display: 'block'
+                        }}
+                      />
+                    </div>
+                  )}
+                  
                   <p style={{ 
                     fontSize: '0.95em', 
                     color: '#e0e0e0',
