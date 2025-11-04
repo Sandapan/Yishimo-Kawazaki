@@ -255,6 +255,37 @@ def get_random_powers(exclude_powers: list = []) -> list:
     available = [p for p in POWERS.keys() if p not in exclude_powers]
     return random.sample(available, min(3, len(available)))
 
+def validate_game_start(game: dict) -> tuple[bool, Optional[str]]:
+    """
+    Validate if game can start based on player roles and classes.
+    Returns: (is_valid, error_message)
+    """
+    players = game["players"]
+    
+    # Count players by role
+    survivors = [p for p in players.values() if p["role"] == "survivor"]
+    killers = [p for p in players.values() if p["role"] == "killer"]
+    
+    # Check 1: At least 1 survivor
+    if len(survivors) < 1:
+        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 survivant."
+    
+    # Check 2: At least 1 killer
+    if len(killers) < 1:
+        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 tueur."
+    
+    # Check 3: No duplicate classes among survivors
+    survivor_classes = []
+    for survivor in survivors:
+        char_class = survivor.get("character_class")
+        if char_class:
+            if char_class in survivor_classes:
+                return False, f"❌ La partie ne peut pas démarrer : il existe un doublon de classe chez les survivants ({char_class}). Chaque survivant doit avoir une classe unique."
+            survivor_classes.append(char_class)
+    
+    # All checks passed
+    return True, None
+
 async def check_power_selection_complete(session_id: str):
     """Check if all killers have completed their power selection"""
     game = game_sessions[session_id]
@@ -895,6 +926,12 @@ async def start_game(session_id: str):
                 game["players"][player_id]["role"] = "killer"
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers")
+
+    # Validate game can start (after role assignment in conspiracy mode)
+    is_valid, error_message = validate_game_start(game)
+    if not is_valid:
+        logger.warning(f"Game start validation failed: {error_message}")
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Count survivors (only survivors need to collect keys)
     survivors = [p for p in game["players"].values() if p["role"] == "survivor"]

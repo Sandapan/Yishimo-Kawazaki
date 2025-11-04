@@ -486,7 +486,15 @@ const Lobby = () => {
       await axios.post(`${API}/game/${sessionId}/start`);
     } catch (error) {
       console.error("Error starting game:", error);
-      toast.error("Erreur lors du démarrage");
+      
+      // Display specific error message from backend
+      const errorMessage = error.response?.data?.detail || "Erreur lors du démarrage";
+      toast.error(errorMessage, {
+        duration: 5000, // Show for 5 seconds
+        style: {
+          maxWidth: '500px'
+        }
+      });
     }
   };
 
