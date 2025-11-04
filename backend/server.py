@@ -897,7 +897,7 @@ async def start_game(session_id: str):
         logger.error(f"Game already started: {session_id}")
         raise HTTPException(status_code=400, detail="Game already started")
 
-    # NEW: Handle conspiracy mode - randomly assign roles
+    # NEW: Handle conspiracy mode - randomly assign roles AND classes
     if game.get("conspiracy_mode", False):
         player_count = len(game["players"])
         
@@ -918,14 +918,40 @@ async def start_game(session_id: str):
         player_ids = list(game["players"].keys())
         random.shuffle(player_ids)
         
-        # Assign roles
+        # Shuffle available avatars for unique assignment
+        available_survivor_avatars = SURVIVOR_AVATARS.copy()
+        random.shuffle(available_survivor_avatars)
+        
+        available_killer_avatars = KILLER_AVATARS.copy()
+        
+        survivor_index = 0
+        killer_index = 0
+        
+        # Assign roles AND unique classes
         for i, player_id in enumerate(player_ids):
             if i < distribution["survivors"]:
+                # Assign survivor role
                 game["players"][player_id]["role"] = "survivor"
+                
+                # Assign unique survivor avatar and class
+                if survivor_index < len(available_survivor_avatars):
+                    avatar_data = available_survivor_avatars[survivor_index]
+                    game["players"][player_id]["avatar"] = avatar_data["path"]
+                    game["players"][player_id]["character_class"] = avatar_data["class"]
+                    survivor_index += 1
+                    logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
+                # Assign killer role
                 game["players"][player_id]["role"] = "killer"
+                
+                # Assign killer avatar (can be duplicate)
+                avatar_data = random.choice(available_killer_avatars)
+                game["players"][player_id]["avatar"] = avatar_data["path"]
+                game["players"][player_id]["character_class"] = avatar_data["class"]
+                killer_index += 1
+                logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
-        logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers")
+        logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers with unique survivor classes")
 
     # Validate game can start (after role assignment in conspiracy mode)
     is_valid, error_message = validate_game_start(game)
