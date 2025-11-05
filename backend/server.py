@@ -137,7 +137,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "keys_needed": 1,
         "game_started": False,
         "turn": 0,
-        "phase": "waiting",  # waiting, survivor_selection, killer_power_selection, killer_selection, processing, game_over
+        "phase": "waiting",  # waiting, survivor_selection, killer_power_selection, killer_selection, processing, game_over, rage_second_selection
         "events": [],
         "pending_actions": {},
         "should_place_next_key": False,
@@ -148,6 +148,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "quests": [],  # NEW: list of all quests to complete
         "active_quest": None,  # NEW: current active quest {class: "Mage", room: "Les Cryptes"}
         "completed_quests": [],  # NEW: list of completed quest classes
+        "rage_second_chances": {},  # NEW: {killer_id: {"can_select": True/False, "room_selected": None}}
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -280,9 +281,10 @@ POWERS = {
     },
     "traque": {
         "name": "🔊 Traque",
-        "description": "Notifie les tueurs dans le journal d'événement de la présence de joueurs survivants selon l'étage",
+        "description": "Choisissez un niveau (sous-sol, rez-de-chaussée ou étage) et découvrez si des survivants s'y cachent",
         "icon": "traque.svg",
-        "requires_action": False
+        "requires_action": True,
+        "action_type": "select_floor"  # select one floor
     },
     "barricade": {
         "name": "🔒 Barricade",
@@ -291,6 +293,12 @@ POWERS = {
         "requires_action": True,
         "action_type": "select_rooms",  # select 2 rooms
         "rooms_count": 2
+    },
+    "rage": {
+        "name": "😡 Rage",
+        "description": "Si vous trouvez un survivant en fouillant une pièce, vous pouvez fouiller une seconde pièce ce tour-ci",
+        "icon": "rage.svg",
+        "requires_action": False
     }
 }
 
@@ -477,14 +485,25 @@ async def apply_powers(session_id: str):
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
         elif power_name == "traque":
-            # Get floor hints and send to killers
-            floor_hints = get_survivor_floor_hints(game)
+            # Get selected floor from action_data
+            action_data = selection.get("action_data", {})
+            selected_floor = action_data.get("floor")
             
-            for floor, names in floor_hints.items():
-                floor_name_fr = floor_names.get(floor, floor)
-                sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}..."
-                game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
-                await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+            if selected_floor:
+                # Get floor hints for all survivors
+                floor_hints = get_survivor_floor_hints(game)
+                
+                # Check if any survivors are on the selected floor
+                if selected_floor in floor_hints:
+                    floor_name_fr = floor_names.get(selected_floor, selected_floor)
+                    sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}... Des survivants sont présents !"
+                    game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                    await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+                else:
+                    floor_name_fr = floor_names.get(selected_floor, selected_floor)
+                    sound_event_msg = f"🤫 Aucun bruit {floor_name_fr}... Aucun survivant détecté."
+                    game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                    await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
             
             event_msg = f"🔊 {player['name']} utilise Traque !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
@@ -498,6 +517,17 @@ async def apply_powers(session_id: str):
             game["active_powers"][power_name]["data"]["locked_rooms_next_turn"] = locked_rooms
             
             event_msg = f"🔒 {player['name']} utilise Barricade !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "rage":
+            # Mark that this killer has rage power active for this turn
+            game["active_powers"][power_name]["data"][player_id] = {
+                "has_second_chance": False,
+                "used_second_chance": False
+            }
+            
+            event_msg = f"😡 {player['name']} utilise Rage !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
@@ -654,12 +684,6 @@ async def process_turn(session_id: str):
         elif player["role"] == "killer" and not player["eliminated"]:
             killers_actions[player_id] = action
 
-    floor_names = {
-        "basement": "🕳️ Sous-sol",
-        "ground_floor": "🏰 Rez-de-chaussée",
-        "upper_floor": "🕯️ Étage"
-    }
-
     # ============================================
     # PHASE 1: SURVIVORS PLAY FIRST
     # ============================================
@@ -788,11 +812,13 @@ async def process_turn(session_id: str):
 
     # Check for eliminations (killers finding survivors in same room)
     eliminated_rooms = []
+    killers_with_rage_second_chance = {}  # {killer_id: True} for killers who get a second chance
 
     for killer_id, killer_action in killers_actions.items():
         killer = game["players"][killer_id]
         killer_room = killer["current_room"]
 
+        found_survivor = False
         # Check if any survivors are in the same room
         for survivor_id, survivor in game["players"].items():
             if (survivor["role"] == "survivor" and
@@ -803,6 +829,7 @@ async def process_turn(session_id: str):
                 survivor["eliminated"] = True
                 game["rooms"][killer_room]["eliminated_players"].append(survivor_id)
                 eliminated_rooms.append(killer_room)
+                found_survivor = True
 
                 event_msg = f"💀 {survivor['name']} a été éliminé dans {killer_room} !"
                 game["events"].append({"message": event_msg, "type": "elimination"})
@@ -816,6 +843,24 @@ async def process_turn(session_id: str):
                         respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
                         game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                         await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
+        
+        # Check if this killer has rage power and found a survivor
+        if found_survivor and "rage" in game.get("active_powers", {}):
+            rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
+            if rage_data and not rage_data.get("used_second_chance", False):
+                # Grant second chance to this killer
+                killers_with_rage_second_chance[killer_id] = True
+                rage_data["has_second_chance"] = True
+                
+                # Notify killer they get a second chance
+                if killer_id in active_connections.get(session_id, {}):
+                    try:
+                        await active_connections[session_id][killer_id].send_json({
+                            "type": "rage_second_chance",
+                            "message": "😡 Rage activé ! Vous pouvez fouiller une seconde pièce !"
+                        })
+                    except:
+                        pass
 
     # Lock rooms where eliminations occurred
     for room_name in set(eliminated_rooms):
@@ -823,6 +868,25 @@ async def process_turn(session_id: str):
         event_msg = f"⚠️ La pièce {room_name} est condamnée pour ce tour."
         game["events"].append({"message": event_msg, "type": "room_locked"})
         await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Check if any killers with rage have second chances
+    if killers_with_rage_second_chance:
+        # Set up the rage second selection phase
+        game["rage_second_chances"] = {}
+        for killer_id in killers_with_rage_second_chance.keys():
+            game["rage_second_chances"][killer_id] = {
+                "can_select": True,
+                "room_selected": None
+            }
+        
+        # Change phase to rage second selection
+        game["phase"] = "rage_second_selection"
+        await broadcast_to_session(session_id, {
+            "type": "phase_change",
+            "phase": "rage_second_selection",
+            "message": "😡 Tueurs en rage - Sélectionnez une seconde pièce !"
+        })
+        return  # Exit early, will continue after second room selections
     
     # Apply Secousse power: relocate key if not found this turn
     if not key_found_this_turn and "secousse" in game.get("active_powers", {}):
@@ -893,6 +957,108 @@ async def process_turn(session_id: str):
             "phase": "survivor_selection",
             "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
         })
+
+async def process_rage_second_selections(session_id: str):
+    """Process second room selections for killers with rage power"""
+    game = game_sessions[session_id]
+    
+    # Get all second room selections
+    for killer_id, rage_data in game["rage_second_chances"].items():
+        second_room = rage_data.get("room_selected")
+        if not second_room:
+            continue
+        
+        killer = game["players"][killer_id]
+        
+        # Move killer to second room
+        killer["current_room"] = second_room
+        
+        # Check for eliminations in second room
+        eliminated_in_second_room = []
+        for survivor_id, survivor in game["players"].items():
+            if (survivor["role"] == "survivor" and
+                not survivor["eliminated"] and
+                survivor["current_room"] == second_room):
+                
+                # Eliminate the survivor
+                survivor["eliminated"] = True
+                game["rooms"][second_room]["eliminated_players"].append(survivor_id)
+                eliminated_in_second_room.append(survivor_id)
+                
+                event_msg = f"💀😡 {survivor['name']} a été éliminé dans {second_room} (Rage) !"
+                game["events"].append({"message": event_msg, "type": "elimination"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+                
+                # If survivor had medikit, destroy it and respawn a new one
+                if survivor["has_medikit"]:
+                    survivor["has_medikit"] = False
+                    new_medikit_room = respawn_medikit(game)
+                    if new_medikit_room:
+                        respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
+                        game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
+                        await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
+        
+        # Lock second room if eliminations occurred
+        if eliminated_in_second_room:
+            game["rooms"][second_room]["locked"] = True
+            event_msg = f"⚠️ La pièce {second_room} est condamnée pour ce tour."
+            game["events"].append({"message": event_msg, "type": "room_locked"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Clear rage second chances
+    game["rage_second_chances"] = {}
+    
+    # Check victory conditions again
+    alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    # Victory for survivors: all quests completed
+    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0:
+        game["phase"] = "game_over"
+        game["winner"] = "survivors"
+        
+        # Send different messages based on role
+        survivor_msg = "🎉 VICTOIRE ! Les survivants ont collecté toutes les clefs !"
+        killer_msg = "🎉 DEFAITE ! Les survivants ont collecté toutes les clefs !"
+        
+        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+        
+        # Send to survivors
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": survivor_msg}, role_filter="survivor")
+        # Send to killers
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": killer_msg}, role_filter="killer")
+    
+    elif len(alive_survivors) == 0:
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        # Send different messages based on role
+        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        
+        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+        
+        # Send to survivors
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+        # Send to killers
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+    
+    else:
+        # Next turn - Start with survivors selection
+        game["turn"] += 1
+        game["phase"] = "survivor_selection"
+        game["pending_actions"] = {}
+        # Clear active powers
+        game["active_powers"] = {}
+        game["pending_power_selections"] = {}
+        await broadcast_to_session(session_id, {
+            "type": "new_turn",
+            "turn": game["turn"],
+            "phase": "survivor_selection",
+            "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+        })
+
 
 # REST API Endpoints
 @api_router.post("/game/create")
@@ -1077,7 +1243,7 @@ async def start_game(session_id: str):
         "type": "game_started",
         "keys_needed": game["keys_needed"],
         "phase": "survivor_selection",
-        "message": f"🎮 Le jeu commence ! Les survivants doivent chacun compléter leur quête pour gagner. Tour 1 - Les survivants sélectionnent leur pièce."
+        "message": "🎮 Le jeu commence ! Les survivants doivent chacun compléter leur quête pour gagner. Tour 1 - Les survivants sélectionnent leur pièce."
     })
 
     return {"status": "started"}
@@ -1244,12 +1410,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
     active_connections[session_id][player_id] = websocket
 
-    floor_names = {
-        "basement": "🕳️ Sous-sol",
-        "ground_floor": "🏰 Rez-de-chaussée",
-        "upper_floor": "🕯️ Étage"
-    }
-
     try:
         # Send current game state (filtered by player role only during active game)
         game = game_sessions[session_id]
@@ -1363,8 +1523,36 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 # Check if it's the player's turn based on their role and current phase (AFTER immobilization check)
                 if player["role"] == "survivor" and game["phase"] != "survivor_selection":
                     continue
-                if player["role"] == "killer" and game["phase"] != "killer_selection":
+                if player["role"] == "killer" and game["phase"] not in ["killer_selection", "rage_second_selection"]:
                     continue
+                
+                # Handle rage second selection differently
+                if game["phase"] == "rage_second_selection":
+                    # Only killers with rage second chance can select
+                    if player_id not in game.get("rage_second_chances", {}):
+                        continue
+                    
+                    if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
+                        game["rage_second_chances"][player_id]["room_selected"] = room_name
+                        game["rage_second_chances"][player_id]["can_select"] = False
+                        
+                        # LOG: Rage second room selection
+                        logger.info(f"😡 {player['name']} a choisi la seconde pièce '{room_name}' (Rage)")
+                        
+                        # Check if all killers with rage have selected their second room
+                        all_selected = all(not data["can_select"] for data in game["rage_second_chances"].values())
+                        
+                        if all_selected:
+                            # Process rage second selections
+                            game["phase"] = "processing"
+                            await process_rage_second_selections(session_id)
+                        
+                        # Broadcast updated state
+                        await broadcast_to_session(session_id, {
+                            "type": "state_update",
+                            "game": game_sessions[session_id]
+                        })
+                        continue
                 
                 if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
                     game["pending_actions"][player_id] = {

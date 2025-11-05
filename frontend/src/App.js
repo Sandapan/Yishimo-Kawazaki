@@ -659,6 +659,7 @@ const PowerSelectionOverlay = ({
   powerActionData 
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
+  const [selectedFloor, setSelectedFloor] = useState(null);
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
@@ -696,6 +697,10 @@ const PowerSelectionOverlay = ({
     }
   };
   
+  const handleFloorSelection = (floor) => {
+    setSelectedFloor(floor);
+  };
+  
   const canConfirmAction = () => {
     if (actionType === "select_rooms_per_floor") {
       // Must select from at least one floor
@@ -703,6 +708,9 @@ const PowerSelectionOverlay = ({
     } else if (actionType === "select_rooms") {
       // Must select exactly the required number
       return tempRoomSelections.length === (selectedPowerDef.rooms_count || 2);
+    } else if (actionType === "select_floor") {
+      // Must select one floor
+      return selectedFloor !== null;
     }
     return false;
   };
@@ -734,50 +742,82 @@ const PowerSelectionOverlay = ({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-center mb-4">
-              {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
-              {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
-            </p>
-            
-            <div className="rooms-selection-grid">
-              {["upper_floor", "ground_floor", "basement"].map(floor => (
-                <div key={floor} className="floor-section-mini">
-                  <h4>{FLOOR_NAMES[floor]}</h4>
-                  <div className="rooms-mini-grid">
-                    {Object.entries(gameState.rooms)
-                      .filter(([_, data]) => data.floor === floor)
-                      .map(([roomName, roomData]) => {
-                        const isSelected = tempRoomSelections.includes(roomName);
-                        const isLocked = roomData.locked;
-                        const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
-                        
-                        return (
-                          <button
-                            key={roomName}
-                            data-room-name={roomName}
-                            className={`room-mini-btn ${isSelected ? 'selected' : ''} ${isLocked ? 'locked' : ''}`}
-                            onClick={() => !isLocked && handleRoomSelection(roomName)}
-                            disabled={isLocked}
-                          >
-                            {roomName}
-                            {isSelected && " ✓"}
-                            {isTrapped && " 🕸️"}
-                          </button>
-                        );
-                      })}
-                  </div>
+            {actionType === "select_floor" ? (
+              <>
+                <p className="text-center mb-4">Choisissez un niveau à traquer:</p>
+                <div className="floor-selection-buttons" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {["upper_floor", "ground_floor", "basement"].map(floor => (
+                    <Button
+                      key={floor}
+                      onClick={() => handleFloorSelection(floor)}
+                      className="w-full"
+                      style={{
+                        backgroundColor: selectedFloor === floor ? '#8b5cf6' : '#555',
+                        padding: '1.5rem',
+                        fontSize: '1.2rem'
+                      }}
+                    >
+                      {FLOOR_NAMES[floor]} {selectedFloor === floor && " ✓"}
+                    </Button>
+                  ))}
                 </div>
-              ))}
-            </div>
-            
-            <Button
-              onClick={() => confirmPowerAction({ rooms: tempRoomSelections })}
-              disabled={!canConfirmAction()}
-              className="w-full mt-4"
-              style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
-            >
-              Confirmer
-            </Button>
+                <Button
+                  onClick={() => confirmPowerAction({ floor: selectedFloor })}
+                  disabled={!canConfirmAction()}
+                  className="w-full mt-4"
+                  style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
+                >
+                  Confirmer
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-center mb-4">
+                  {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
+                  {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
+                </p>
+                
+                <div className="rooms-selection-grid">
+                  {["upper_floor", "ground_floor", "basement"].map(floor => (
+                    <div key={floor} className="floor-section-mini">
+                      <h4>{FLOOR_NAMES[floor]}</h4>
+                      <div className="rooms-mini-grid">
+                        {Object.entries(gameState.rooms)
+                          .filter(([_, data]) => data.floor === floor)
+                          .map(([roomName, roomData]) => {
+                            const isSelected = tempRoomSelections.includes(roomName);
+                            const isLocked = roomData.locked;
+                            const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
+                            
+                            return (
+                              <button
+                                key={roomName}
+                                data-room-name={roomName}
+                                className={`room-mini-btn ${isSelected ? 'selected' : ''} ${isLocked ? 'locked' : ''}`}
+                                onClick={() => !isLocked && handleRoomSelection(roomName)}
+                                disabled={isLocked}
+                              >
+                                {roomName}
+                                {isSelected && " ✓"}
+                                {isTrapped && " 🕸️"}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                <Button
+                  onClick={() => confirmPowerAction({ rooms: tempRoomSelections })}
+                  disabled={!canConfirmAction()}
+                  className="w-full mt-4"
+                  style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
+                >
+                  Confirmer
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -942,12 +982,22 @@ const Game = () => {
       } else if (data.type === "phase_change") {
         setHasSelectedRoom(false);
         setSelectedRoom(null);
-        if (data.phase !== "killer_power_selection") {
+        if (data.phase !== "killer_power_selection" && data.phase !== "rage_second_selection") {
           setSelectedPower(null);
           setPowerActionData(null);
           setShowPowerAction(false);
         }
         toast.info(data.message);
+      } else if (data.type === "rage_second_chance") {
+        // Killer gets a second chance to select a room
+        toast.success(data.message, {
+          duration: 5000,
+          style: {
+            backgroundColor: '#dc2626',
+            color: 'white',
+            fontSize: '1.2rem'
+          }
+        });
       } else if (data.type === "game_over") {
         toast.success(data.message);
       } else if (data.type === "key_found_popup") {
@@ -972,10 +1022,7 @@ const Game = () => {
         setWrongClassMessage(data.message);
         setRequiredClassImage(data.required_class_image);
         setShowWrongClassPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowWrongClassPopup(false);
-        }, 5000);
+        // No auto-hide, user must click to close
       } else if (data.type === "player_action") {
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
