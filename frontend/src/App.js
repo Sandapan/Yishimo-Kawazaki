@@ -1062,10 +1062,10 @@ const Game = () => {
     if (!currentPlayer) return;
 
     const isMyTurn = (currentPlayer.role === "survivor" && gameState.phase === "survivor_selection") ||
-                     (currentPlayer.role === "killer" && gameState.phase === "killer_selection");
+                     (currentPlayer.role === "killer" && (gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection"));
 
     if (!isMyTurn) {
-      if (currentPlayer.role === "survivor" && gameState.phase === "killer_selection") {
+      if (currentPlayer.role === "survivor" && (gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection")) {
         toast.error("C'est le tour des tueurs !");
       } else if (currentPlayer.role === "killer" && gameState.phase === "survivor_selection") {
         toast.error("C'est le tour des survivants !");
@@ -1345,7 +1345,7 @@ const Game = () => {
           <span className="player-name-display">{currentPlayer?.name}</span>
           {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
           {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
-          {currentPlayer?.has_medikit && <span className="medikit-badge">🩺</span>}
+          {currentPlayer?.has_medikit && <span className="medikit-badge">⚗️</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
           {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
         </div>
@@ -1434,7 +1434,7 @@ const Game = () => {
 
                   // During survivor_selection or killer_selection phase, show who is selecting this room
                   // Only show players of the same role as current player
-                  if (gameState.phase === "survivor_selection" || gameState.phase === "killer_selection" || gameState.phase === "processing") {
+                  if (gameState.phase === "survivor_selection" || gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection" || gameState.phase === "processing") {
                     // Get all players whose pending action is to go to this room AND have the same role as current player
                     playersSelectingThisRoom = Object.entries(gameState.pending_actions || {})
                       .filter(([pid, action]) => {
@@ -1555,7 +1555,7 @@ const Game = () => {
                     <span className="status-name">{player.name}</span>
                     {player.role === "killer" && <span className="status-role killer">🔪</span>}
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
-                    {player.has_medikit && <span className="status-medikit">🩺</span>}
+                    {player.has_medikit && <span className="status-medikit">⚗️</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                   </div>
                 ))}

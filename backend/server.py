@@ -777,7 +777,7 @@ async def process_turn(session_id: str):
         if room["has_medikit"]:
             room["has_medikit"] = False
             player["has_medikit"] = True
-            event_msg = f"🩺 {player['name']} a trouvé le medikit et en est désormais le porteur."
+            event_msg = f"⚗️ {player['name']} a trouvé la potion de résurrection et en est désormais le porteur."
             game["events"].append({"message": event_msg, "type": "medikit_found"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
 
@@ -798,7 +798,7 @@ async def process_turn(session_id: str):
                 # Respawn the medikit
                 new_medikit_room = respawn_medikit(game)
                 if new_medikit_room:
-                    respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
+                    respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
                     game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                     await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
@@ -840,7 +840,7 @@ async def process_turn(session_id: str):
                     survivor["has_medikit"] = False
                     new_medikit_room = respawn_medikit(game)
                     if new_medikit_room:
-                        respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
+                        respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
                         game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                         await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
         
@@ -994,7 +994,7 @@ async def process_rage_second_selections(session_id: str):
                     survivor["has_medikit"] = False
                     new_medikit_room = respawn_medikit(game)
                     if new_medikit_room:
-                        respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
+                        respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
                         game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                         await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
         
