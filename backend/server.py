@@ -107,7 +107,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "locked": False,
             "eliminated_players": [],
             "trapped": False,  # NEW: for piege power
-            "highlighted": False  # NEW: for vision power
+            "highlighted": False,  # NEW: for vision power
+            "has_quest": False,  # NEW: for quest system
+            "quest_class": None  # NEW: class required for the quest
         }
 
     # Get character class from avatar
@@ -143,15 +145,57 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "active_powers": {},  # NEW: {power_name: {used_by: [player_ids], data: {...}}}
         "pending_power_selections": {},  # NEW: {player_id: {selected_power: str, options: [str], action_data: {...}}}
         "rooms_searched_this_key": [],  # NEW: track rooms searched since last key found (for vision power)
+        "quests": [],  # NEW: list of all quests to complete
+        "active_quest": None,  # NEW: current active quest {class: "Mage", room: "Les Cryptes"}
+        "completed_quests": [],  # NEW: list of completed quest classes
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
-def place_next_key(game_state: dict) -> Optional[str]:
-    """Place ONE key randomly in an available room"""
+def generate_quests(survivors: list) -> list:
+    """Generate a randomized list of quests based on survivor classes"""
+    quests = []
+    for survivor in survivors:
+        if survivor.get("character_class"):
+            quests.append({
+                "class": survivor["character_class"],
+                "player_id": survivor["id"],
+                "player_name": survivor["name"]
+            })
+    
+    # Randomize quest order
+    random.shuffle(quests)
+    return quests
+
+def place_quest(game_state: dict, quest_class: str) -> Optional[str]:
+    """Place a quest in a random available room"""
     available_rooms = []
 
     # Get all killer positions
-    killer_positions = [p["current_room"] for p in game_state["players"].values()\
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        # Room is available if: not locked, no quest already, not a killer's position
+        if (not room_data["locked"] and
+            not room_data.get("has_quest", False) and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_quest"] = True
+        game_state["rooms"][selected_room]["quest_class"] = quest_class
+        logger.info(f"Placed quest for class {quest_class} in room: {selected_room}")
+        return selected_room
+
+    return None
+
+def place_next_key(game_state: dict) -> Optional[str]:
+    """Place ONE key randomly in an available room (legacy function kept for compatibility)"""
+    available_rooms = []
+
+    # Get all killer positions
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
                        if p["role"] == "killer" and p["current_room"]]
 
     for room_name, room_data in game_state["rooms"].items():
@@ -624,43 +668,84 @@ async def process_turn(session_id: str):
     for player_id, action in survivors_actions.items():
         game["players"][player_id]["current_room"] = action["room"]
 
-    # Survivors interact with rooms (keys, medikits, auto-revival)
+    # Survivors interact with rooms (quests, medikits, auto-revival)
     for player_id, action in survivors_actions.items():
         player = game["players"][player_id]
         room = game["rooms"][action["room"]]
 
-        # Check for key
-        if room["has_key"]:
-            room["has_key"] = False
-            game["keys_collected"] += 1
-            keys_left = game["keys_needed"] - game["keys_collected"]
-            event_msg = f"🔑 {player['name']} a trouvé une clef ! Il reste {keys_left} clef(s) à trouver."
-            game["events"].append({"message": event_msg, "type": "key_found", "for_role": "survivor"})
-            # Notify only survivors about key found
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+        # Check for quest
+        if room.get("has_quest", False) and room.get("quest_class"):
+            quest_class = room["quest_class"]
+            player_class = player.get("character_class")
             
-            # Send popup notification to the player who found the key
-            if player_id in active_connections.get(session_id, {}):
-                try:
-                    await active_connections[session_id][player_id].send_json({
-                        "type": "key_found_popup",
-                        "message": f"Vous avez trouvé une clef ! Plus que {keys_left} clef(s) pour vous enfuir !",
-                        "keys_left": keys_left
-                    })
-                except:
-                    pass
-            
-            key_found_this_turn = True
-            # Reset rooms searched for Vision power
-            game["rooms_searched_this_key"] = []
+            if player_class == quest_class:
+                # Correct class! Quest completed
+                room["has_quest"] = False
+                room["quest_class"] = None
+                game["completed_quests"].append(quest_class)
+                game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
+                
+                quests_left = game["keys_needed"] - len(game["completed_quests"])
+                event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
+                game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
+                # Notify only survivors about quest completed
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                
+                # Send video popup to the player who completed the quest
+                if player_id in active_connections.get(session_id, {}):
+                    try:
+                        video_path = f"/event/{quest_class}.mp4"
+                        await active_connections[session_id][player_id].send_json({
+                            "type": "quest_completed_popup",
+                            "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
+                            "video_path": video_path,
+                            "quests_left": quests_left
+                        })
+                    except:
+                        pass
+                
+                key_found_this_turn = True
+                # Reset rooms searched for Vision power
+                game["rooms_searched_this_key"] = []
+                game["active_quest"] = None
 
-            # Set flag to place next key
-            if game["keys_collected"] < game["keys_needed"]:
-                game["should_place_next_key"] = True
+                # Place next quest if there are more to complete
+                if len(game["completed_quests"]) < len(game["quests"]):
+                    # Find the next quest to place
+                    next_quest_index = len(game["completed_quests"])
+                    next_quest = game["quests"][next_quest_index]
+                    next_quest_room = place_quest(game, next_quest["class"])
+                    if next_quest_room:
+                        game["active_quest"] = {
+                            "class": next_quest["class"],
+                            "room": next_quest_room,
+                            "player_id": next_quest["player_id"],
+                            "player_name": next_quest["player_name"]
+                        }
+                        logger.info(f"Next quest placed for {next_quest['class']} in: {next_quest_room}")
+            else:
+                # Wrong class! Show required class popup
+                if player_id in active_connections.get(session_id, {}):
+                    try:
+                        required_class_image = f"/requis/{quest_class}-requis.png"
+                        await active_connections[session_id][player_id].send_json({
+                            "type": "wrong_class_popup",
+                            "message": f"Cette quête nécessite la classe {quest_class}.",
+                            "required_class": quest_class,
+                            "required_class_image": required_class_image
+                        })
+                    except:
+                        pass
+                
+                # Log that a survivor tried but wrong class - only visible to survivors
+                event_msg = f"🔍 {player['name']} explore {action['room']} mais ne peut pas accomplir cette quête."
+                game["events"].append({"message": event_msg, "type": "search_wrong_class", "for_role": "survivor"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
         else:
+            # No quest in this room
             # Log unsuccessful search - only visible to survivors
-            event_msg = f"🔍 {player['name']} fouille {action['room']} mais ne trouve aucune clef."
-            game["events"].append({"message": event_msg, "type": "search_no_key", "for_role": "survivor"})
+            event_msg = f"🔍 {player['name']} fouille {action['room']} mais ne trouve rien de particulier."
+            game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
             # Notify only survivors about unsuccessful search
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
 
@@ -761,7 +846,8 @@ async def process_turn(session_id: str):
     # Check victory conditions
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
 
-    if game["keys_collected"] >= game["keys_needed"] and len(alive_survivors) > 0:
+    # Victory for survivors: all quests completed
+    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0:
         game["phase"] = "game_over"
         game["winner"] = "survivors"
 
@@ -959,16 +1045,29 @@ async def start_game(session_id: str):
         logger.warning(f"Game start validation failed: {error_message}")
         raise HTTPException(status_code=400, detail=error_message)
 
-    # Count survivors (only survivors need to collect keys)
+    # Count survivors (only survivors need to complete quests)
     survivors = [p for p in game["players"].values() if p["role"] == "survivor"]
-    game["keys_needed"] = len(survivors)
+    game["keys_needed"] = len(survivors)  # Keep for compatibility with frontend display
     game["game_started"] = True
     game["phase"] = "survivor_selection"  # Start with survivors
     game["turn"] = 1
 
-    # Place the FIRST key at game start
-    first_key_room = place_next_key(game)
-    logger.info(f"First key placed in: {first_key_room}")
+    # Generate quests for all survivors
+    game["quests"] = generate_quests(survivors)
+    logger.info(f"Generated {len(game['quests'])} quests: {[q['class'] for q in game['quests']]}")
+
+    # Place the FIRST quest at game start
+    if game["quests"]:
+        first_quest = game["quests"][0]
+        first_quest_room = place_quest(game, first_quest["class"])
+        if first_quest_room:
+            game["active_quest"] = {
+                "class": first_quest["class"],
+                "room": first_quest_room,
+                "player_id": first_quest["player_id"],
+                "player_name": first_quest["player_name"]
+            }
+            logger.info(f"First quest placed for {first_quest['class']} in: {first_quest_room}")
 
     # Place the FIRST medikit at game start
     medikit_room = respawn_medikit(game)
@@ -978,7 +1077,7 @@ async def start_game(session_id: str):
         "type": "game_started",
         "keys_needed": game["keys_needed"],
         "phase": "survivor_selection",
-        "message": f"🎮 Le jeu commence ! Les survivants doivent collecter {game['keys_needed']} clefs pour gagner. Tour 1 - Les survivants sélectionnent leur pièce."
+        "message": f"🎮 Le jeu commence ! Les survivants doivent chacun compléter leur quête pour gagner. Tour 1 - Les survivants sélectionnent leur pièce."
     })
 
     return {"status": "started"}
@@ -1027,6 +1126,8 @@ async def reset_game(session_id: str):
         room_data["trapped"] = False  # NEW: reset traps
         room_data["highlighted"] = False  # NEW: reset highlights
         room_data.pop("trap_triggered", None)  # NEW: remove trap_triggered
+        room_data["has_quest"] = False  # NEW: reset quests
+        room_data["quest_class"] = None  # NEW: reset quest class
     
     # Reset game state
     game["keys_collected"] = 0
@@ -1037,6 +1138,9 @@ async def reset_game(session_id: str):
     game["events"] = []
     game["pending_actions"] = {}
     game["should_place_next_key"] = False
+    game["quests"] = []  # NEW: reset quests
+    game["active_quest"] = None  # NEW: reset active quest
+    game["completed_quests"] = []  # NEW: reset completed quests
     game["active_powers"] = {}  # NEW: reset powers
     game["pending_power_selections"] = {}  # NEW: reset power selections
     game["rooms_searched_this_key"] = []  # NEW: reset searched rooms

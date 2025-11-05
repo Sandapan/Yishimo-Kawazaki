@@ -851,6 +851,16 @@ const Game = () => {
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
   const [keyFoundMessage, setKeyFoundMessage] = useState("");
   
+  // NEW: Quest completed popup state (with video)
+  const [showQuestCompletedPopup, setShowQuestCompletedPopup] = useState(false);
+  const [questCompletedMessage, setQuestCompletedMessage] = useState("");
+  const [questVideoPath, setQuestVideoPath] = useState("");
+  
+  // NEW: Wrong class popup state (with image)
+  const [showWrongClassPopup, setShowWrongClassPopup] = useState(false);
+  const [wrongClassMessage, setWrongClassMessage] = useState("");
+  const [requiredClassImage, setRequiredClassImage] = useState("");
+  
   // NEW: Trap popup state
   const [showTrapPopup, setShowTrapPopup] = useState(false);
   
@@ -947,6 +957,24 @@ const Game = () => {
         // Auto-hide after 5 seconds
         setTimeout(() => {
           setShowKeyFoundPopup(false);
+        }, 5000);
+      } else if (data.type === "quest_completed_popup") {
+        // Show popup with video for quest completed
+        setQuestCompletedMessage(data.message);
+        setQuestVideoPath(data.video_path);
+        setShowQuestCompletedPopup(true);
+        // Auto-hide after video ends (assuming ~10 seconds)
+        setTimeout(() => {
+          setShowQuestCompletedPopup(false);
+        }, 10000);
+      } else if (data.type === "wrong_class_popup") {
+        // Show popup with image for wrong class
+        setWrongClassMessage(data.message);
+        setRequiredClassImage(data.required_class_image);
+        setShowWrongClassPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowWrongClassPopup(false);
         }, 5000);
       } else if (data.type === "player_action") {
         toast.info(data.message);
@@ -1153,6 +1181,78 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
                 C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Quest Completed Popup with Video */}
+      {showQuestCompletedPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowQuestCompletedPopup(false)}
+          data-testid="quest-completed-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a5934', borderColor: '#4ade80' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#4ade80' }}>
+                ✅
+                <span>Quête complétée !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {questVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowQuestCompletedPopup(false), 1000)}
+                >
+                  <source src={questVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {questCompletedMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Wrong Class Popup with Image */}
+      {showWrongClassPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowWrongClassPopup(false)}
+          data-testid="wrong-class-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a3a2a', borderColor: '#f59e0b' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#f59e0b' }}>
+                ⚠️
+                <span>Classe requise</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {requiredClassImage && (
+                <img 
+                  src={requiredClassImage} 
+                  alt="Classe requise" 
+                  style={{ width: '100%', maxHeight: '300px', objectFit: 'contain', borderRadius: '8px', marginBottom: '1rem' }}
+                />
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {wrongClassMessage}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
