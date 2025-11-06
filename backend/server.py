@@ -109,7 +109,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "trapped": False,  # NEW: for piege power
             "highlighted": False,  # NEW: for vision power
             "has_quest": False,  # NEW: for quest system
-            "quest_class": None  # NEW: class required for the quest
+            "quest_class": None,  # NEW: class required for the quest
+            "poisoned_turns_remaining": 0  # NEW: for toxine power (0-3 turns)
         }
 
     # Get character class from avatar
@@ -129,7 +130,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "current_room": None,
                 "has_medikit": False,
                 "role": host_role,  # "survivor" or "killer"
-                "immobilized_next_turn": False  # NEW: for piege power
+                "immobilized_next_turn": False,  # NEW: for piege power
+                "poisoned_countdown": 0  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
             }
         },
         "rooms": rooms_state,
@@ -278,6 +280,13 @@ POWERS = {
         "icon": "Embuscade.mp4",
         "requires_action": True,
         "action_type": "select_rooms_per_floor"  # select one room per floor
+    },
+    "toxine": {
+        "name": "😷 Toxine",
+        "description": "Diffusez un gaz toxique dans une pièce sur plusieurs tours, empoisonnant tout aventurier y pénétrant",
+        "icon": "Toxine.mp4",
+        "requires_action": True,
+        "action_type": "select_room"  # select one room
     },
     "traque": {
         "name": "🔊 Traque",
@@ -481,6 +490,20 @@ async def apply_powers(session_id: str):
             game["active_powers"][power_name]["data"]["trapped_rooms"] = trapped_rooms
             
             event_msg = f"🕸️ {player['name']} utilise Embuscade !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "toxine":
+            # Poison selected room for 3 turns
+            action_data = selection.get("action_data", {})
+            poisoned_room = action_data.get("room")
+            
+            if poisoned_room and poisoned_room in game["rooms"]:
+                game["rooms"][poisoned_room]["poisoned_turns_remaining"] = 3
+            
+            game["active_powers"][power_name]["data"]["poisoned_room"] = poisoned_room
+            
+            event_msg = f"😷 {player['name']} utilise Toxine !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
@@ -869,6 +892,45 @@ async def process_turn(session_id: str):
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
 
     else:
+        # Handle toxine countdowns before next turn
+        # Decrement room poison durations
+        for room_name, room_data in game["rooms"].items():
+            if room_data.get("poisoned_turns_remaining", 0) > 0:
+                room_data["poisoned_turns_remaining"] -= 1
+        
+        # Decrement player poison countdowns and check for elimination
+        players_to_eliminate = []
+        for player_id, player in game["players"].items():
+            if player["role"] == "survivor" and not player["eliminated"]:
+                poison_countdown = player.get("poisoned_countdown", 0)
+                if poison_countdown > 0:
+                    player["poisoned_countdown"] -= 1
+                    
+                    # Check if player suffocates
+                    if player["poisoned_countdown"] == 0:
+                        players_to_eliminate.append(player_id)
+                    else:
+                        # Send notification to poisoned survivor about remaining turns
+                        if player_id in active_connections.get(session_id, {}):
+                            try:
+                                await active_connections[session_id][player_id].send_json({
+                                    "type": "poison_countdown",
+                                    "countdown": player["poisoned_countdown"],
+                                    "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                                })
+                            except:
+                                pass
+        
+        # Eliminate poisoned players
+        for player_id in players_to_eliminate:
+            player = game["players"][player_id]
+            player["eliminated"] = True
+            player["poisoned_countdown"] = 0
+            
+            event_msg = f"💀 {player['name']} a succombé au poison toxique !"
+            game["events"].append({"message": event_msg, "type": "player_eliminated"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+        
         # Next turn - Start with survivors selection
         game["turn"] += 1
         game["phase"] = "survivor_selection"
@@ -970,6 +1032,45 @@ async def process_rage_second_selections(session_id: str):
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
     
     else:
+        # Handle toxine countdowns before next turn
+        # Decrement room poison durations
+        for room_name, room_data in game["rooms"].items():
+            if room_data.get("poisoned_turns_remaining", 0) > 0:
+                room_data["poisoned_turns_remaining"] -= 1
+        
+        # Decrement player poison countdowns and check for elimination
+        players_to_eliminate = []
+        for player_id, player in game["players"].items():
+            if player["role"] == "survivor" and not player["eliminated"]:
+                poison_countdown = player.get("poisoned_countdown", 0)
+                if poison_countdown > 0:
+                    player["poisoned_countdown"] -= 1
+                    
+                    # Check if player suffocates
+                    if player["poisoned_countdown"] == 0:
+                        players_to_eliminate.append(player_id)
+                    else:
+                        # Send notification to poisoned survivor about remaining turns
+                        if player_id in active_connections.get(session_id, {}):
+                            try:
+                                await active_connections[session_id][player_id].send_json({
+                                    "type": "poison_countdown",
+                                    "countdown": player["poisoned_countdown"],
+                                    "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                                })
+                            except:
+                                pass
+        
+        # Eliminate poisoned players
+        for player_id in players_to_eliminate:
+            player = game["players"][player_id]
+            player["eliminated"] = True
+            player["poisoned_countdown"] = 0
+            
+            event_msg = f"💀 {player['name']} a succombé au poison toxique !"
+            game["events"].append({"message": event_msg, "type": "player_eliminated"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+        
         # Next turn - Start with survivors selection
         game["turn"] += 1
         game["phase"] = "survivor_selection"
@@ -1044,7 +1145,8 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "current_room": None,
         "has_medikit": False,
         "role": request.role,  # "survivor" or "killer"
-        "immobilized_next_turn": False  # NEW: for piege power
+        "immobilized_next_turn": False,  # NEW: for piege power
+        "poisoned_countdown": 0  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
     }
 
     # Broadcast new player joined
@@ -1207,6 +1309,7 @@ async def reset_game(session_id: str):
         player["current_room"] = None
         player["has_medikit"] = False
         player["immobilized_next_turn"] = False  # NEW: reset immobilization
+        player["poisoned_countdown"] = 0  # NEW: reset poison
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
@@ -1217,6 +1320,7 @@ async def reset_game(session_id: str):
         room_data["trapped"] = False  # NEW: reset traps
         room_data["highlighted"] = False  # NEW: reset highlights
         room_data.pop("trap_triggered", None)  # NEW: remove trap_triggered
+        room_data["poisoned_turns_remaining"] = 0  # NEW: reset poison
         room_data["has_quest"] = False  # NEW: reset quests
         room_data["quest_class"] = None  # NEW: reset quest class
     
@@ -1513,6 +1617,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "type": "trapped_notification",
                             "message": "🕸️ C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci."
                         })
+                    
+                    # Check if survivor enters poisoned room
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("poisoned_turns_remaining", 0) > 0:
+                        # Only poison if not already poisoned
+                        if player.get("poisoned_countdown", 0) == 0:
+                            player["poisoned_countdown"] = 10
+                            
+                            # Send poisoned notification immediately to the survivor
+                            await websocket.send_json({
+                                "type": "poisoned_notification",
+                                "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
+                                "countdown": 10
+                            })
                     
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":

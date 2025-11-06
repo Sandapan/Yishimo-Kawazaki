@@ -686,6 +686,9 @@ const PowerSelectionOverlay = ({
       } else {
         setTempRoomSelections([...tempRoomSelections, roomName]);
       }
+    } else if (actionType === "select_room") {
+      // Toxine: 1 room
+      setTempRoomSelections([roomName]);
     } else if (actionType === "select_rooms") {
       // Barricade: 2 rooms
       const roomsCount = selectedPowerDef.rooms_count || 2;
@@ -907,6 +910,10 @@ const Game = () => {
   // NEW: Trap popup state
   const [showTrapPopup, setShowTrapPopup] = useState(false);
   
+  // NEW: Poison popup state
+  const [showPoisonPopup, setShowPoisonPopup] = useState(false);
+  const [poisonMessage, setPoisonMessage] = useState("");
+  
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -973,6 +980,20 @@ const Game = () => {
         setTimeout(() => {
           setShowTrapPopup(false);
         }, 5000);
+      } else if (data.type === "poisoned_notification") {
+        // NEW: Show poison popup for survivor who entered poisoned room
+        setPoisonMessage(data.message);
+        setShowPoisonPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowPoisonPopup(false);
+        }, 5000);
+      } else if (data.type === "poison_countdown") {
+        // Show poison countdown notification
+        toast.warning(data.message, {
+          duration: 4000,
+          icon: '😷'
+        });
       } else if (data.type === "event") {
         toast.info(data.message);
       } else if (data.type === "new_turn") {
@@ -1240,6 +1261,38 @@ const Game = () => {
         </div>
       )}
 
+      {/* NEW: Poison Popup */}
+      {showPoisonPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowPoisonPopup(false)}
+          data-testid="poison-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#3a4a2a', borderColor: '#84cc16' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#84cc16' }}>
+                😷
+                <span>Empoisonné !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <img 
+                src="/event/Toxine.png" 
+                alt="Toxine" 
+                style={{ width: '100%', maxHeight: '200px', objectFit: 'contain', marginBottom: '1rem', borderRadius: '8px' }}
+              />
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {poisonMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Quest Completed Popup with Video */}
       {showQuestCompletedPopup && (
         <div 
@@ -1351,6 +1404,7 @@ const Game = () => {
           {currentPlayer?.has_medikit && <span className="medikit-badge">⚗️</span>}
           {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
           {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
+          {currentPlayer?.poisoned_countdown > 0 && <span className="poisoned-badge">😷 Empoisonné ({currentPlayer.poisoned_countdown})</span>}
         </div>
       </div>
 
@@ -1457,6 +1511,7 @@ const Game = () => {
                   const isHighlighted = room.highlighted && currentPlayerRole === "killer";
                   const isTrapped = room.trapped && currentPlayerRole === "killer";
                   const isTrapTriggered = room.trap_triggered && currentPlayerRole === "survivor";
+                  const isPoisoned = room.poisoned_turns_remaining > 0 && currentPlayerRole === "killer";
 
                   return (
                     <button
@@ -1476,6 +1531,7 @@ const Game = () => {
                         {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
                         {isTrapped && <span className="room-icon room-trap-indicator" title="Embuscade">🕸️</span>}
                         {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Embuscade activée">🕸️</span>}
+                        {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (
@@ -1560,6 +1616,7 @@ const Game = () => {
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
                     {player.has_medikit && <span className="status-medikit">⚗️</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
+                    {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && <span className="status-poisoned">😷</span>}
                   </div>
                 ))}
               </div>
