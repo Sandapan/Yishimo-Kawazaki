@@ -711,6 +711,9 @@ const PowerSelectionOverlay = ({
     } else if (actionType === "select_rooms") {
       // Must select exactly the required number
       return tempRoomSelections.length === (selectedPowerDef.rooms_count || 2);
+    } else if (actionType === "select_room") {
+      // Must select exactly one room (for toxine)
+      return tempRoomSelections.length === 1;
     } else if (actionType === "select_floor") {
       // Must select one floor
       return selectedFloor !== null;
@@ -778,6 +781,7 @@ const PowerSelectionOverlay = ({
                 <p className="text-center mb-4">
                   {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
                   {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
+                  {actionType === "select_room" && "Sélectionnez une pièce à empoisonner:"}
                 </p>
                 
                 <div className="rooms-selection-grid">
@@ -812,7 +816,13 @@ const PowerSelectionOverlay = ({
                 </div>
                 
                 <Button
-                  onClick={() => confirmPowerAction({ rooms: tempRoomSelections })}
+                  onClick={() => {
+                    if (actionType === "select_room") {
+                      confirmPowerAction({ room: tempRoomSelections[0] });
+                    } else {
+                      confirmPowerAction({ rooms: tempRoomSelections });
+                    }
+                  }}
                   disabled={!canConfirmAction()}
                   className="w-full mt-4"
                   style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
