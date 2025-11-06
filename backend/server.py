@@ -931,6 +931,26 @@ async def process_turn(session_id: str):
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
         
+        # Check if all survivors died from toxin (after toxin eliminations)
+        alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+        
+        if len(alive_survivors_after_toxin) == 0:
+            game["phase"] = "game_over"
+            game["winner"] = "killers"
+            
+            # Send different messages based on role
+            survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+            killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+            
+            game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+            game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+            
+            # Send to survivors
+            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+            # Send to killers
+            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+            return  # Exit early, game is over
+        
         # Next turn - Start with survivors selection
         game["turn"] += 1
         game["phase"] = "survivor_selection"
@@ -1070,6 +1090,26 @@ async def process_rage_second_selections(session_id: str):
             event_msg = f"💀 {player['name']} a succombé au poison toxique !"
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+        
+        # Check if all survivors died from toxin (after toxin eliminations)
+        alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+        
+        if len(alive_survivors_after_toxin) == 0:
+            game["phase"] = "game_over"
+            game["winner"] = "killers"
+            
+            # Send different messages based on role
+            survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+            killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+            
+            game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+            game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+            
+            # Send to survivors
+            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+            # Send to killers
+            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+            return  # Exit early, game is over
         
         # Next turn - Start with survivors selection
         game["turn"] += 1

@@ -711,9 +711,6 @@ const PowerSelectionOverlay = ({
     } else if (actionType === "select_rooms") {
       // Must select exactly the required number
       return tempRoomSelections.length === (selectedPowerDef.rooms_count || 2);
-    } else if (actionType === "select_room") {
-      // Must select exactly one room (Toxine)
-      return tempRoomSelections.length === 1;
     } else if (actionType === "select_floor") {
       // Must select one floor
       return selectedFloor !== null;
@@ -781,7 +778,6 @@ const PowerSelectionOverlay = ({
                 <p className="text-center mb-4">
                   {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
                   {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
-                  {actionType === "select_room" && "Sélectionnez une pièce à empoisonner:"}
                 </p>
                 
                 <div className="rooms-selection-grid">
@@ -816,14 +812,7 @@ const PowerSelectionOverlay = ({
                 </div>
                 
                 <Button
-                  onClick={() => {
-                    // For select_room (toxine), send single room as "room", not "rooms"
-                    if (actionType === "select_room") {
-                      confirmPowerAction({ room: tempRoomSelections[0] });
-                    } else {
-                      confirmPowerAction({ rooms: tempRoomSelections });
-                    }
-                  }}
+                  onClick={() => confirmPowerAction({ rooms: tempRoomSelections })}
                   disabled={!canConfirmAction()}
                   className="w-full mt-4"
                   style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
@@ -1627,7 +1616,11 @@ const Game = () => {
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
                     {player.has_medikit && <span className="status-medikit">⚗️</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
-                    {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && <span className="status-poisoned">😷</span>}
+                    {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && (
+                      <span className="status-poisoned">
+                        {player.poisoned_countdown <= 3 ? '🤮' : player.poisoned_countdown <= 6 ? '🤢' : '😷'}{player.poisoned_countdown}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
