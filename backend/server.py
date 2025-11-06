@@ -692,86 +692,11 @@ async def process_turn(session_id: str):
     for player_id, action in survivors_actions.items():
         game["players"][player_id]["current_room"] = action["room"]
 
-    # Survivors interact with rooms (quests, medikits, auto-revival)
+    # Survivors interact with rooms (medikits, auto-revival)
+    # NOTE: Quest handling is now done immediately when survivor selects room (not here)
     for player_id, action in survivors_actions.items():
         player = game["players"][player_id]
         room = game["rooms"][action["room"]]
-
-        # Check for quest
-        if room.get("has_quest", False) and room.get("quest_class"):
-            quest_class = room["quest_class"]
-            player_class = player.get("character_class")
-            
-            if player_class == quest_class:
-                # Correct class! Quest completed
-                room["has_quest"] = False
-                room["quest_class"] = None
-                game["completed_quests"].append(quest_class)
-                game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
-                
-                quests_left = game["keys_needed"] - len(game["completed_quests"])
-                event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
-                game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
-                # Notify only survivors about quest completed
-                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
-                
-                # Send video popup to the player who completed the quest
-                if player_id in active_connections.get(session_id, {}):
-                    try:
-                        video_path = f"/event/{quest_class}.mp4"
-                        await active_connections[session_id][player_id].send_json({
-                            "type": "quest_completed_popup",
-                            "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
-                            "video_path": video_path,
-                            "quests_left": quests_left
-                        })
-                    except:
-                        pass
-                
-                key_found_this_turn = True
-                # Reset rooms searched for Vision power
-                game["rooms_searched_this_key"] = []
-                game["active_quest"] = None
-
-                # Place next quest if there are more to complete
-                if len(game["completed_quests"]) < len(game["quests"]):
-                    # Find the next quest to place
-                    next_quest_index = len(game["completed_quests"])
-                    next_quest = game["quests"][next_quest_index]
-                    next_quest_room = place_quest(game, next_quest["class"])
-                    if next_quest_room:
-                        game["active_quest"] = {
-                            "class": next_quest["class"],
-                            "room": next_quest_room,
-                            "player_id": next_quest["player_id"],
-                            "player_name": next_quest["player_name"]
-                        }
-                        logger.info(f"Next quest placed for {next_quest['class']} in: {next_quest_room}")
-            else:
-                # Wrong class! Show required class popup
-                if player_id in active_connections.get(session_id, {}):
-                    try:
-                        required_class_image = f"/requis/{quest_class}-requis.png"
-                        await active_connections[session_id][player_id].send_json({
-                            "type": "wrong_class_popup",
-                            "message": f"Cette quête nécessite la classe {quest_class}.",
-                            "required_class": quest_class,
-                            "required_class_image": required_class_image
-                        })
-                    except:
-                        pass
-                
-                # Log that a survivor tried but wrong class - only visible to survivors
-                event_msg = f"🔍 {player['name']} explore {action['room']} mais ne peut pas accomplir cette quête."
-                game["events"].append({"message": event_msg, "type": "search_wrong_class", "for_role": "survivor"})
-                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
-        else:
-            # No quest in this room
-            # Log unsuccessful search - only visible to survivors
-            event_msg = f"🔍 {player['name']} fouille {action['room']} mais ne trouve rien de particulier."
-            game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
-            # Notify only survivors about unsuccessful search
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
 
         # Check for medikit
         if room["has_medikit"]:
@@ -1588,6 +1513,82 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "type": "trapped_notification",
                             "message": "🕸️ C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci."
                         })
+                    
+                    # Check for quest immediately when survivor selects room
+                    if player["role"] == "survivor":
+                        room = game["rooms"][room_name]
+                        
+                        if room.get("has_quest", False) and room.get("quest_class"):
+                            quest_class = room["quest_class"]
+                            player_class = player.get("character_class")
+                            
+                            if player_class == quest_class:
+                                # Correct class! Quest completed
+                                room["has_quest"] = False
+                                room["quest_class"] = None
+                                game["completed_quests"].append(quest_class)
+                                game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
+                                
+                                quests_left = game["keys_needed"] - len(game["completed_quests"])
+                                event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
+                                game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
+                                # Notify only survivors about quest completed
+                                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                                
+                                # Send video popup to the player who completed the quest
+                                try:
+                                    video_path = f"/event/{quest_class}.mp4"
+                                    await websocket.send_json({
+                                        "type": "quest_completed_popup",
+                                        "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
+                                        "video_path": video_path,
+                                        "quests_left": quests_left
+                                    })
+                                except:
+                                    pass
+                                
+                                # Reset rooms searched for Vision power
+                                game["rooms_searched_this_key"] = []
+                                game["active_quest"] = None
+
+                                # Place next quest if there are more to complete
+                                if len(game["completed_quests"]) < len(game["quests"]):
+                                    # Find the next quest to place
+                                    next_quest_index = len(game["completed_quests"])
+                                    next_quest = game["quests"][next_quest_index]
+                                    next_quest_room = place_quest(game, next_quest["class"])
+                                    if next_quest_room:
+                                        game["active_quest"] = {
+                                            "class": next_quest["class"],
+                                            "room": next_quest_room,
+                                            "player_id": next_quest["player_id"],
+                                            "player_name": next_quest["player_name"]
+                                        }
+                                        logger.info(f"Next quest placed for {next_quest['class']} in: {next_quest_room}")
+                            else:
+                                # Wrong class! Show required class popup
+                                try:
+                                    required_class_image = f"/requis/{quest_class}-requis.png"
+                                    await websocket.send_json({
+                                        "type": "wrong_class_popup",
+                                        "message": f"Cette quête nécessite la classe {quest_class}.",
+                                        "required_class": quest_class,
+                                        "required_class_image": required_class_image
+                                    })
+                                except:
+                                    pass
+                                
+                                # Log that a survivor tried but wrong class - only visible to survivors
+                                event_msg = f"🔍 {player['name']} explore {room_name} mais ne peut pas accomplir cette quête."
+                                game["events"].append({"message": event_msg, "type": "search_wrong_class", "for_role": "survivor"})
+                                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                        else:
+                            # No quest in this room
+                            # Log unsuccessful search - only visible to survivors
+                            event_msg = f"🔍 {player['name']} fouille {room_name} mais ne trouve rien de particulier."
+                            game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
+                            # Notify only survivors about unsuccessful search
+                            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
