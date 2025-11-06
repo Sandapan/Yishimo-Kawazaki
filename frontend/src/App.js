@@ -848,9 +848,12 @@ const PowerSelectionOverlay = ({
                   style={{ animationDelay: `${index * 0.15}s` }}
                 >
                   <div className="power-card-image">
-                    <img 
+                    <video 
                       src={`/powers/${power.icon}`} 
-                      alt={power.name}
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     />
                   </div>

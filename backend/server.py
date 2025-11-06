@@ -263,33 +263,33 @@ POWERS = {
     "vision": {
         "name": "👁️ Vision",
         "description": "Révèle en surbrillance les pièces que les survivants n'ont pas encore fouillé depuis l'obtention de la précédente clef",
-        "icon": "vision.svg",
+        "icon": "Vision.mp4",
         "requires_action": False
     },
     "secousse": {
         "name": "↩️ Secousse",
         "description": "Si la clef n'est pas trouvée après le tour des tueurs, alors sa localisation change de pièce",
-        "icon": "secousse.svg",
+        "icon": "secousse.mp4",
         "requires_action": False
     },
     "piege": {
         "name": "🕸️ Embuscade",
         "description": "Déployez une embuscade dans une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
-        "icon": "embuscade.jpeg",
+        "icon": "Embuscade.mp4",
         "requires_action": True,
         "action_type": "select_rooms_per_floor"  # select one room per floor
     },
     "traque": {
         "name": "🔊 Traque",
         "description": "Choisissez un niveau (sous-sol, rez-de-chaussée ou étage) et découvrez si des survivants s'y cachent",
-        "icon": "traque.svg",
+        "icon": "Traque.mp4",
         "requires_action": True,
         "action_type": "select_floor"  # select one floor
     },
     "barricade": {
         "name": "🔒 Barricade",
         "description": "Vous permet de verrouiller au choix 2 pièces pour le prochain tour",
-        "icon": "barricade.svg",
+        "icon": "Barricade.mp4",
         "requires_action": True,
         "action_type": "select_rooms",  # select 2 rooms
         "rooms_count": 2
@@ -297,7 +297,7 @@ POWERS = {
     "rage": {
         "name": "😡 Rage",
         "description": "Si vous trouvez un survivant en fouillant une pièce, vous pouvez fouiller une seconde pièce ce tour-ci",
-        "icon": "rage.svg",
+        "icon": "rage.mp4",
         "requires_action": False
     }
 }
