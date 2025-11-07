@@ -929,7 +929,22 @@ async def process_turn(session_id: str):
             
             event_msg = f"💀 {player['name']} a succombé au poison toxique !"
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+            
+            # Get player class from avatar to determine death video
+            player_class = get_avatar_class(player.get("avatar", ""))
+            video_path = ""
+            if player_class:
+                # Format: /death/ClassName_toxine.mp4
+                video_path = f"/death/{player_class}_toxine.mp4"
+            
+            # Send toxin death popup to all players with video
+            toxin_death_msg = f"{player['name']} a succombé de la toxine !"
+            await broadcast_to_session(session_id, {
+                "type": "toxin_death_popup",
+                "message": toxin_death_msg,
+                "video_path": video_path,
+                "player_name": player['name']
+            })
         
         # Check if all survivors died from toxin (after toxin eliminations)
         alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
@@ -1089,7 +1104,22 @@ async def process_rage_second_selections(session_id: str):
             
             event_msg = f"💀 {player['name']} a succombé au poison toxique !"
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+            
+            # Get player class from avatar to determine death video
+            player_class = get_avatar_class(player.get("avatar", ""))
+            video_path = ""
+            if player_class:
+                # Format: /death/ClassName_toxine.mp4
+                video_path = f"/death/{player_class}_toxine.mp4"
+            
+            # Send toxin death popup to all players with video
+            toxin_death_msg = f"{player['name']} a succombé de la toxine !"
+            await broadcast_to_session(session_id, {
+                "type": "toxin_death_popup",
+                "message": toxin_death_msg,
+                "video_path": video_path,
+                "player_name": player['name']
+            })
         
         # Check if all survivors died from toxin (after toxin eliminations)
         alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
