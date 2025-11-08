@@ -930,6 +930,13 @@ const Game = () => {
   const [toxinDeathMessage, setToxinDeathMessage] = useState("");
   const [toxinDeathVideoPath, setToxinDeathVideoPath] = useState("");
   
+  
+  // NEW: Gold found popup state (with image)
+  const [showGoldFoundPopup, setShowGoldFoundPopup] = useState(false);
+  const [goldMessage, setGoldMessage] = useState("");
+  const [goldAmount, setGoldAmount] = useState(0);
+  const [goldImage, setGoldImage] = useState("");
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -1073,6 +1080,16 @@ const Game = () => {
         setRequiredClassImage(data.required_class_image);
         setShowWrongClassPopup(true);
         // No auto-hide, user must click to close
+      } else if (data.type === "gold_found") {
+        // Show popup with gold image
+        setGoldMessage(data.message);
+        setGoldAmount(data.gold_amount);
+        setGoldImage(data.gold_image);
+        setShowGoldFoundPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowGoldFoundPopup(false);
+        }, 5000);
       } else if (data.type === "player_action") {
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
@@ -1440,6 +1457,41 @@ const Game = () => {
         </div>
       )}
 
+      {/* NEW: Gold Found Popup with Image */}
+      {showGoldFoundPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowGoldFoundPopup(false)}
+          data-testid="gold-found-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2d1b00', borderColor: '#FFD700' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#FFD700' }}>
+                🪙
+                <span>Or trouvé !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {goldImage && (
+                <img 
+                  src={goldImage} 
+                  alt="Or trouvé" 
+                  style={{ width: '100%', maxHeight: '300px', objectFit: 'contain', borderRadius: '8px', marginBottom: '1rem' }}
+                />
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.3em', textAlign: 'center', color: '#FFD700', fontWeight: 'bold' }}>
+                {goldMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+
       {/* Game Header */}
       <div className="game-header">
         <div className="game-info">
@@ -1694,6 +1746,11 @@ const Game = () => {
                     {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && (
                       <span className="status-poisoned">
                         {player.poisoned_countdown <= 3 ? '🤮' : player.poisoned_countdown <= 6 ? '🤢' : '😷'}{player.poisoned_countdown}
+                      </span>
+                    )}
+                    {currentPlayerRole === "survivor" && player.role === "survivor" && player.gold > 0 && (
+                      <span className="status-gold" style={{ color: '#FFD700', fontWeight: 'bold' }}>
+                        🪙{player.gold}
                       </span>
                     )}
                   </div>

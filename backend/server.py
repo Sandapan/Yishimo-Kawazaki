@@ -131,7 +131,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "has_medikit": False,
                 "role": host_role,  # "survivor" or "killer"
                 "immobilized_next_turn": False,  # NEW: for piege power
-                "poisoned_countdown": 0  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
+                "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
+                "gold": 0  # NEW: gold accumulated by survivors
             }
         },
         "rooms": rooms_state,
@@ -259,6 +260,24 @@ def get_survivor_floor_hints(game_state: dict) -> dict:
                 floor_hints[floor].append(player["name"])
     
     return floor_hints
+
+def generate_gold_reward() -> tuple[int, str]:
+    """
+    Generate a random gold reward and return the corresponding image path.
+    Returns: (gold_amount, image_path)
+    """
+    gold_amount = random.randint(15, 200)
+    
+    # Determine image based on gold amount
+    if 15 <= gold_amount <= 50:
+        image_path = "/gold/small.png"
+    elif 51 <= gold_amount <= 125:
+        image_path = "/gold/big.png"
+    else:  # 126-200
+        image_path = "/gold/huge.png"
+    
+    return gold_amount, image_path
+
 
 # Power definitions
 POWERS = {
@@ -600,6 +619,7 @@ def filter_game_state(game_state: dict, player_role: str) -> dict:
             else:
                 # Hide survivor position (but keep player in list without current_room)
                 player_copy["current_room"] = None
+                player_copy["gold"] = 0  # Hide gold from killers
                 filtered_state["players"][pid] = player_copy
 
     # Filter pending_actions: only show actions from same role
@@ -777,6 +797,7 @@ async def process_turn(session_id: str):
 
                 # Eliminate the survivor
                 survivor["eliminated"] = True
+                survivor["gold"] = 0  # Reset gold when eliminated
                 game["rooms"][killer_room]["eliminated_players"].append(survivor_id)
                 eliminated_rooms.append(killer_room)
                 found_survivor = True
@@ -928,6 +949,7 @@ async def process_turn(session_id: str):
             player = game["players"][player_id]
             player["eliminated"] = True
             player["poisoned_countdown"] = 0
+            player["gold"] = 0  # Reset gold when eliminated
             
             event_msg = f"💀 {player['name']} a succombé au poison toxique !"
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
@@ -1010,6 +1032,7 @@ async def process_rage_second_selections(session_id: str):
                 
                 # Eliminate the survivor
                 survivor["eliminated"] = True
+                survivor["gold"] = 0  # Reset gold when eliminated
                 game["rooms"][second_room]["eliminated_players"].append(survivor_id)
                 eliminated_in_second_room.append(survivor_id)
                 
@@ -1107,6 +1130,7 @@ async def process_rage_second_selections(session_id: str):
             player = game["players"][player_id]
             player["eliminated"] = True
             player["poisoned_countdown"] = 0
+            player["gold"] = 0  # Reset gold when eliminated
             
             event_msg = f"💀 {player['name']} a succombé au poison toxique !"
             game["events"].append({"message": event_msg, "type": "player_eliminated"})
@@ -1226,7 +1250,8 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "has_medikit": False,
         "role": request.role,  # "survivor" or "killer"
         "immobilized_next_turn": False,  # NEW: for piege power
-        "poisoned_countdown": 0  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
+        "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
+        "gold": 0  # NEW: gold accumulated by survivors
     }
 
     # Broadcast new player joined
@@ -1390,6 +1415,7 @@ async def reset_game(session_id: str):
         player["has_medikit"] = False
         player["immobilized_next_turn"] = False  # NEW: reset immobilization
         player["poisoned_countdown"] = 0  # NEW: reset poison
+        player["gold"] = 0  # NEW: reset gold
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
@@ -1791,6 +1817,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
                             # Notify only survivors about unsuccessful search
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                    
+                    # GOLD SYSTEM: Give gold to survivor if not trapped (blizzard)
+                    if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):
+                        # Generate gold reward
+                        gold_amount, gold_image = generate_gold_reward()
+                        player["gold"] += gold_amount
+                        
+                        # Send personal gold notification to this survivor only
+                        try:
+                            await websocket.send_json({
+                                "type": "gold_found",
+                                "message": f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !",
+                                "gold_amount": gold_amount,
+                                "total_gold": player["gold"],
+                                "gold_image": gold_image
+                            })
+                        except:
+                            pass
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
