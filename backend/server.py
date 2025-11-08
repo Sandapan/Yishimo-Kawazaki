@@ -736,6 +736,8 @@ async def process_turn(session_id: str):
             if target_player_id in game["players"] and game["players"][target_player_id]["eliminated"]:
                 # Revive the player
                 game["players"][target_player_id]["eliminated"] = False
+                # Reset poison status when revived
+                game["players"][target_player_id]["poisoned_countdown"] = 0
                 player["has_medikit"] = False
                 room["eliminated_players"].remove(target_player_id)
 
@@ -1691,7 +1693,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         game["rooms"][room_name]["trap_triggered"] = True
                         
                         # Get player class for video path
-                        player_class = player.get("class", "mage").lower()
+                        player_class = player.get("character_class", "Mage").lower()
                         video_path = f"/death/Blizzard_{player_class}.mp4"
                         
                         # NEW: Send trap notification immediately to the survivor with video
@@ -1922,6 +1924,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if target_room == current_room:
                         # Revive player
                         game["players"][target_player_id]["eliminated"] = False
+                        # Reset poison status when revived
+                        game["players"][target_player_id]["poisoned_countdown"] = 0
                         game["players"][player_id]["has_medikit"] = False
 
                         # Remove from eliminated list
