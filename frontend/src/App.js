@@ -912,11 +912,6 @@ const Game = () => {
   const [questCompletedMessage, setQuestCompletedMessage] = useState("");
   const [questVideoPath, setQuestVideoPath] = useState("");
   
-  // NEW: Toxin death popup state (with video)
-  const [showToxinDeathPopup, setShowToxinDeathPopup] = useState(false);
-  const [toxinDeathMessage, setToxinDeathMessage] = useState("");
-  const [toxinDeathVideoPath, setToxinDeathVideoPath] = useState("");
-  
   // NEW: Wrong class popup state (with image)
   const [showWrongClassPopup, setShowWrongClassPopup] = useState(false);
   const [wrongClassMessage, setWrongClassMessage] = useState("");
@@ -928,6 +923,11 @@ const Game = () => {
   // NEW: Poison popup state
   const [showPoisonPopup, setShowPoisonPopup] = useState(false);
   const [poisonMessage, setPoisonMessage] = useState("");
+  
+  // NEW: Toxin death popup state (with video)
+  const [showToxinDeathPopup, setShowToxinDeathPopup] = useState(false);
+  const [toxinDeathMessage, setToxinDeathMessage] = useState("");
+  const [toxinDeathVideoPath, setToxinDeathVideoPath] = useState("");
   
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
@@ -1061,10 +1061,10 @@ const Game = () => {
         setToxinDeathMessage(data.message);
         setToxinDeathVideoPath(data.video_path);
         setShowToxinDeathPopup(true);
-        // Auto-hide after video ends (assuming ~10 seconds)
+        // Auto-hide after video ends (5 seconds for toxin videos)
         setTimeout(() => {
           setShowToxinDeathPopup(false);
-        }, 10000);
+        }, 5000);
       } else if (data.type === "wrong_class_popup") {
         // Show popup with image for wrong class
         setWrongClassMessage(data.message);
@@ -1363,7 +1363,7 @@ const Game = () => {
           onClick={() => setShowToxinDeathPopup(false)}
           data-testid="toxin-death-popup"
         >
-          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#1a1a1a', borderColor: '#dc2626' }}>
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a1d1d', borderColor: '#dc2626' }}>
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
                 💀
@@ -1375,17 +1375,17 @@ const Game = () => {
                 <video 
                   autoPlay 
                   muted 
-                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem', border: '2px solid #dc2626' }}
-                  onEnded={() => setTimeout(() => setShowToxinDeathPopup(false), 1000)}
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowToxinDeathPopup(false), 500)}
                 >
                   <source src={toxinDeathVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
                 </video>
               )}
-              <p className="game-over-message" style={{ fontSize: '1.2em', textAlign: 'center', color: '#fff', fontWeight: 'bold' }}>
-                💀 {toxinDeathMessage}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {toxinDeathMessage}
               </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#dc2626', textAlign: 'center' }}>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
               </p>
             </CardContent>

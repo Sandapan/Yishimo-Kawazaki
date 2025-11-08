@@ -950,6 +950,10 @@ async def process_turn(session_id: str):
         alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
         
         if len(alive_survivors_after_toxin) == 0:
+            # Wait for death videos to play (5 seconds) before sending game over messages
+            if len(players_to_eliminate) > 0:
+                await asyncio.sleep(5)
+            
             game["phase"] = "game_over"
             game["winner"] = "killers"
             
@@ -1125,6 +1129,10 @@ async def process_rage_second_selections(session_id: str):
         alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
         
         if len(alive_survivors_after_toxin) == 0:
+            # Wait for death videos to play (5 seconds) before sending game over messages
+            if len(players_to_eliminate) > 0:
+                await asyncio.sleep(5)
+            
             game["phase"] = "game_over"
             game["winner"] = "killers"
             
