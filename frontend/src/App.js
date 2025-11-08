@@ -674,7 +674,7 @@ const PowerSelectionOverlay = ({
   
   const handleRoomSelection = (roomName) => {
     if (actionType === "select_rooms_per_floor") {
-      // Embuscade: 1 room per floor
+      // Blizzard: 1 room per floor
       const room = gameState.rooms[roomName];
       const floor = room.floor;
       
@@ -917,8 +917,9 @@ const Game = () => {
   const [wrongClassMessage, setWrongClassMessage] = useState("");
   const [requiredClassImage, setRequiredClassImage] = useState("");
   
-  // NEW: Trap popup state
+  // NEW: Trap popup state (with video)
   const [showTrapPopup, setShowTrapPopup] = useState(false);
+  const [trapVideoPath, setTrapVideoPath] = useState("");
   
   // NEW: Poison popup state
   const [showPoisonPopup, setShowPoisonPopup] = useState(false);
@@ -989,7 +990,8 @@ const Game = () => {
           }, 5000);
         }
       } else if (data.type === "trapped_notification") {
-        // NEW: Show trap popup for survivor who entered trapped room
+        // NEW: Show trap popup for survivor who entered trapped room with video
+        setTrapVideoPath(data.video_path || "");
         setShowTrapPopup(true);
         // Auto-hide after 5 seconds
         setTimeout(() => {
@@ -1266,16 +1268,27 @@ const Game = () => {
           onClick={() => setShowTrapPopup(false)}
           data-testid="trap-popup"
         >
-          <Card className="game-over-card" style={{ maxWidth: '500px', backgroundColor: '#4a2a2a', borderColor: '#dc2626' }}>
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a3f4f', borderColor: '#60a5fa' }}>
             <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
-                🕸️
-                <span>C'est une embuscade !</span>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#60a5fa' }}>
+                🥶
+                <span>C'est un blizzard !</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {trapVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowTrapPopup(false), 1000)}
+                >
+                  <source src={trapVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.
+                C'est un blizzard ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -1591,8 +1604,8 @@ const Game = () => {
                       <div className="room-indicators">
                         {room.locked && <span className="room-icon locked-icon">❌</span>}
                         {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
-                        {isTrapped && <span className="room-icon room-trap-indicator" title="Embuscade">🕸️</span>}
-                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Embuscade activée">🕸️</span>}
+                        {isTrapped && <span className="room-icon room-trap-indicator" title="Blizzard">🥶</span>}
+                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
                         {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">

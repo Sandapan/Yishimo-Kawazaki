@@ -275,9 +275,9 @@ POWERS = {
         "requires_action": False
     },
     "piege": {
-        "name": "🕸️ Embuscade",
-        "description": "Déployez une embuscade dans une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
-        "icon": "Embuscade.mp4",
+        "name": "🥶 Blizzard",
+        "description": "Déployez un blizzard dans une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
+        "icon": "blizzard.mp4",
         "requires_action": True,
         "action_type": "select_rooms_per_floor"  # select one room per floor
     },
@@ -489,7 +489,7 @@ async def apply_powers(session_id: str):
             
             game["active_powers"][power_name]["data"]["trapped_rooms"] = trapped_rooms
             
-            event_msg = f"🕸️ {player['name']} utilise Embuscade !"
+            event_msg = f"🥶 {player['name']} utilise Blizzard !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
@@ -1552,7 +1552,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if room_name != current_room:
                         await websocket.send_json({
                             "type": "error",
-                            "message": f"🕸️ Vous êtes immobilisé par une embuscade ! Cliquez sur '{current_room}' pour passer votre tour."
+                            "message": f"🥶 Vous êtes immobilisé par un blizzard ! Cliquez sur '{current_room}' pour passer votre tour."
                         })
                         # Broadcast updated state even on error so frontend stays responsive
                         await broadcast_to_session(session_id, {
@@ -1690,10 +1690,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         # Mark room as trap triggered for survivors
                         game["rooms"][room_name]["trap_triggered"] = True
                         
-                        # NEW: Send trap notification immediately to the survivor
+                        # Get player class for video path
+                        player_class = player.get("class", "mage").lower()
+                        video_path = f"/death/Blizzard_{player_class}.mp4"
+                        
+                        # NEW: Send trap notification immediately to the survivor with video
                         await websocket.send_json({
                             "type": "trapped_notification",
-                            "message": "🕸️ C'est une embuscade ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci."
+                            "message": "🥶 C'est un blizzard ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.",
+                            "video_path": video_path
                         })
                     
                     # Check if survivor enters poisoned room
