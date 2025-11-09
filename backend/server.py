@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1533,7 +1533,7 @@ async def change_role(session_id: str, player_id: str, new_role: str):
     return {"status": "success", "new_role": new_role}
 
 @api_router.post("/game/{session_id}/update_player")
-async def update_player(session_id: str, player_id: str, request: JoinGameRequest):
+async def update_player(session_id: str, request: JoinGameRequest, player_id: str = Query(...)):
     """Update player's avatar and role in the lobby"""
     if session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
