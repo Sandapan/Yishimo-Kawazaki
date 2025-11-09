@@ -1276,3 +1276,366 @@ body {
   }
 }
 
+
+/* ========================================
+   KILLER ELIMINATION POPUP - DRAMATIC STYLES
+   ======================================== */
+
+.killer-elimination-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(10, 0, 0, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: bloodFadeIn 0.4s ease-out;
+  backdrop-filter: blur(8px);
+}
+
+.killer-elimination-card {
+  position: relative;
+  max-width: 700px;
+  width: 90%;
+  background: linear-gradient(135deg, #1a0000 0%, #330000 50%, #1a0000 100%);
+  border: 4px solid #8B0000;
+  border-radius: 20px;
+  padding: 2rem;
+  box-shadow: 
+    0 0 60px rgba(139, 0, 0, 0.8),
+    0 0 120px rgba(255, 0, 0, 0.6),
+    inset 0 0 100px rgba(139, 0, 0, 0.3);
+  animation: cardShakeIn 0.6s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  overflow: hidden;
+}
+
+.blood-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(circle at center, transparent 0%, rgba(139, 0, 0, 0.3) 100%);
+  animation: bloodPulse 2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.elimination-content {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.death-image-container {
+  width: 100%;
+  max-width: 400px;
+  position: relative;
+  animation: imageShakeAppear 0.8s cubic-bezier(0.36, 0.07, 0.19, 0.97) forwards;
+}
+
+.death-image {
+  width: 100%;
+  height: auto;
+  border-radius: 15px;
+  border: 3px solid #8B0000;
+  box-shadow: 
+    0 0 40px rgba(255, 0, 0, 0.8),
+    0 0 80px rgba(139, 0, 0, 0.6),
+    inset 0 0 30px rgba(0, 0, 0, 0.5);
+  filter: brightness(1.1) contrast(1.2) saturate(1.3);
+  animation: imageGlowPulse 1.5s ease-in-out infinite;
+}
+
+.elimination-text {
+  text-align: center;
+  animation: textFadeSlideIn 0.6s ease-out 0.3s both;
+}
+
+.elimination-title {
+  font-size: 2.5em;
+  font-weight: 900;
+  color: #FF0000;
+  text-shadow: 
+    0 0 20px rgba(255, 0, 0, 1),
+    0 0 40px rgba(139, 0, 0, 0.8),
+    2px 2px 4px rgba(0, 0, 0, 0.8);
+  margin-bottom: 1rem;
+  letter-spacing: 3px;
+  animation: titleShake 0.5s ease-in-out 0.5s, titleGlow 2s ease-in-out infinite;
+}
+
+.elimination-message {
+  font-size: 1.4em;
+  color: #fff;
+  line-height: 1.6;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.killer-name-text {
+  color: #DC143C;
+  font-weight: 900;
+  font-size: 1.2em;
+  text-shadow: 
+    0 0 15px rgba(220, 20, 60, 0.8),
+    2px 2px 4px rgba(0, 0, 0, 0.8);
+  animation: nameFlicker 1s ease-in-out infinite;
+}
+
+.survivor-name-text {
+  color: #FFD700;
+  font-weight: 700;
+  font-size: 1.1em;
+  text-shadow: 
+    0 0 10px rgba(255, 215, 0, 0.6),
+    2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.room-name-text {
+  color: #FF6347;
+  font-weight: 700;
+  font-style: italic;
+  text-shadow: 
+    0 0 10px rgba(255, 99, 71, 0.5),
+    2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.elimination-action,
+.elimination-location {
+  color: #DDD;
+  font-weight: 400;
+}
+
+.elimination-dismiss {
+  margin-top: 1rem;
+  font-size: 0.95em;
+  color: #999;
+  text-align: center;
+  animation: dismissBlink 2s ease-in-out infinite;
+}
+
+/* ========================================
+   ANIMATIONS - DRAMATIC EFFECTS
+   ======================================== */
+
+@keyframes bloodFadeIn {
+  0% {
+    opacity: 0;
+    background: rgba(0, 0, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    background: rgba(10, 0, 0, 0.95);
+  }
+}
+
+@keyframes cardShakeIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) rotate(-2deg);
+  }
+  10% {
+    transform: scale(0.85) rotate(2deg);
+  }
+  20% {
+    transform: scale(0.9) rotate(-2deg);
+  }
+  30% {
+    transform: scale(0.95) rotate(1deg);
+  }
+  40% {
+    transform: scale(1) rotate(-1deg);
+  }
+  50% {
+    transform: scale(1.02) rotate(0.5deg);
+  }
+  60% {
+    transform: scale(1) rotate(-0.5deg);
+  }
+  70% {
+    transform: scale(1.01) rotate(0.2deg);
+  }
+  80% {
+    transform: scale(1) rotate(-0.2deg);
+  }
+  90% {
+    transform: scale(1) rotate(0.1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes bloodPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes imageShakeAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.7) rotate(-5deg);
+    filter: blur(10px);
+  }
+  10% {
+    transform: scale(0.75) rotate(5deg);
+  }
+  20% {
+    transform: scale(0.8) rotate(-4deg);
+  }
+  30% {
+    transform: scale(0.85) rotate(3deg);
+  }
+  40% {
+    transform: scale(0.9) rotate(-2deg);
+  }
+  50% {
+    transform: scale(0.95) rotate(1deg);
+  }
+  60% {
+    transform: scale(1) rotate(-1deg);
+  }
+  70% {
+    transform: scale(1.02) rotate(0.5deg);
+  }
+  80% {
+    transform: scale(1) rotate(-0.3deg);
+  }
+  90% {
+    transform: scale(1) rotate(0.1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+    filter: blur(0);
+  }
+}
+
+@keyframes imageGlowPulse {
+  0%, 100% {
+    box-shadow: 
+      0 0 40px rgba(255, 0, 0, 0.8),
+      0 0 80px rgba(139, 0, 0, 0.6),
+      inset 0 0 30px rgba(0, 0, 0, 0.5);
+  }
+  50% {
+    box-shadow: 
+      0 0 60px rgba(255, 0, 0, 1),
+      0 0 120px rgba(139, 0, 0, 0.8),
+      inset 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@keyframes textFadeSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes titleShake {
+  0%, 100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  25% {
+    transform: translateX(-3px) rotate(-1deg);
+  }
+  75% {
+    transform: translateX(3px) rotate(1deg);
+  }
+}
+
+@keyframes titleGlow {
+  0%, 100% {
+    text-shadow: 
+      0 0 20px rgba(255, 0, 0, 1),
+      0 0 40px rgba(139, 0, 0, 0.8),
+      2px 2px 4px rgba(0, 0, 0, 0.8);
+  }
+  50% {
+    text-shadow: 
+      0 0 30px rgba(255, 0, 0, 1),
+      0 0 60px rgba(139, 0, 0, 1),
+      0 0 90px rgba(255, 0, 0, 0.6),
+      2px 2px 4px rgba(0, 0, 0, 0.8);
+  }
+}
+
+@keyframes nameFlicker {
+  0%, 100% {
+    opacity: 1;
+    text-shadow: 
+      0 0 15px rgba(220, 20, 60, 0.8),
+      2px 2px 4px rgba(0, 0, 0, 0.8);
+  }
+  50% {
+    opacity: 0.9;
+    text-shadow: 
+      0 0 25px rgba(220, 20, 60, 1),
+      0 0 35px rgba(220, 20, 60, 0.6),
+      2px 2px 4px rgba(0, 0, 0, 0.8);
+  }
+}
+
+@keyframes dismissBlink {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Responsive adjustments for elimination popup */
+@media (max-width: 768px) {
+  .killer-elimination-card {
+    padding: 1.5rem;
+  }
+  
+  .elimination-title {
+    font-size: 2em;
+  }
+  
+  .elimination-message {
+    font-size: 1.2em;
+  }
+  
+  .death-image-container {
+    max-width: 300px;
+  }
+}
+
+@media (max-width: 480px) {
+  .elimination-title {
+    font-size: 1.6em;
+  }
+  
+  .elimination-message {
+    font-size: 1em;
+  }
+  
+  .death-image-container {
+    max-width: 250px;
+  }
+}
+

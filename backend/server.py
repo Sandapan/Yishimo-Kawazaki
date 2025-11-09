@@ -802,9 +802,25 @@ async def process_turn(session_id: str):
                 eliminated_rooms.append(killer_room)
                 found_survivor = True
 
+                # Get survivor class for death image
+                survivor_class = survivor.get("character_class", "")
+                death_image_path = f"/death/{survivor_class}.png" if survivor_class else ""
+
                 event_msg = f"💀 {survivor['name']} a été éliminé dans {killer_room} !"
                 game["events"].append({"message": event_msg, "type": "elimination"})
                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+                
+                # Send elimination popup to ALL players with dramatic effect
+                elimination_message = f"{killer['name']} a tué {survivor['name']} dans {killer_room}"
+                await broadcast_to_session(session_id, {
+                    "type": "killer_elimination_popup",
+                    "killer_name": killer['name'],
+                    "survivor_name": survivor['name'],
+                    "room_name": killer_room,
+                    "survivor_class": survivor_class,
+                    "death_image": death_image_path,
+                    "message": elimination_message
+                })
 
                 # If survivor had medikit, destroy it and respawn a new one
                 if survivor["has_medikit"]:
@@ -1036,9 +1052,25 @@ async def process_rage_second_selections(session_id: str):
                 game["rooms"][second_room]["eliminated_players"].append(survivor_id)
                 eliminated_in_second_room.append(survivor_id)
                 
+                # Get survivor class for death image
+                survivor_class = survivor.get("character_class", "")
+                death_image_path = f"/death/{survivor_class}.png" if survivor_class else ""
+                
                 event_msg = f"💀😡 {survivor['name']} a été éliminé dans {second_room} (Rage) !"
                 game["events"].append({"message": event_msg, "type": "elimination"})
                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+                
+                # Send elimination popup to ALL players with dramatic effect
+                elimination_message = f"{killer['name']} a tué {survivor['name']} dans {second_room}"
+                await broadcast_to_session(session_id, {
+                    "type": "killer_elimination_popup",
+                    "killer_name": killer['name'],
+                    "survivor_name": survivor['name'],
+                    "room_name": second_room,
+                    "survivor_class": survivor_class,
+                    "death_image": death_image_path,
+                    "message": elimination_message
+                })
                 
                 # If survivor had medikit, destroy it and respawn a new one
                 if survivor["has_medikit"]:

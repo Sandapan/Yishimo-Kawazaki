@@ -932,6 +932,13 @@ const Game = () => {
   const [toxinDeathMessage, setToxinDeathMessage] = useState("");
   const [toxinDeathVideoPath, setToxinDeathVideoPath] = useState("");
   
+  // NEW: Killer elimination popup state (with image)
+  const [showKillerEliminationPopup, setShowKillerEliminationPopup] = useState(false);
+  const [killerEliminationMessage, setKillerEliminationMessage] = useState("");
+  const [killerEliminationImage, setKillerEliminationImage] = useState("");
+  const [killerName, setKillerName] = useState("");
+  const [survivorName, setSurvivorName] = useState("");
+  const [eliminationRoom, setEliminationRoom] = useState("");
   
   // NEW: Gold found popup state (with image)
   const [showGoldFoundPopup, setShowGoldFoundPopup] = useState(false);
@@ -1092,6 +1099,18 @@ const Game = () => {
         setTimeout(() => {
           setShowGoldFoundPopup(false);
         }, 5000);
+      } else if (data.type === "killer_elimination_popup") {
+        // Show dramatic elimination popup with death image
+        setKillerEliminationMessage(data.message);
+        setKillerEliminationImage(data.death_image);
+        setKillerName(data.killer_name);
+        setSurvivorName(data.survivor_name);
+        setEliminationRoom(data.room_name);
+        setShowKillerEliminationPopup(true);
+        // Auto-hide after 6 seconds
+        setTimeout(() => {
+          setShowKillerEliminationPopup(false);
+        }, 6000);
       } else if (data.type === "player_action") {
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
@@ -1490,6 +1509,42 @@ const Game = () => {
               </p>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* NEW: Killer Elimination Popup with Dramatic Animation */}
+      {showKillerEliminationPopup && (
+        <div 
+          className="killer-elimination-overlay" 
+          style={{ zIndex: 2000 }}
+          onClick={() => setShowKillerEliminationPopup(false)}
+          data-testid="killer-elimination-popup"
+        >
+          <div className="killer-elimination-card">
+            <div className="blood-overlay"></div>
+            <div className="elimination-content">
+              {killerEliminationImage && (
+                <div className="death-image-container">
+                  <img 
+                    src={killerEliminationImage} 
+                    alt="Élimination" 
+                    className="death-image"
+                  />
+                </div>
+              )}
+              <div className="elimination-text">
+                <h2 className="elimination-title">💀 ÉLIMINATION 💀</h2>
+                <p className="elimination-message">
+                  <span className="killer-name-text">{killerName}</span>
+                  <span className="elimination-action"> a tué </span>
+                  <span className="survivor-name-text">{survivorName}</span>
+                  <span className="elimination-location"> dans </span>
+                  <span className="room-name-text">{eliminationRoom}</span>
+                </p>
+              </div>
+              <p className="elimination-dismiss">Cliquez pour continuer</p>
+            </div>
+          </div>
         </div>
       )}
 
