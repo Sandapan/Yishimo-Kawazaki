@@ -1259,6 +1259,12 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "type": "player_joined",
         "player": game["players"][player_id]
     })
+    
+    # FIXED: Also broadcast complete state update to ensure all players see the new player
+    await broadcast_to_session(matching_session, {
+        "type": "state_update",
+        "game": game
+    })
 
     return {
         "session_id": matching_session,
@@ -1514,18 +1520,28 @@ async def update_player(session_id: str, player_id: str, request: JoinGameReques
     # Get character class from new avatar
     character_class = get_avatar_class(request.player_avatar)
     
+    # FIXED: Preserve is_host status when updating player
+    is_host = game["players"][player_id].get("is_host", False)
+    
     # Update the player's profile
     game["players"][player_id]["name"] = request.player_name
     game["players"][player_id]["avatar"] = request.player_avatar
     game["players"][player_id]["character_class"] = character_class
     game["players"][player_id]["role"] = request.role
+    game["players"][player_id]["is_host"] = is_host  # Preserve host status
     
-    logger.info(f"Player {player_id} updated profile in session {session_id}")
+    logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
     # Broadcast player update to all players
     await broadcast_to_session(session_id, {
         "type": "player_updated",
         "player": game["players"][player_id]
+    })
+    
+    # FIXED: Also broadcast complete state update to ensure all players see the updated state
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
     })
     
     return {"status": "success", "player_id": player_id}
@@ -1560,6 +1576,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
             else:
                 # In lobby, send unfiltered state
                 await websocket.send_json({
+                    "type": "state_update",
+                    "game": game
+                })
+                
+                # FIXED: Notify all other connected players that someone reconnected
+                # This ensures everyone sees the complete player list when someone refreshes or reconnects
+                await broadcast_to_session(session_id, {
                     "type": "state_update",
                     "game": game
                 })

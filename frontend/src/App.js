@@ -452,9 +452,11 @@ const Lobby = () => {
       const data = JSON.parse(event.data);
 
       if (data.type === "state_update") {
+        // FIXED: Always update game state when receiving state_update
         setGameState(data.game);
       } else if (data.type === "player_joined") {
         toast.success(`${data.player.name} a rejoint la partie`);
+        // Note: state_update will follow this message from the backend
       } else if (data.type === "game_started") {
         toast.success(data.message);
         setTimeout(() => navigate(`/game/${sessionId}?pid=${storedPlayerId}`), 1000);
@@ -466,7 +468,7 @@ const Lobby = () => {
         toast.info(`${data.player_name} a changé de rôle`);
       } else if (data.type === "player_updated") {
         toast.info(`${data.player.name} a mis à jour son profil`);
-        fetchGameState();
+        // Note: state_update will follow this message from the backend
       }
     };
 
