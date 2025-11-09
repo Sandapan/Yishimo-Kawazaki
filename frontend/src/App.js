@@ -18,43 +18,43 @@ const SURVIVOR_AVATARS = [
     path: "/avatars/Archère.png", 
     class: "Archère",
     description: "Ses flèches atteignent les cibles les plus éloignées avec une précision redoutable…",
-    illustration: "/illustrations/Archère.png"
+    illustration: "/illustrations/Archère_animation.mp4"
   },
   { 
     path: "/avatars/Assassin.png", 
     class: "Assassin",
     description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé.",
-    illustration: "/illustrations/Assassin.png"
+    illustration: "/illustrations/Assassin_animation.mp4"
   },
   { 
     path: "/avatars/Barbare.png", 
     class: "Barbare",
     description: "Un vrai bourrin qui résout tous les problèmes à coups de hache. Même ceux qui demandent juste un peu de diplomatie.",
-    illustration: "/illustrations/Barbare.png"
+    illustration: "/illustrations/Barbare_animation.mp4"
   },
   { 
     path: "/avatars/Barde.png", 
     class: "Barde",
     description: "Le musicien raté du groupe. Son instrument ? Une arme sonore capable d'endormir certaines créatures.",
-    illustration: "/illustrations/Barde.png"
+    illustration: "/illustrations/Barde_animation.mp4"
   },
   { 
     path: "/avatars/Elfe.png", 
     class: "Elfe",
     description: "Elle seule sait lire l'elfique. Ça tombe bien : elle ne sait lire que ça.",
-    illustration: "/illustrations/Elfe.png"
+    illustration: "/illustrations/Elfe_animation.mp4"
   },
   { 
     path: "/avatars/Guerrier.png", 
     class: "Guerrier",
     description: "Vaillant et téméraire, il est élu de cette aventure. Enfin ça c'est ce qu'il croit.",
-    illustration: "/illustrations/Guerrier.png"
+    illustration: "/illustrations/Guerrier.mp4"
   },
   { 
     path: "/avatars/Mage.png", 
     class: "Mage",
     description: "Son bâton magique peut incendier certains décors… parfois même sa propre barbe.",
-    illustration: "/illustrations/Mage.png"
+    illustration: "/illustrations/Mage_animation.mp4"
   }
 ];
 
@@ -63,19 +63,19 @@ const KILLER_AVATARS = [
     path: "/avatars/Orc Berzerker.png", 
     class: "Orc Berzerker",
     description: "Votre soif de vengeance n'a d'yeux que pour ces sales petits voleurs. Et parfois, pour le buffet après la bataille.",
-    illustration: "/illustrations/Orc Berzerker.png"
+    illustration: "/illustrations/Orc Berzerker_animation.mp4"
   },
   { 
     path: "/avatars/Orc Chaman.png", 
     class: "Orc Chaman",
     description: "Traquer les intrus, très peu pour vous. Vous préférez laisser ce travail à vos morts-vivants — ils sont bien moins bavards.",
-    illustration: "/illustrations/Orc Chaman.png"
+    illustration: "/illustrations/Orc Chaman_animation.mp4"
   },
   { 
     path: "/avatars/Orc Roi.png", 
     class: "Orc Roi",
     description: "« Rendez les bijoux de la couronne ! Bande de losers, de voleurs, de crapules !» hurlez-vous avec rage.",
-    illustration: "/illustrations/Orc Roi.png"
+    illustration: "/illustrations/Orc Roi_animation.mp4"
   }
 ];
 
@@ -316,9 +316,12 @@ const Home = () => {
                         boxShadow: '0 4px 8px rgba(0,0,0,0.3)'
                       }}
                     >
-                      <img 
+                      <video 
                         src={selectedAvatar.illustration} 
-                        alt={`Illustration de ${selectedAvatar.class}`}
+                        autoPlay
+                        loop
+                        muted
+                        playsInline
                         style={{
                           width: '100%',
                           height: 'auto',
