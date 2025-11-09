@@ -110,7 +110,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "highlighted": False,  # NEW: for vision power
             "has_quest": False,  # NEW: for quest system
             "quest_class": None,  # NEW: class required for the quest
-            "poisoned_turns_remaining": 0  # NEW: for toxine power (0-3 turns)
+            "poisoned_turns_remaining": 0,  # NEW: for toxine power (0-3 turns)
+            "has_mimic": False  # NEW: for mimic power
         }
 
     # Get character class from avatar
@@ -327,6 +328,14 @@ POWERS = {
         "description": "Si vous trouvez un survivant en fouillant une pièce, vous pouvez fouiller une seconde pièce ce tour-ci",
         "icon": "rage.mp4",
         "requires_action": False
+    },
+    "mimic": {
+        "name": "💰 Mimic",
+        "description": "Invoquez 4 terribles mimiques pour 1 tour. Elles volent la totalité de l'or des aventuriers qui les croisent au tour suivant.",
+        "icon": "Mimic.mp4",
+        "requires_action": True,
+        "action_type": "select_rooms",  # select 4 rooms
+        "rooms_count": 4
     }
 }
 
@@ -570,6 +579,21 @@ async def apply_powers(session_id: str):
             }
             
             event_msg = f"😡 {player['name']} utilise Rage !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "mimic":
+            # Place mimics in selected rooms for next turn
+            action_data = selection.get("action_data", {})
+            mimic_rooms = action_data.get("rooms", [])
+            
+            for room_name in mimic_rooms:
+                if room_name in game["rooms"]:
+                    game["rooms"][room_name]["has_mimic"] = True
+            
+            game["active_powers"][power_name]["data"]["mimic_rooms"] = mimic_rooms
+            
+            event_msg = f"💰 {player['name']} utilise Mimic !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
@@ -937,6 +961,11 @@ async def process_turn(session_id: str):
             if room_data.get("poisoned_turns_remaining", 0) > 0:
                 room_data["poisoned_turns_remaining"] -= 1
         
+        # Clear mimics that weren't triggered (mimics only last 1 turn)
+        for room_name, room_data in game["rooms"].items():
+            if room_data.get("has_mimic", False):
+                room_data["has_mimic"] = False
+        
         # Decrement player poison countdowns and check for elimination
         players_to_eliminate = []
         for player_id, player in game["players"].items():
@@ -1133,6 +1162,11 @@ async def process_rage_second_selections(session_id: str):
         for room_name, room_data in game["rooms"].items():
             if room_data.get("poisoned_turns_remaining", 0) > 0:
                 room_data["poisoned_turns_remaining"] -= 1
+        
+        # Clear mimics that weren't triggered (mimics only last 1 turn)
+        for room_name, room_data in game["rooms"].items():
+            if room_data.get("has_mimic", False):
+                room_data["has_mimic"] = False
         
         # Decrement player poison countdowns and check for elimination
         players_to_eliminate = []
@@ -1465,6 +1499,7 @@ async def reset_game(session_id: str):
         room_data["highlighted"] = False  # NEW: reset highlights
         room_data.pop("trap_triggered", None)  # NEW: remove trap_triggered
         room_data["poisoned_turns_remaining"] = 0  # NEW: reset poison
+        room_data["has_mimic"] = False  # NEW: reset mimics
         room_data["has_quest"] = False  # NEW: reset quests
         room_data["quest_class"] = None  # NEW: reset quest class
     
@@ -1796,6 +1831,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
                                 "countdown": 10
                             })
+                    
+                    # Check if survivor enters room with mimic
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
+                        gold_stolen = player.get("gold", 0)
+                        player["gold"] = 0
+                        
+                        # Clear mimic from room after it triggers
+                        game["rooms"][room_name]["has_mimic"] = False
+                        
+                        # Send mimic notification immediately to the survivor with video
+                        await websocket.send_json({
+                            "type": "mimic_notification",
+                            "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
+                            "video_path": "/death/Mimic.mp4",
+                            "gold_stolen": gold_stolen
+                        })
                     
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":

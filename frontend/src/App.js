@@ -930,6 +930,11 @@ const Game = () => {
   const [showPoisonPopup, setShowPoisonPopup] = useState(false);
   const [poisonMessage, setPoisonMessage] = useState("");
   
+  // NEW: Mimic popup state (with video)
+  const [showMimicPopup, setShowMimicPopup] = useState(false);
+  const [mimicVideoPath, setMimicVideoPath] = useState("");
+  const [mimicMessage, setMimicMessage] = useState("");
+  
   // NEW: Toxin death popup state (with video)
   const [showToxinDeathPopup, setShowToxinDeathPopup] = useState(false);
   const [toxinDeathMessage, setToxinDeathMessage] = useState("");
@@ -1024,6 +1029,15 @@ const Game = () => {
         setTimeout(() => {
           setShowPoisonPopup(false);
         }, 5000);
+      } else if (data.type === "mimic_notification") {
+        // NEW: Show mimic popup for survivor who entered room with mimic
+        setMimicVideoPath(data.video_path || "");
+        setMimicMessage(data.message);
+        setShowMimicPopup(true);
+        // Auto-hide after 7 seconds (video is longer)
+        setTimeout(() => {
+          setShowMimicPopup(false);
+        }, 7000);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
@@ -1371,6 +1385,44 @@ const Game = () => {
         </div>
       )}
 
+      {/* NEW: Mimic Popup */}
+      {showMimicPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowMimicPopup(false)}
+          data-testid="mimic-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a3a2a', borderColor: '#f59e0b' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#f59e0b' }}>
+                💰
+                <span>Mimic !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {mimicVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowMimicPopup(false), 1000)}
+                >
+                  <source src={mimicVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {mimicMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Quest Completed Popup with Video */}
       {showQuestCompletedPopup && (
         <div 
@@ -1699,6 +1751,7 @@ const Game = () => {
                   const isTrapped = room.trapped && currentPlayerRole === "killer";
                   const isTrapTriggered = room.trap_triggered && currentPlayerRole === "survivor";
                   const isPoisoned = room.poisoned_turns_remaining > 0 && currentPlayerRole === "killer";
+                  const hasMimic = room.has_mimic && currentPlayerRole === "killer";
 
                   return (
                     <button
@@ -1719,6 +1772,7 @@ const Game = () => {
                         {isTrapped && <span className="room-icon room-trap-indicator" title="Blizzard">🥶</span>}
                         {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
                         {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
+                        {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (
