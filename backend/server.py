@@ -1831,22 +1831,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "countdown": 10
                             })
                     
-                    # Check if survivor enters room with mimic
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
-                        gold_stolen = player.get("gold", 0)
-                        player["gold"] = 0
-                        
-                        # Clear mimic from room after it triggers
-                        game["rooms"][room_name]["has_mimic"] = False
-                        
-                        # Send mimic notification immediately to the survivor with video
-                        await websocket.send_json({
-                            "type": "mimic_notification",
-                            "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
-                            "video_path": "/death/Mimic.mp4",
-                            "gold_stolen": gold_stolen
-                        })
-                    
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":
                         room = game["rooms"][room_name]
@@ -1940,6 +1924,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
                         except:
                             pass
+                    
+                    # Check if survivor enters room with mimic (AFTER gold is awarded)
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
+                        gold_stolen = player.get("gold", 0)
+                        player["gold"] = 0
+                        
+                        # Clear mimic from room after it triggers
+                        game["rooms"][room_name]["has_mimic"] = False
+                        
+                        # Send mimic notification immediately to the survivor with video
+                        await websocket.send_json({
+                            "type": "mimic_notification",
+                            "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
+                            "video_path": "/death/Mimic.mp4",
+                            "gold_stolen": gold_stolen
+                        })
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
