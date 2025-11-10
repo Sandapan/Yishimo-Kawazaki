@@ -961,10 +961,9 @@ async def process_turn(session_id: str):
             if room_data.get("poisoned_turns_remaining", 0) > 0:
                 room_data["poisoned_turns_remaining"] -= 1
         
-        # Clear mimics that weren't triggered (mimics only last 1 turn)
-        for room_name, room_data in game["rooms"].items():
-            if room_data.get("has_mimic", False):
-                room_data["has_mimic"] = False
+        # NOTE: Mimics are NOT cleared here anymore!
+        # Like traps, they need to persist until AFTER survivors make their selection in the next turn
+        # Mimics will be cleared in the survivor_selection phase after all survivors have selected
         
         # Decrement player poison countdowns and check for elimination
         players_to_eliminate = []
@@ -1163,10 +1162,9 @@ async def process_rage_second_selections(session_id: str):
             if room_data.get("poisoned_turns_remaining", 0) > 0:
                 room_data["poisoned_turns_remaining"] -= 1
         
-        # Clear mimics that weren't triggered (mimics only last 1 turn)
-        for room_name, room_data in game["rooms"].items():
-            if room_data.get("has_mimic", False):
-                room_data["has_mimic"] = False
+        # NOTE: Mimics are NOT cleared here anymore!
+        # Like traps, they need to persist until AFTER survivors make their selection in the next turn
+        # Mimics will be cleared in the survivor_selection phase after all survivors have selected
         
         # Decrement player poison countdowns and check for elimination
         players_to_eliminate = []
@@ -1711,10 +1709,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             if game["players"][pid]["role"] == "survivor"]
 
                         if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, NOW clear traps from previous turn
+                            # All survivors have selected, NOW clear traps and mimics from previous turn
                             for room_name_clear, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
+                                room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
                             
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
@@ -1958,11 +1957,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             if game["players"][pid]["role"] == "survivor"]
 
                         if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, NOW clear traps from previous turn
-                            # This ensures traps persist for exactly one turn after being set
+                            # All survivors have selected, NOW clear traps and mimics from previous turn
+                            # This ensures traps and mimics persist for exactly one turn after being set
                             for room_name, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
+                                room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
                             
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
