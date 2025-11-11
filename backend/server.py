@@ -111,7 +111,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_quest": False,  # NEW: for quest system
             "quest_class": None,  # NEW: class required for the quest
             "poisoned_turns_remaining": 0,  # NEW: for toxine power (0-3 turns)
-            "has_mimic": False  # NEW: for mimic power
+            "has_mimic": False,  # NEW: for mimic power
+            "has_crystal": False  # NEW: for crystal system
         }
 
     # Get character class from avatar
@@ -153,6 +154,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "active_quest": None,  # NEW: current active quest {class: "Mage", room: "Les Cryptes"}
         "completed_quests": [],  # NEW: list of completed quest classes
         "rage_second_chances": {},  # NEW: {killer_id: {"can_select": True/False, "room_selected": None}}
+        "crystal_spawned": False,  # NEW: whether crystal has been spawned
+        "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -191,6 +194,30 @@ def place_quest(game_state: dict, quest_class: str) -> Optional[str]:
         game_state["rooms"][selected_room]["has_quest"] = True
         game_state["rooms"][selected_room]["quest_class"] = quest_class
         logger.info(f"Placed quest for class {quest_class} in room: {selected_room}")
+        return selected_room
+
+    return None
+
+def place_crystal(game_state: dict) -> Optional[str]:
+    """Place the crystal in a random available room after all quests are completed"""
+    available_rooms = []
+
+    # Get all killer positions
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        # Room is available if: not locked, no crystal already, not a killer's position
+        if (not room_data["locked"] and
+            not room_data.get("has_crystal", False) and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_crystal"] = True
+        game_state["crystal_spawned"] = True
+        logger.info(f"Crystal placed in room: {selected_room}")
         return selected_room
 
     return None
@@ -921,22 +948,39 @@ async def process_turn(session_id: str):
     # Check victory conditions
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
 
-    # Victory for survivors: all quests completed
-    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0:
+    # Check if all quests completed but crystal not spawned yet
+    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0 and not game["crystal_spawned"]:
+        # Spawn the crystal for final quest
+        crystal_room = place_crystal(game)
+        if crystal_room:
+            # Send different messages based on role with crystal spawn video
+            survivor_msg = "💎 Le cristal est apparu : détruisez-le pour vous échapper d'ici !"
+            killer_msg = "💎 Le cristal est apparu : Empêchez-les de le détruire !"
+
+            game["events"].append({"message": survivor_msg, "type": "crystal_spawned", "for_role": "survivor"})
+            game["events"].append({"message": killer_msg, "type": "crystal_spawned", "for_role": "killer"})
+
+            # Send crystal spawn video to survivors
+            await broadcast_to_session(session_id, {
+                "type": "crystal_spawned",
+                "message": survivor_msg,
+                "video_path": "/event/Cristal_spawn.mp4"
+            }, role_filter="survivor")
+            
+            # Send crystal spawn video to killers
+            await broadcast_to_session(session_id, {
+                "type": "crystal_spawned",
+                "message": killer_msg,
+                "video_path": "/event/Cristal_spawn.mp4"
+            }, role_filter="killer")
+    
+    # Victory for survivors: crystal destroyed
+    elif game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
         game["phase"] = "game_over"
         game["winner"] = "survivors"
 
-        # Send different messages based on role
-        survivor_msg = "🎉 VICTOIRE ! Les survivants ont collecté toutes les clefs !"
-        killer_msg = "🎉 DEFAITE ! Les survivants ont collecté toutes les clefs !"
-
-        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
-        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
-
-        # Send to survivors
-        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": survivor_msg}, role_filter="survivor")
-        # Send to killers
-        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": killer_msg}, role_filter="killer")
+        # Victory messages already sent when crystal was destroyed
+        pass
 
     elif len(alive_survivors) == 0:
         game["phase"] = "game_over"
@@ -1122,22 +1166,39 @@ async def process_rage_second_selections(session_id: str):
     # Check victory conditions again
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
     
-    # Victory for survivors: all quests completed
-    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0:
+    # Check if all quests completed but crystal not spawned yet
+    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0 and not game["crystal_spawned"]:
+        # Spawn the crystal for final quest
+        crystal_room = place_crystal(game)
+        if crystal_room:
+            # Send different messages based on role with crystal spawn video
+            survivor_msg = "💎 Le cristal est apparu : détruisez-le pour vous échapper d'ici !"
+            killer_msg = "💎 Le cristal est apparu : Empêchez-les de le détruire !"
+
+            game["events"].append({"message": survivor_msg, "type": "crystal_spawned", "for_role": "survivor"})
+            game["events"].append({"message": killer_msg, "type": "crystal_spawned", "for_role": "killer"})
+
+            # Send crystal spawn video to survivors
+            await broadcast_to_session(session_id, {
+                "type": "crystal_spawned",
+                "message": survivor_msg,
+                "video_path": "/event/Cristal_spawn.mp4"
+            }, role_filter="survivor")
+            
+            # Send crystal spawn video to killers
+            await broadcast_to_session(session_id, {
+                "type": "crystal_spawned",
+                "message": killer_msg,
+                "video_path": "/event/Cristal_spawn.mp4"
+            }, role_filter="killer")
+    
+    # Victory for survivors: crystal destroyed
+    elif game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
         game["phase"] = "game_over"
         game["winner"] = "survivors"
-        
-        # Send different messages based on role
-        survivor_msg = "🎉 VICTOIRE ! Les survivants ont collecté toutes les clefs !"
-        killer_msg = "🎉 DEFAITE ! Les survivants ont collecté toutes les clefs !"
-        
-        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
-        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
-        
-        # Send to survivors
-        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": survivor_msg}, role_filter="survivor")
-        # Send to killers
-        await broadcast_to_session(session_id, {"type": "game_over", "winner": "survivors", "message": killer_msg}, role_filter="killer")
+
+        # Victory messages already sent when crystal was destroyed
+        pass
     
     elif len(alive_survivors) == 0:
         game["phase"] = "game_over"
@@ -1500,6 +1561,7 @@ async def reset_game(session_id: str):
         room_data["has_mimic"] = False  # NEW: reset mimics
         room_data["has_quest"] = False  # NEW: reset quests
         room_data["quest_class"] = None  # NEW: reset quest class
+        room_data["has_crystal"] = False  # NEW: reset crystal
     
     # Reset game state
     game["keys_collected"] = 0
@@ -1516,6 +1578,8 @@ async def reset_game(session_id: str):
     game["active_powers"] = {}  # NEW: reset powers
     game["pending_power_selections"] = {}  # NEW: reset power selections
     game["rooms_searched_this_key"] = []  # NEW: reset searched rooms
+    game["crystal_spawned"] = False  # NEW: reset crystal spawned
+    game["crystal_destroyed"] = False  # NEW: reset crystal destroyed
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -1906,6 +1970,44 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
                             # Notify only survivors about unsuccessful search
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                        
+                        # Check for crystal (no class requirement - any survivor can destroy it)
+                        if room.get("has_crystal", False) and game.get("crystal_spawned", False):
+                            # Survivor found the crystal!
+                            room["has_crystal"] = False
+                            game["crystal_destroyed"] = True
+                            game["phase"] = "game_over"
+                            game["winner"] = "survivors"
+                            
+                            # Send different messages based on role
+                            survivor_msg = "🎉 VICTOIRE ! Le cristal a été détruit ! Vous vous êtes échappés !"
+                            killer_msg = "💀 DEFAITE ! Le cristal a été détruit..."
+                            
+                            game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+                            game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+                            
+                            # Send crystal destroyed video to the player who destroyed it
+                            try:
+                                await websocket.send_json({
+                                    "type": "crystal_destroyed_popup",
+                                    "message": "💎 Vous avez détruit le cristal ! Victoire !",
+                                    "video_path": "/event/Cristal_destruction.mp4"
+                                })
+                            except:
+                                pass
+                            
+                            # Send game over to all players
+                            await broadcast_to_session(session_id, {
+                                "type": "game_over",
+                                "winner": "survivors",
+                                "message": survivor_msg
+                            }, role_filter="survivor")
+                            
+                            await broadcast_to_session(session_id, {
+                                "type": "game_over",
+                                "winner": "survivors",
+                                "message": killer_msg
+                            }, role_filter="killer")
                     
                     # GOLD SYSTEM: Give gold to survivor if not trapped (blizzard)
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):

@@ -954,6 +954,16 @@ const Game = () => {
   const [goldAmount, setGoldAmount] = useState(0);
   const [goldImage, setGoldImage] = useState("");
 
+  // NEW: Crystal spawned popup state (with video)
+  const [showCrystalSpawnedPopup, setShowCrystalSpawnedPopup] = useState(false);
+  const [crystalSpawnedMessage, setCrystalSpawnedMessage] = useState("");
+  const [crystalSpawnedVideoPath, setCrystalSpawnedVideoPath] = useState("");
+
+  // NEW: Crystal destroyed popup state (with video)
+  const [showCrystalDestroyedPopup, setShowCrystalDestroyedPopup] = useState(false);
+  const [crystalDestroyedMessage, setCrystalDestroyedMessage] = useState("");
+  const [crystalDestroyedVideoPath, setCrystalDestroyedVideoPath] = useState("");
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -1116,6 +1126,24 @@ const Game = () => {
         setTimeout(() => {
           setShowGoldFoundPopup(false);
         }, 5000);
+      } else if (data.type === "crystal_spawned") {
+        // Show popup with video for crystal spawned
+        setCrystalSpawnedMessage(data.message);
+        setCrystalSpawnedVideoPath(data.video_path);
+        setShowCrystalSpawnedPopup(true);
+        // Auto-hide after video ends (assuming ~10 seconds)
+        setTimeout(() => {
+          setShowCrystalSpawnedPopup(false);
+        }, 10000);
+      } else if (data.type === "crystal_destroyed_popup") {
+        // Show popup with video for crystal destroyed
+        setCrystalDestroyedMessage(data.message);
+        setCrystalDestroyedVideoPath(data.video_path);
+        setShowCrystalDestroyedPopup(true);
+        // Auto-hide after video ends (assuming ~10 seconds)
+        setTimeout(() => {
+          setShowCrystalDestroyedPopup(false);
+        }, 10000);
       } else if (data.type === "killer_elimination_popup") {
         // Show dramatic elimination popup with death image
         setKillerEliminationMessage(data.message);
@@ -1600,6 +1628,70 @@ const Game = () => {
               <p className="elimination-dismiss">Cliquez pour continuer</p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* NEW: Crystal Spawned Popup with Video */}
+      {showCrystalSpawnedPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1500 }}
+          data-testid="crystal-spawned-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#1a0033', borderColor: '#9333ea' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#c084fc' }}>
+                💎
+                <span>Le Cristal Est Apparu !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {crystalSpawnedVideoPath && (
+                <video 
+                  src={crystalSpawnedVideoPath} 
+                  autoPlay 
+                  loop
+                  muted
+                  style={{ width: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '1rem' }}
+                />
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.3em', textAlign: 'center', color: '#c084fc', fontWeight: 'bold' }}>
+                {crystalSpawnedMessage}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Crystal Destroyed Popup with Video */}
+      {showCrystalDestroyedPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 2000 }}
+          data-testid="crystal-destroyed-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#001a33', borderColor: '#3b82f6' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#60a5fa' }}>
+                💎
+                <span>Cristal Détruit !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {crystalDestroyedVideoPath && (
+                <video 
+                  src={crystalDestroyedVideoPath} 
+                  autoPlay 
+                  loop
+                  muted
+                  style={{ width: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '1rem' }}
+                />
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.5em', textAlign: 'center', color: '#60a5fa', fontWeight: 'bold' }}>
+                {crystalDestroyedMessage}
+              </p>
+            </CardContent>
+          </Card>
         </div>
       )}
 
