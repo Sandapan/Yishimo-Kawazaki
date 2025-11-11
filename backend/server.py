@@ -1809,6 +1809,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
                                 room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
+                                room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
+                                room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
+                                room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
                             
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
@@ -2118,6 +2121,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
                                 room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
+                                room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
+                                room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
+                                room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
                             
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
