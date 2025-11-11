@@ -665,6 +665,8 @@ const PowerSelectionOverlay = ({
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
   const [selectedFloor, setSelectedFloor] = useState(null);
+  const [teleportationStep, setTeleportationStep] = useState(1); // 1 = trap room, 2 = exit room
+  const [trapRoom, setTrapRoom] = useState(null);
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
@@ -702,6 +704,13 @@ const PowerSelectionOverlay = ({
       } else if (tempRoomSelections.length < roomsCount) {
         setTempRoomSelections([...tempRoomSelections, roomName]);
       }
+    } else if (actionType === "select_two_rooms") {
+      // Teleportation: 2 rooms in sequence (trap then exit)
+      if (teleportationStep === 1) {
+        setTrapRoom(roomName);
+      } else {
+        setTempRoomSelections([roomName]);
+      }
     }
   };
   
@@ -722,6 +731,13 @@ const PowerSelectionOverlay = ({
     } else if (actionType === "select_floor") {
       // Must select one floor
       return selectedFloor !== null;
+    } else if (actionType === "select_two_rooms") {
+      // Teleportation: step 1 needs trap room, step 2 needs exit room
+      if (teleportationStep === 1) {
+        return trapRoom !== null;
+      } else {
+        return tempRoomSelections.length === 1;
+      }
     }
     return false;
   };
@@ -787,6 +803,8 @@ const PowerSelectionOverlay = ({
                   {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
                   {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
                   {actionType === "select_room" && "Sélectionnez une pièce à empoisonner:"}
+                  {actionType === "select_two_rooms" && teleportationStep === 1 && "Posez votre piège de téléportation dans la pièce que vous souhaitez ➡️🌀"}
+                  {actionType === "select_two_rooms" && teleportationStep === 2 && "Posez votre portail de sortie dans la pièce que vous souhaitez. Les joueurs téléportés arriveront dans cette pièce 🌀➡️"}
                 </p>
                 
                 <div className="rooms-selection-grid">
@@ -797,7 +815,9 @@ const PowerSelectionOverlay = ({
                         {Object.entries(gameState.rooms)
                           .filter(([_, data]) => data.floor === floor)
                           .map(([roomName, roomData]) => {
-                            const isSelected = tempRoomSelections.includes(roomName);
+                            const isSelected = actionType === "select_two_rooms" && teleportationStep === 1 
+                              ? trapRoom === roomName 
+                              : tempRoomSelections.includes(roomName);
                             const isLocked = roomData.locked;
                             const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
                             
@@ -824,6 +844,15 @@ const PowerSelectionOverlay = ({
                   onClick={() => {
                     if (actionType === "select_room") {
                       confirmPowerAction({ room: tempRoomSelections[0] });
+                    } else if (actionType === "select_two_rooms") {
+                      if (teleportationStep === 1) {
+                        // Move to step 2
+                        setTeleportationStep(2);
+                        setTempRoomSelections([]);
+                      } else {
+                        // Confirm both rooms
+                        confirmPowerAction({ trap_room: trapRoom, exit_room: tempRoomSelections[0] });
+                      }
                     } else {
                       confirmPowerAction({ rooms: tempRoomSelections });
                     }
@@ -832,7 +861,7 @@ const PowerSelectionOverlay = ({
                   className="w-full mt-4"
                   style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
                 >
-                  Confirmer
+                  {actionType === "select_two_rooms" && teleportationStep === 1 ? "Suivant" : "Confirmer"}
                 </Button>
               </>
             )}
@@ -934,6 +963,11 @@ const Game = () => {
   const [showMimicPopup, setShowMimicPopup] = useState(false);
   const [mimicVideoPath, setMimicVideoPath] = useState("");
   const [mimicMessage, setMimicMessage] = useState("");
+  
+  // NEW: Teleportation popup state (with video)
+  const [showTeleportationPopup, setShowTeleportationPopup] = useState(false);
+  const [teleportationVideoPath, setTeleportationVideoPath] = useState("");
+  const [teleportationMessage, setTeleportationMessage] = useState("");
   
   // NEW: Toxin death popup state (with video)
   const [showToxinDeathPopup, setShowToxinDeathPopup] = useState(false);
@@ -1048,6 +1082,15 @@ const Game = () => {
         setTimeout(() => {
           setShowMimicPopup(false);
         }, 7000);
+      } else if (data.type === "teleportation_notification") {
+        // NEW: Show teleportation popup for survivor who entered teleportation trap with video
+        setTeleportationVideoPath(data.video_path || "");
+        setTeleportationMessage(data.message);
+        setShowTeleportationPopup(true);
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+          setShowTeleportationPopup(false);
+        }, 5000);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
@@ -1463,6 +1506,44 @@ const Game = () => {
         </div>
       )}
 
+      {/* NEW: Teleportation Popup */}
+      {showTeleportationPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowTeleportationPopup(false)}
+          data-testid="teleportation-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a3a4a', borderColor: '#06b6d4' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#06b6d4' }}>
+                🌀
+                <span>Téléportation !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {teleportationVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowTeleportationPopup(false), 1000)}
+                >
+                  <source src={teleportationVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {teleportationMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Quest Completed Popup with Video */}
       {showQuestCompletedPopup && (
         <div 
@@ -1856,6 +1937,8 @@ const Game = () => {
                   const isTrapTriggered = room.trap_triggered && currentPlayerRole === "survivor";
                   const isPoisoned = room.poisoned_turns_remaining > 0 && currentPlayerRole === "killer";
                   const hasMimic = room.has_mimic && currentPlayerRole === "killer";
+                  const hasTeleportationTrap = room.teleportation_trap && currentPlayerRole === "killer";
+                  const hasTeleportationExit = room.teleportation_exit && currentPlayerRole === "killer";
 
                   return (
                     <button
@@ -1877,6 +1960,8 @@ const Game = () => {
                         {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
                         {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
                         {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
+                        {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
+                        {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (

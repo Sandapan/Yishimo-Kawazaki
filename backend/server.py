@@ -112,7 +112,10 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "quest_class": None,  # NEW: class required for the quest
             "poisoned_turns_remaining": 0,  # NEW: for toxine power (0-3 turns)
             "has_mimic": False,  # NEW: for mimic power
-            "has_crystal": False  # NEW: for crystal system
+            "has_crystal": False,  # NEW: for crystal system
+            "teleportation_trap": False,  # NEW: for teleportation power (entrance trap ➡️🌀)
+            "teleportation_exit": False,  # NEW: for teleportation power (exit portal 🌀➡️)
+            "teleportation_target_room": None  # NEW: destination room for teleportation
         }
 
     # Get character class from avatar
@@ -363,6 +366,13 @@ POWERS = {
         "requires_action": True,
         "action_type": "select_rooms",  # select 4 rooms
         "rooms_count": 4
+    },
+    "teleportation": {
+        "name": "🌀 Piège de Téléportation",
+        "description": "Créez un portail qui téléporte n'importe quel joueur d'une pièce à une autre, avant même qu'il puisse la visiter.",
+        "icon": "Teleportation.mp4",
+        "requires_action": True,
+        "action_type": "select_two_rooms"  # select two rooms sequentially
     }
 }
 
@@ -621,6 +631,24 @@ async def apply_powers(session_id: str):
             game["active_powers"][power_name]["data"]["mimic_rooms"] = mimic_rooms
             
             event_msg = f"💰 {player['name']} utilise Mimic !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "teleportation":
+            # Set teleportation trap (entrance) and exit portal in selected rooms
+            action_data = selection.get("action_data", {})
+            trap_room = action_data.get("trap_room")
+            exit_room = action_data.get("exit_room")
+            
+            if trap_room and trap_room in game["rooms"] and exit_room and exit_room in game["rooms"]:
+                game["rooms"][trap_room]["teleportation_trap"] = True
+                game["rooms"][trap_room]["teleportation_target_room"] = exit_room
+                game["rooms"][exit_room]["teleportation_exit"] = True
+            
+            game["active_powers"][power_name]["data"]["trap_room"] = trap_room
+            game["active_powers"][power_name]["data"]["exit_room"] = exit_room
+            
+            event_msg = f"🌀 {player['name']} utilise Piège de Téléportation !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
@@ -1562,6 +1590,9 @@ async def reset_game(session_id: str):
         room_data["has_quest"] = False  # NEW: reset quests
         room_data["quest_class"] = None  # NEW: reset quest class
         room_data["has_crystal"] = False  # NEW: reset crystal
+        room_data["teleportation_trap"] = False  # NEW: reset teleportation trap
+        room_data["teleportation_exit"] = False  # NEW: reset teleportation exit
+        room_data["teleportation_target_room"] = None  # NEW: reset teleportation target
     
     # Reset game state
     game["keys_collected"] = 0
@@ -1849,6 +1880,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     }
                     
                     # LOG: Player room selection
+                    original_room_name = room_name
                     logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}'")
 
                     # DISABLED: Sound clue functionality kept for Traque power
@@ -1859,7 +1891,31 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     #     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
                     #     await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
                     
-                    # Track rooms searched for Vision power
+                    # PRIORITY CHECK: Teleportation trap - must be checked BEFORE any other event
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("teleportation_trap", False):
+                        # Survivor triggered teleportation trap!
+                        target_room = game["rooms"][room_name].get("teleportation_target_room")
+                        
+                        if target_room and target_room in game["rooms"]:
+                            # Get player class for video path
+                            player_class = player.get("character_class", "Mage")
+                            video_path = f"/death/{player_class}_teleportation.mp4"
+                            
+                            # Send teleportation notification to the survivor with video
+                            await websocket.send_json({
+                                "type": "teleportation_notification",
+                                "message": f"Vous déclenchez un piège de téléportation vers {target_room} !",
+                                "video_path": video_path,
+                                "target_room": target_room
+                            })
+                            
+                            # Teleport player to target room - update their selected room
+                            game["pending_actions"][player_id]["room"] = target_room
+                            room_name = target_room  # Continue processing with the target room
+                            
+                            logger.info(f"🌀 {player['name']} téléporté de {original_room_name} vers {target_room}")
+                    
+                    # Track rooms searched for Vision power (track the final room after teleportation)
                     if player["role"] == "survivor" and room_name not in game.get("rooms_searched_this_key", []):
                         if "rooms_searched_this_key" not in game:
                             game["rooms_searched_this_key"] = []
