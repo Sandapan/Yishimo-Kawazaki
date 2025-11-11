@@ -1980,7 +1980,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["winner"] = "survivors"
                             
                             # Get the survivor's class for the appropriate video
-                            survivor_class = player.get("class", "Guerrier")  # Default to Guerrier if class not found
+                            survivor_class = player.get("character_class", "Guerrier")  # Default to Guerrier if class not found
                             crystal_video = f"/event/Cristal_{survivor_class}.mp4"
                             
                             # Send different messages based on role
