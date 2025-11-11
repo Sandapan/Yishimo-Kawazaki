@@ -1979,6 +1979,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["phase"] = "game_over"
                             game["winner"] = "survivors"
                             
+                            # Get the survivor's class for the appropriate video
+                            survivor_class = player.get("class", "Guerrier")  # Default to Guerrier if class not found
+                            crystal_video = f"/event/Cristal_{survivor_class}.mp4"
+                            
                             # Send different messages based on role
                             survivor_msg = "🎉 VICTOIRE ! Le cristal a été détruit ! Vous vous êtes échappés !"
                             killer_msg = "💀 DEFAITE ! Le cristal a été détruit..."
@@ -1986,27 +1990,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
                             game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
                             
-                            # Send crystal destroyed video to the player who destroyed it
-                            try:
-                                await websocket.send_json({
-                                    "type": "crystal_destroyed_popup",
-                                    "message": "💎 Vous avez détruit le cristal ! Victoire !",
-                                    "video_path": "/event/Cristal_destruction.mp4"
-                                })
-                            except:
-                                pass
-                            
-                            # Send game over to all players
+                            # Send game over to survivors with crystal destroyed video
                             await broadcast_to_session(session_id, {
                                 "type": "game_over",
                                 "winner": "survivors",
-                                "message": survivor_msg
+                                "message": survivor_msg,
+                                "video_path": crystal_video
                             }, role_filter="survivor")
                             
+                            # Send game over to killers with crystal destroyed video
                             await broadcast_to_session(session_id, {
                                 "type": "game_over",
                                 "winner": "survivors",
-                                "message": killer_msg
+                                "message": killer_msg,
+                                "video_path": crystal_video
                             }, role_filter="killer")
                     
                     # GOLD SYSTEM: Give gold to survivor if not trapped (blizzard)

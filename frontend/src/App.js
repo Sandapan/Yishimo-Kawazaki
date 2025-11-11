@@ -958,7 +958,7 @@ const Game = () => {
   const [showCrystalSpawnedPopup, setShowCrystalSpawnedPopup] = useState(false);
   const [crystalSpawnedMessage, setCrystalSpawnedMessage] = useState("");
   const [crystalSpawnedVideoPath, setCrystalSpawnedVideoPath] = useState("");
-
+  
   // NEW: Crystal destroyed popup state (with video)
   const [showCrystalDestroyedPopup, setShowCrystalDestroyedPopup] = useState(false);
   const [crystalDestroyedMessage, setCrystalDestroyedMessage] = useState("");
@@ -1083,7 +1083,19 @@ const Game = () => {
           }
         });
       } else if (data.type === "game_over") {
-        toast.success(data.message);
+        // If game over has a video (crystal destroyed), show popup
+        if (data.video_path) {
+          setCrystalDestroyedMessage(data.message);
+          setCrystalDestroyedVideoPath(data.video_path);
+          setShowCrystalDestroyedPopup(true);
+          // Auto-hide after video ends (assuming ~8 seconds for crystal videos)
+          setTimeout(() => {
+            setShowCrystalDestroyedPopup(false);
+          }, 8000);
+        } else {
+          // Otherwise just show toast
+          toast.success(data.message);
+        }
       } else if (data.type === "key_found_popup") {
         // Show popup for key found
         setKeyFoundMessage(data.message);
@@ -1682,9 +1694,9 @@ const Game = () => {
                 <video 
                   src={crystalDestroyedVideoPath} 
                   autoPlay 
-                  loop
                   muted
                   style={{ width: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowCrystalDestroyedPopup(false), 1000)}
                 />
               )}
               <p className="game-over-message" style={{ fontSize: '1.5em', textAlign: 'center', color: '#60a5fa', fontWeight: 'bold' }}>
