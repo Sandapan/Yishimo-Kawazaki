@@ -975,14 +975,14 @@ async def process_turn(session_id: str):
             }, role_filter="killer")
     
     # Victory for survivors: crystal destroyed
-    elif game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
+    if game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
         game["phase"] = "game_over"
         game["winner"] = "survivors"
-
         # Victory messages already sent when crystal was destroyed
-        pass
+        return  # Exit early, game is over
 
-    elif len(alive_survivors) == 0:
+    # Victory for killers: all survivors eliminated
+    if len(alive_survivors) == 0:
         game["phase"] = "game_over"
         game["winner"] = "killers"
 
@@ -997,104 +997,104 @@ async def process_turn(session_id: str):
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
         # Send to killers
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+        return  # Exit early, game is over
 
-    else:
-        # Handle toxine countdowns before next turn
-        # Decrement room poison durations
-        for room_name, room_data in game["rooms"].items():
-            if room_data.get("poisoned_turns_remaining", 0) > 0:
-                room_data["poisoned_turns_remaining"] -= 1
+    # Game continues - Handle toxine countdowns before next turn
+    # Decrement room poison durations
+    for room_name, room_data in game["rooms"].items():
+        if room_data.get("poisoned_turns_remaining", 0) > 0:
+            room_data["poisoned_turns_remaining"] -= 1
+    
+    # NOTE: Mimics are NOT cleared here anymore!
+    # Like traps, they need to persist until AFTER survivors make their selection in the next turn
+    # Mimics will be cleared in the survivor_selection phase after all survivors have selected
+    
+    # Decrement player poison countdowns and check for elimination
+    players_to_eliminate = []
+    for player_id, player in game["players"].items():
+        if player["role"] == "survivor" and not player["eliminated"]:
+            poison_countdown = player.get("poisoned_countdown", 0)
+            if poison_countdown > 0:
+                player["poisoned_countdown"] -= 1
+                
+                # Check if player suffocates
+                if player["poisoned_countdown"] == 0:
+                    players_to_eliminate.append(player_id)
+                else:
+                    # Send notification to poisoned survivor about remaining turns
+                    if player_id in active_connections.get(session_id, {}):
+                        try:
+                            await active_connections[session_id][player_id].send_json({
+                                "type": "poison_countdown",
+                                "countdown": player["poisoned_countdown"],
+                                "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                            })
+                        except:
+                            pass
+    
+    # Eliminate poisoned players
+    for player_id in players_to_eliminate:
+        player = game["players"][player_id]
+        player["eliminated"] = True
+        player["poisoned_countdown"] = 0
+        player["gold"] = 0  # Reset gold when eliminated
         
-        # NOTE: Mimics are NOT cleared here anymore!
-        # Like traps, they need to persist until AFTER survivors make their selection in the next turn
-        # Mimics will be cleared in the survivor_selection phase after all survivors have selected
+        event_msg = f"💀 {player['name']} a succombé au poison toxique !"
+        game["events"].append({"message": event_msg, "type": "player_eliminated"})
         
-        # Decrement player poison countdowns and check for elimination
-        players_to_eliminate = []
-        for player_id, player in game["players"].items():
-            if player["role"] == "survivor" and not player["eliminated"]:
-                poison_countdown = player.get("poisoned_countdown", 0)
-                if poison_countdown > 0:
-                    player["poisoned_countdown"] -= 1
-                    
-                    # Check if player suffocates
-                    if player["poisoned_countdown"] == 0:
-                        players_to_eliminate.append(player_id)
-                    else:
-                        # Send notification to poisoned survivor about remaining turns
-                        if player_id in active_connections.get(session_id, {}):
-                            try:
-                                await active_connections[session_id][player_id].send_json({
-                                    "type": "poison_countdown",
-                                    "countdown": player["poisoned_countdown"],
-                                    "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
-                                })
-                            except:
-                                pass
+        # Get player class from avatar to determine death video
+        player_class = get_avatar_class(player.get("avatar", ""))
+        video_path = ""
+        if player_class:
+            # Format: /death/ClassName_toxine.mp4
+            video_path = f"/death/{player_class}_toxine.mp4"
         
-        # Eliminate poisoned players
-        for player_id in players_to_eliminate:
-            player = game["players"][player_id]
-            player["eliminated"] = True
-            player["poisoned_countdown"] = 0
-            player["gold"] = 0  # Reset gold when eliminated
-            
-            event_msg = f"💀 {player['name']} a succombé au poison toxique !"
-            game["events"].append({"message": event_msg, "type": "player_eliminated"})
-            
-            # Get player class from avatar to determine death video
-            player_class = get_avatar_class(player.get("avatar", ""))
-            video_path = ""
-            if player_class:
-                # Format: /death/ClassName_toxine.mp4
-                video_path = f"/death/{player_class}_toxine.mp4"
-            
-            # Send toxin death popup to all players with video
-            toxin_death_msg = f"{player['name']} a succombé de la toxine !"
-            await broadcast_to_session(session_id, {
-                "type": "toxin_death_popup",
-                "message": toxin_death_msg,
-                "video_path": video_path,
-                "player_name": player['name']
-            })
-        
-        # Check if all survivors died from toxin (after toxin eliminations)
-        alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
-        
-        if len(alive_survivors_after_toxin) == 0:
-            # Wait for death videos to play (5 seconds) before sending game over messages
-            if len(players_to_eliminate) > 0:
-                await asyncio.sleep(5)
-            
-            game["phase"] = "game_over"
-            game["winner"] = "killers"
-            
-            # Send different messages based on role
-            survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-            killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
-            
-            game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
-            game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
-            
-            # Send to survivors
-            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
-            # Send to killers
-            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
-            return  # Exit early, game is over
-        
-        # Next turn - Start with survivors selection
-        game["turn"] += 1
-        game["phase"] = "survivor_selection"
-        game["pending_actions"] = {}
-        # Clear active powers
-        game["active_powers"] = {}
-        game["pending_power_selections"] = {}
+        # Send toxin death popup to all players with video
+        toxin_death_msg = f"{player['name']} a succombé de la toxine !"
         await broadcast_to_session(session_id, {
-            "type": "new_turn",
-            "turn": game["turn"],
-            "phase": "survivor_selection",
-            "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+            "type": "toxin_death_popup",
+            "message": toxin_death_msg,
+            "video_path": video_path,
+            "player_name": player['name']
         })
+    
+    # Check if all survivors died from toxin (after toxin eliminations)
+    alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    if len(alive_survivors_after_toxin) == 0:
+        # Wait for death videos to play (5 seconds) before sending game over messages
+        if len(players_to_eliminate) > 0:
+            await asyncio.sleep(5)
+        
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        # Send different messages based on role
+        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        
+        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+        
+        # Send to survivors
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+        # Send to killers
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+        return  # Exit early, game is over
+    
+    # Next turn - Start with survivors selection
+    game["turn"] += 1
+    game["phase"] = "survivor_selection"
+    game["pending_actions"] = {}
+    # Clear active powers
+    game["active_powers"] = {}
+    game["pending_power_selections"] = {}
+    await broadcast_to_session(session_id, {
+        "type": "new_turn",
+        "turn": game["turn"],
+        "phase": "survivor_selection",
+        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+    })
 
 async def process_rage_second_selections(session_id: str):
     """Process second room selections for killers with rage power"""
@@ -1193,14 +1193,14 @@ async def process_rage_second_selections(session_id: str):
             }, role_filter="killer")
     
     # Victory for survivors: crystal destroyed
-    elif game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
+    if game.get("crystal_destroyed", False) and len(alive_survivors) > 0:
         game["phase"] = "game_over"
         game["winner"] = "survivors"
-
         # Victory messages already sent when crystal was destroyed
-        pass
+        return  # Exit early, game is over
     
-    elif len(alive_survivors) == 0:
+    # Victory for killers: all survivors eliminated
+    if len(alive_survivors) == 0:
         game["phase"] = "game_over"
         game["winner"] = "killers"
         
@@ -1215,104 +1215,104 @@ async def process_rage_second_selections(session_id: str):
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
         # Send to killers
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+        return  # Exit early, game is over
     
-    else:
-        # Handle toxine countdowns before next turn
-        # Decrement room poison durations
-        for room_name, room_data in game["rooms"].items():
-            if room_data.get("poisoned_turns_remaining", 0) > 0:
-                room_data["poisoned_turns_remaining"] -= 1
+    # Game continues - Handle toxine countdowns before next turn
+    # Decrement room poison durations
+    for room_name, room_data in game["rooms"].items():
+        if room_data.get("poisoned_turns_remaining", 0) > 0:
+            room_data["poisoned_turns_remaining"] -= 1
+    
+    # NOTE: Mimics are NOT cleared here anymore!
+    # Like traps, they need to persist until AFTER survivors make their selection in the next turn
+    # Mimics will be cleared in the survivor_selection phase after all survivors have selected
+    
+    # Decrement player poison countdowns and check for elimination
+    players_to_eliminate = []
+    for player_id, player in game["players"].items():
+        if player["role"] == "survivor" and not player["eliminated"]:
+            poison_countdown = player.get("poisoned_countdown", 0)
+            if poison_countdown > 0:
+                player["poisoned_countdown"] -= 1
+                
+                # Check if player suffocates
+                if player["poisoned_countdown"] == 0:
+                    players_to_eliminate.append(player_id)
+                else:
+                    # Send notification to poisoned survivor about remaining turns
+                    if player_id in active_connections.get(session_id, {}):
+                        try:
+                            await active_connections[session_id][player_id].send_json({
+                                "type": "poison_countdown",
+                                "countdown": player["poisoned_countdown"],
+                                "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                            })
+                        except:
+                            pass
+    
+    # Eliminate poisoned players
+    for player_id in players_to_eliminate:
+        player = game["players"][player_id]
+        player["eliminated"] = True
+        player["poisoned_countdown"] = 0
+        player["gold"] = 0  # Reset gold when eliminated
         
-        # NOTE: Mimics are NOT cleared here anymore!
-        # Like traps, they need to persist until AFTER survivors make their selection in the next turn
-        # Mimics will be cleared in the survivor_selection phase after all survivors have selected
+        event_msg = f"💀 {player['name']} a succombé au poison toxique !"
+        game["events"].append({"message": event_msg, "type": "player_eliminated"})
         
-        # Decrement player poison countdowns and check for elimination
-        players_to_eliminate = []
-        for player_id, player in game["players"].items():
-            if player["role"] == "survivor" and not player["eliminated"]:
-                poison_countdown = player.get("poisoned_countdown", 0)
-                if poison_countdown > 0:
-                    player["poisoned_countdown"] -= 1
-                    
-                    # Check if player suffocates
-                    if player["poisoned_countdown"] == 0:
-                        players_to_eliminate.append(player_id)
-                    else:
-                        # Send notification to poisoned survivor about remaining turns
-                        if player_id in active_connections.get(session_id, {}):
-                            try:
-                                await active_connections[session_id][player_id].send_json({
-                                    "type": "poison_countdown",
-                                    "countdown": player["poisoned_countdown"],
-                                    "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
-                                })
-                            except:
-                                pass
+        # Get player class from avatar to determine death video
+        player_class = get_avatar_class(player.get("avatar", ""))
+        video_path = ""
+        if player_class:
+            # Format: /death/ClassName_toxine.mp4
+            video_path = f"/death/{player_class}_toxine.mp4"
         
-        # Eliminate poisoned players
-        for player_id in players_to_eliminate:
-            player = game["players"][player_id]
-            player["eliminated"] = True
-            player["poisoned_countdown"] = 0
-            player["gold"] = 0  # Reset gold when eliminated
-            
-            event_msg = f"💀 {player['name']} a succombé au poison toxique !"
-            game["events"].append({"message": event_msg, "type": "player_eliminated"})
-            
-            # Get player class from avatar to determine death video
-            player_class = get_avatar_class(player.get("avatar", ""))
-            video_path = ""
-            if player_class:
-                # Format: /death/ClassName_toxine.mp4
-                video_path = f"/death/{player_class}_toxine.mp4"
-            
-            # Send toxin death popup to all players with video
-            toxin_death_msg = f"{player['name']} a succombé de la toxine !"
-            await broadcast_to_session(session_id, {
-                "type": "toxin_death_popup",
-                "message": toxin_death_msg,
-                "video_path": video_path,
-                "player_name": player['name']
-            })
-        
-        # Check if all survivors died from toxin (after toxin eliminations)
-        alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
-        
-        if len(alive_survivors_after_toxin) == 0:
-            # Wait for death videos to play (5 seconds) before sending game over messages
-            if len(players_to_eliminate) > 0:
-                await asyncio.sleep(5)
-            
-            game["phase"] = "game_over"
-            game["winner"] = "killers"
-            
-            # Send different messages based on role
-            survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-            killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
-            
-            game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
-            game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
-            
-            # Send to survivors
-            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
-            # Send to killers
-            await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
-            return  # Exit early, game is over
-        
-        # Next turn - Start with survivors selection
-        game["turn"] += 1
-        game["phase"] = "survivor_selection"
-        game["pending_actions"] = {}
-        # Clear active powers
-        game["active_powers"] = {}
-        game["pending_power_selections"] = {}
+        # Send toxin death popup to all players with video
+        toxin_death_msg = f"{player['name']} a succombé de la toxine !"
         await broadcast_to_session(session_id, {
-            "type": "new_turn",
-            "turn": game["turn"],
-            "phase": "survivor_selection",
-            "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+            "type": "toxin_death_popup",
+            "message": toxin_death_msg,
+            "video_path": video_path,
+            "player_name": player['name']
         })
+    
+    # Check if all survivors died from toxin (after toxin eliminations)
+    alive_survivors_after_toxin = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    if len(alive_survivors_after_toxin) == 0:
+        # Wait for death videos to play (5 seconds) before sending game over messages
+        if len(players_to_eliminate) > 0:
+            await asyncio.sleep(5)
+        
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        # Send different messages based on role
+        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        
+        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+        
+        # Send to survivors
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+        # Send to killers
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+        return  # Exit early, game is over
+    
+    # Next turn - Start with survivors selection
+    game["turn"] += 1
+    game["phase"] = "survivor_selection"
+    game["pending_actions"] = {}
+    # Clear active powers
+    game["active_powers"] = {}
+    game["pending_power_selections"] = {}
+    await broadcast_to_session(session_id, {
+        "type": "new_turn",
+        "turn": game["turn"],
+        "phase": "survivor_selection",
+        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+    })
 
 
 # REST API Endpoints
