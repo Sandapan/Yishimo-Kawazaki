@@ -998,6 +998,17 @@ const Game = () => {
   const [crystalDestroyedMessage, setCrystalDestroyedMessage] = useState("");
   const [crystalDestroyedVideoPath, setCrystalDestroyedVideoPath] = useState("");
 
+  // NEW: Merchant encounter popup state (with video)
+  const [showMerchantPopup, setShowMerchantPopup] = useState(false);
+  const [merchantVideoPath, setMerchantVideoPath] = useState("");
+  
+  // NEW: Shop dialog state
+  const [showShopDialog, setShowShopDialog] = useState(false);
+  
+  // NEW: Antidote used popup state
+  const [showAntidotePopup, setShowAntidotePopup] = useState(false);
+  const [antidoteMessage, setAntidoteMessage] = useState("");
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -1091,6 +1102,17 @@ const Game = () => {
         setTimeout(() => {
           setShowTeleportationPopup(false);
         }, 5000);
+      } else if (data.type === "merchant_encounter") {
+        // NEW: Show merchant popup for survivor who encountered the merchant
+        setMerchantVideoPath(data.video_path || "");
+        setShowMerchantPopup(true);
+      } else if (data.type === "antidote_used") {
+        // NEW: Show antidote used notification
+        setAntidoteMessage(data.message);
+        setShowAntidotePopup(true);
+        setTimeout(() => {
+          setShowAntidotePopup(false);
+        }, 3000);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
@@ -1788,6 +1810,209 @@ const Game = () => {
         </div>
       )}
 
+      {/* NEW: Merchant Encounter Popup with Video */}
+      {showMerchantPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 2000 }}
+          data-testid="merchant-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#3a2817', borderColor: '#d4af37' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d4af37' }}>
+                🧙
+                <span>Vous rencontrez le marchand !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {merchantVideoPath && (
+                <video 
+                  src={merchantVideoPath} 
+                  autoPlay 
+                  loop
+                  muted
+                  style={{ width: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '1rem' }}
+                />
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.2em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
+                Vous rencontrez le marchand !
+              </p>
+              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                <Button
+                  onClick={() => {
+                    setShowMerchantPopup(false);
+                    setShowShopDialog(true);
+                  }}
+                  style={{ 
+                    backgroundColor: '#d4af37', 
+                    color: '#000', 
+                    fontWeight: 'bold',
+                    padding: '1rem 2rem',
+                    fontSize: '1.1rem'
+                  }}
+                >
+                  Qu'avez-vous à me vendre ?
+                </Button>
+                <Button
+                  onClick={() => setShowMerchantPopup(false)}
+                  style={{ 
+                    backgroundColor: '#555', 
+                    color: '#fff',
+                    padding: '1rem 2rem',
+                    fontSize: '1.1rem'
+                  }}
+                >
+                  Je ne suis pas intéressé
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Shop Dialog */}
+      {showShopDialog && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 2001 }}
+          data-testid="shop-dialog"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#2a1f17', borderColor: '#d4af37' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d4af37' }}>
+                🛒
+                <span>Boutique du Marchand</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* Display player's gold */}
+              <div style={{ textAlign: 'center', marginBottom: '1.5rem', fontSize: '1.3rem', color: '#FFD700', fontWeight: 'bold' }}>
+                Votre or: 🪙 {gameState.players[playerId]?.gold || 0}
+              </div>
+
+              {/* Shop items */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {/* Resurrection Potion */}
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/items/medikit.png" alt="Potion de résurrection" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Potion de résurrection</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Cette potion permet de réanimer le joueur que vous aspergez.
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 1000</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=resurrection_potion`);
+                        toast.success("Potion de résurrection achetée !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 1000 || gameState.players[playerId]?.has_medikit}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !gameState.players[playerId]?.has_medikit) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
+
+                {/* Antidote */}
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/items/antidote.png" alt="Antidote" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Antidote</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Cet antidote soigne de la toxine.
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 300</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=antidote`);
+                        toast.success("Antidote acheté !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 300 || gameState.players[playerId]?.has_antidote}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 300 && !gameState.players[playerId]?.has_antidote) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
+              </div>
+
+              {/* Close button */}
+              <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                <Button
+                  onClick={() => setShowShopDialog(false)}
+                  style={{ 
+                    backgroundColor: '#dc2626', 
+                    color: '#fff',
+                    padding: '0.8rem 2rem',
+                    fontSize: '1rem'
+                  }}
+                >
+                  Fermer la boutique
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Antidote Used Popup */}
+      {showAntidotePopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1000 }}
+          onClick={() => setShowAntidotePopup(false)}
+          data-testid="antidote-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a4a3a', borderColor: '#10b981' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#10b981' }}>
+                💊
+                <span>Antidote utilisé !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {antidoteMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
 
       {/* Game Header */}
       <div className="game-header">
@@ -2045,6 +2270,7 @@ const Game = () => {
                     {player.role === "killer" && <span className="status-role killer">🔪</span>}
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
                     {player.has_medikit && <span className="status-medikit">⚗️</span>}
+                    {player.has_antidote && <span className="status-antidote">💊</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                     {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && (
                       <span className="status-poisoned">

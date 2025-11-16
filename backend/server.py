@@ -1513,18 +1513,17 @@ async def start_game(session_id: str):
     game["quests"] = generate_quests(survivors)
     logger.info(f"Generated {len(game['quests'])} quests: {[q['class'] for q in game['quests']]}")
 
-    # Place the FIRST quest at game start
+    # Place ALL quests at game start
     if game["quests"]:
-        first_quest = game["quests"][0]
-        first_quest_room = place_quest(game, first_quest["class"])
-        if first_quest_room:
-            game["active_quest"] = {
-                "class": first_quest["class"],
-                "room": first_quest_room,
-                "player_id": first_quest["player_id"],
-                "player_name": first_quest["player_name"]
-            }
-            logger.info(f"First quest placed for {first_quest['class']} in: {first_quest_room}")
+        for quest in game["quests"]:
+            quest_room = place_quest(game, quest["class"])
+            if quest_room:
+                logger.info(f"Quest placed for {quest['class']} in: {quest_room}")
+            else:
+                logger.warning(f"Could not place quest for {quest['class']} - no available rooms")
+        
+        # Set active_quest to None since all quests are now placed
+        game["active_quest"] = None
 
     # Place the FIRST medikit at game start
     medikit_room = respawn_medikit(game)
@@ -1989,22 +1988,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 
                                 # Reset rooms searched for Vision power
                                 game["rooms_searched_this_key"] = []
-                                game["active_quest"] = None
-
-                                # Place next quest if there are more to complete
-                                if len(game["completed_quests"]) < len(game["quests"]):
-                                    # Find the next quest to place
-                                    next_quest_index = len(game["completed_quests"])
-                                    next_quest = game["quests"][next_quest_index]
-                                    next_quest_room = place_quest(game, next_quest["class"])
-                                    if next_quest_room:
-                                        game["active_quest"] = {
-                                            "class": next_quest["class"],
-                                            "room": next_quest_room,
-                                            "player_id": next_quest["player_id"],
-                                            "player_name": next_quest["player_name"]
-                                        }
-                                        logger.info(f"Next quest placed for {next_quest['class']} in: {next_quest_room}")
+                                
+                                # NOTE: All quests are now placed at game start, no need to place next quest
                             else:
                                 # Wrong class! Show required class popup
                                 try:
