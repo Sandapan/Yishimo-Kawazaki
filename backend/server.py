@@ -74,7 +74,7 @@ class StartGameRequest(BaseModel):
     pass
 
 class PlayerAction(BaseModel):
-    action: str  # "select_room", "use_medikit"
+    action: str  # "select_room", "use_medikit", "use_antidote"
     room: Optional[str] = None
     target_player: Optional[str] = None
 
@@ -114,7 +114,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_crystal": False,  # NEW: for crystal system
             "teleportation_trap": False,  # NEW: for teleportation power (entrance trap ➡️🌀)
             "teleportation_exit": False,  # NEW: for teleportation power (exit portal 🌀➡️)
-            "teleportation_target_room": None  # NEW: destination room for teleportation
+            "teleportation_target_room": None,  # NEW: destination room for teleportation
+            "has_merchant": False  # NEW: for merchant system
         }
 
     # Get character class from avatar
@@ -136,7 +137,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "role": host_role,  # "survivor" or "killer"
                 "immobilized_next_turn": False,  # NEW: for piege power
                 "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
-                "gold": 0  # NEW: gold accumulated by survivors
+                "gold": 0,  # NEW: gold accumulated by survivors
+                "has_antidote": False  # NEW: for merchant system - antidote item
             }
         },
         "rooms": rooms_state,
@@ -158,6 +160,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "rage_second_chances": {},  # NEW: {killer_id: {"can_select": True/False, "room_selected": None}}
         "crystal_spawned": False,  # NEW: whether crystal has been spawned
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
+        "merchant_placed": False,  # NEW: whether merchant has been placed
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -220,6 +223,31 @@ def place_crystal(game_state: dict) -> Optional[str]:
         game_state["rooms"][selected_room]["has_crystal"] = True
         game_state["crystal_spawned"] = True
         logger.info(f"Crystal placed in room: {selected_room}")
+        return selected_room
+
+    return None
+
+def place_merchant(game_state: dict) -> Optional[str]:
+    """Place the merchant in a random available room at game start (once per game)"""
+    available_rooms = []
+
+    # Get all killer positions
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        # Room is available if: not locked, no quest already, no merchant already, not a killer's position
+        if (not room_data["locked"] and
+            not room_data.get("has_quest", False) and
+            not room_data.get("has_merchant", False) and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_merchant"] = True
+        game_state["merchant_placed"] = True
+        logger.info(f"Merchant placed in room: {selected_room}")
         return selected_room
 
     return None
@@ -1403,7 +1431,8 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "role": request.role,  # "survivor" or "killer"
         "immobilized_next_turn": False,  # NEW: for piege power
         "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
-        "gold": 0  # NEW: gold accumulated by survivors
+        "gold": 0,  # NEW: gold accumulated by survivors
+        "has_antidote": False  # NEW: for merchant system - antidote item
     }
 
     # Broadcast new player joined
@@ -1528,6 +1557,13 @@ async def start_game(session_id: str):
     medikit_room = respawn_medikit(game)
     logger.info(f"First medikit placed in: {medikit_room}")
 
+    # Place the merchant at game start (once per game)
+    merchant_room = place_merchant(game)
+    if merchant_room:
+        logger.info(f"Merchant placed in: {merchant_room}")
+    else:
+        logger.warning("Could not place merchant - no available rooms")
+
     await broadcast_to_session(session_id, {
         "type": "game_started",
         "keys_needed": game["keys_needed"],
@@ -1573,6 +1609,7 @@ async def reset_game(session_id: str):
         player["immobilized_next_turn"] = False  # NEW: reset immobilization
         player["poisoned_countdown"] = 0  # NEW: reset poison
         player["gold"] = 0  # NEW: reset gold
+        player["has_antidote"] = False  # NEW: reset antidote
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
@@ -1591,6 +1628,7 @@ async def reset_game(session_id: str):
         room_data["teleportation_trap"] = False  # NEW: reset teleportation trap
         room_data["teleportation_exit"] = False  # NEW: reset teleportation exit
         room_data["teleportation_target_room"] = None  # NEW: reset teleportation target
+        room_data["has_merchant"] = False  # NEW: reset merchant
     
     # Reset game state
     game["keys_collected"] = 0
@@ -1609,6 +1647,7 @@ async def reset_game(session_id: str):
     game["rooms_searched_this_key"] = []  # NEW: reset searched rooms
     game["crystal_spawned"] = False  # NEW: reset crystal spawned
     game["crystal_destroyed"] = False  # NEW: reset crystal destroyed
+    game["merchant_placed"] = False  # NEW: reset merchant placement
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -1703,6 +1742,92 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     })
     
     return {"status": "success", "player_id": player_id}
+
+@api_router.post("/shop/buy_item")
+async def buy_item(session_id: str = Query(...), player_id: str = Query(...), item_name: str = Query(...)):
+    """Buy an item from the merchant's shop"""
+    logger.info(f"Buy item request: session={session_id}, player={player_id}, item={item_name}")
+    
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player = game["players"][player_id]
+    
+    # Only survivors can buy items
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can buy items")
+    
+    # Define items and their prices
+    items = {
+        "resurrection_potion": {
+            "price": 1000,
+            "field": "has_medikit",
+            "name": "Potion de résurrection"
+        },
+        "antidote": {
+            "price": 300,
+            "field": "has_antidote",
+            "name": "Antidote"
+        }
+    }
+    
+    if item_name not in items:
+        raise HTTPException(status_code=400, detail="Invalid item name")
+    
+    item = items[item_name]
+    
+    # Check if player already has this item
+    if player.get(item["field"], False):
+        raise HTTPException(status_code=400, detail=f"Vous possédez déjà {item['name']}")
+    
+    # Check if player has enough gold
+    if player.get("gold", 0) < item["price"]:
+        raise HTTPException(status_code=400, detail="Pas assez d'or")
+    
+    # Deduct gold
+    player["gold"] -= item["price"]
+    
+    # Special handling for antidote - auto-consume if poisoned
+    if item_name == "antidote":
+        if player.get("poisoned_countdown", 0) > 0:
+            # Player is poisoned - consume antidote immediately
+            player["poisoned_countdown"] = 0
+            logger.info(f"Player {player_id} bought antidote and was cured of poison immediately")
+            
+            # Broadcast cure notification to all players
+            await broadcast_to_session(session_id, {
+                "type": "antidote_used",
+                "message": f"💊 {player['name']} utilise un antidote et est guéri du poison !"
+            })
+            
+            # Broadcast state update so UI reflects cure
+            await broadcast_to_session(session_id, {
+                "type": "state_update",
+                "game": game
+            })
+            
+            return {"status": "success", "message": f"{item['name']} acheté et utilisé immédiatement !"}
+        else:
+            # Player is not poisoned - give antidote for future use
+            player[item["field"]] = True
+            logger.info(f"Player {player_id} bought antidote for future use")
+    else:
+        # For other items (resurrection potion), just add to inventory
+        player[item["field"]] = True
+        logger.info(f"Player {player_id} bought {item_name}")
+    
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    return {"status": "success", "message": f"{item['name']} acheté !"}
 
 # WebSocket endpoint
 @app.websocket("/api/ws/{session_id}/{player_id}")
@@ -2087,6 +2212,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "video_path": "/death/Mimic.mp4",
                             "gold_stolen": gold_stolen
                         })
+                    
+                    # Check if survivor encounters the merchant (AFTER gold is awarded)
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
+                        # Send merchant encounter notification to the survivor
+                        await websocket.send_json({
+                            "type": "merchant_encounter",
+                            "message": "🧙 Vous rencontrez le marchand !",
+                            "video_path": "/event/marchand.mp4"
+                        })
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
@@ -2242,6 +2376,33 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
                             game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                             await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
+
+            elif data["type"] == "use_antidote":
+                # Only survivors can use antidotes
+                if game["players"][player_id]["role"] != "survivor":
+                    continue
+
+                # Check if player has antidote
+                if not game["players"][player_id].get("has_antidote", False):
+                    continue
+
+                # Check if player is poisoned
+                if game["players"][player_id].get("poisoned_countdown", 0) <= 0:
+                    await websocket.send_json({
+                        "type": "event",
+                        "message": "Vous n'êtes pas empoisonné !"
+                    })
+                    continue
+
+                # Use antidote to cure poison
+                game["players"][player_id]["poisoned_countdown"] = 0
+                game["players"][player_id]["has_antidote"] = False
+
+                event_msg = f"💊 {game['players'][player_id]['name']} utilise un antidote et est guéri du poison !"
+                game["events"].append({"message": event_msg, "type": "antidote_used"})
+                await broadcast_to_session(session_id, {"type": "antidote_used", "message": event_msg})
+                
+                logger.info(f"Player {player_id} used antidote to cure poison")
 
             # Broadcast updated state (filtered per player)
             await broadcast_to_session(session_id, {
