@@ -199,24 +199,27 @@ const Home = () => {
 
     setIsJoining(true);
     try {
-      const existingPlayerId = localStorage.getItem('player_id');
       const isUpdatingPlayer = localStorage.getItem('is_updating_player') === 'true';
+      // FIXED: Use the specific player_id that was stored when clicking "change role"
+      const updatingPlayerId = localStorage.getItem('updating_player_id');
       
       // If we're updating an existing player (coming back from lobby)
-      if (isUpdatingPlayer && existingPlayerId) {
+      if (isUpdatingPlayer && updatingPlayerId) {
         await axios.post(`${API}/game/${joinSessionId}/update_player`, {
           player_name: playerName,
           player_avatar: selectedAvatar.path,
           role: selectedRole
         }, {
           params: {
-            player_id: existingPlayerId
+            player_id: updatingPlayerId  // Use the specific player ID who clicked "change role"
           }
         });
         
-        // Keep the same player_id
+        // Keep the same player_id in localStorage
+        localStorage.setItem('player_id', updatingPlayerId);
         localStorage.setItem('player_name', playerName);
         localStorage.removeItem('is_updating_player');
+        localStorage.removeItem('updating_player_id'); // Clean up
         toast.success("Profil mis à jour !");
         navigate(`/lobby/${joinSessionId}`);
       } else {
@@ -510,9 +513,10 @@ const Lobby = () => {
       return;
     }
     
-    // Store the session ID for rejoining after role/avatar selection
+    // FIXED: Store the SPECIFIC player_id who is changing role
     localStorage.setItem('returning_from_lobby', 'true');
     localStorage.setItem('pending_session_id', sessionId);
+    localStorage.setItem('updating_player_id', targetPlayerId); // Store the specific player ID
     
     // Close WebSocket connection before leaving
     if (ws.current) {
