@@ -33,7 +33,6 @@ ROOMS_CONFIG = {
 
 # Avatar images by role with their associated classes
 SURVIVOR_AVATARS = [
-    {"path": "/avatars/Archère.png", "class": "Archère"},
     {"path": "/avatars/Assassin.png", "class": "Assassin"},
     {"path": "/avatars/Barbare.png", "class": "Barbare"},
     {"path": "/avatars/Barde.png", "class": "Barde"},

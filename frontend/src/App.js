@@ -15,12 +15,6 @@ const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws:
 // Avatar images by role with their associated classes and descriptions
 const SURVIVOR_AVATARS = [
   { 
-    path: "/avatars/Archère.png", 
-    class: "Archère",
-    description: "Ses flèches atteignent les cibles les plus éloignées avec une précision redoutable…",
-    illustration: "/illustrations/Archère_animation.mp4"
-  },
-  { 
     path: "/avatars/Assassin.png", 
     class: "Assassin",
     description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé.",
