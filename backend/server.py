@@ -1945,11 +1945,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         if player.get("poisoned_countdown", 0) == 0:
                             player["poisoned_countdown"] = 10
                             
+                            # Get player class for video path
+                            player_class = player.get("character_class", "Assassin")
+                            video_path = f"/death/{player_class}_toxine.mp4"
+                            
                             # Send poisoned notification immediately to the survivor
                             await websocket.send_json({
                                 "type": "poisoned_notification",
                                 "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
-                                "countdown": 10
+                                "countdown": 10,
+                                "video_path": video_path
                             })
                     
                     # Check for quest immediately when survivor selects room

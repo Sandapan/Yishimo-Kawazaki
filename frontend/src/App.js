@@ -952,6 +952,8 @@ const Game = () => {
   // NEW: Poison popup state
   const [showPoisonPopup, setShowPoisonPopup] = useState(false);
   const [poisonMessage, setPoisonMessage] = useState("");
+  const [poisonVideoPath, setPoisonVideoPath] = useState("");
+  const [showPoisonVideoPopup, setShowPoisonVideoPopup] = useState(false);
   
   // NEW: Mimic popup state (with video)
   const [showMimicPopup, setShowMimicPopup] = useState(false);
@@ -1071,13 +1073,20 @@ const Game = () => {
           setShowTrapPopup(false);
         }, 5000);
       } else if (data.type === "poisoned_notification") {
-        // NEW: Show poison popup for survivor who entered poisoned room
+        // NEW: Show poison video popup first, then image popup
         setPoisonMessage(data.message);
-        setShowPoisonPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowPoisonPopup(false);
-        }, 5000);
+        setPoisonVideoPath(data.video_path || "");
+        
+        if (data.video_path) {
+          // Show video popup first
+          setShowPoisonVideoPopup(true);
+        } else {
+          // If no video, show image popup directly
+          setShowPoisonPopup(true);
+          setTimeout(() => {
+            setShowPoisonPopup(false);
+          }, 5000);
+        }
       } else if (data.type === "mimic_notification") {
         // NEW: Show mimic popup for survivor who entered room with mimic
         setMimicVideoPath(data.video_path || "");
@@ -1446,6 +1455,63 @@ const Game = () => {
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Poison Video Popup */}
+      {showPoisonVideoPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1001 }}
+          onClick={() => {
+            setShowPoisonVideoPopup(false);
+            setShowPoisonPopup(true);
+            setTimeout(() => {
+              setShowPoisonPopup(false);
+            }, 5000);
+          }}
+          data-testid="poison-video-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#3a4a2a', borderColor: '#84cc16' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#84cc16' }}>
+                😷
+                <span>Empoisonné !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {poisonVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer' }}
+                  onEnded={() => {
+                    setTimeout(() => {
+                      setShowPoisonVideoPopup(false);
+                      setShowPoisonPopup(true);
+                      setTimeout(() => {
+                        setShowPoisonPopup(false);
+                      }, 5000);
+                    }, 500);
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowPoisonVideoPopup(false);
+                    setShowPoisonPopup(true);
+                    setTimeout(() => {
+                      setShowPoisonPopup(false);
+                    }, 5000);
+                  }}
+                >
+                  <source src={poisonVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez sur la vidéo pour continuer
               </p>
             </CardContent>
           </Card>
