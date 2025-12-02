@@ -835,6 +835,39 @@ body {
   padding: 2rem;
 }
 
+/* Event avatars styling */
+.event-with-avatar,
+.event-with-avatars {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.event-avatar {
+  width: 1.8rem;
+  height: 1.8rem;
+  object-fit: contain;
+  border-radius: 4px;
+  vertical-align: middle;
+  display: inline-block;
+}
+
+.event-player-name {
+  font-weight: 600;
+  color: #d4af37;
+}
+
+.event-emoji {
+  font-size: 1.2rem;
+  margin-right: 0.25rem;
+}
+
+.event-emoji-suffix {
+  font-size: 1.2rem;
+  margin-left: 0.25rem;
+}
+
 .players-status-list {
   display: flex;
   flex-direction: column;

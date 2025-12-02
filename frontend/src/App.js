@@ -17,7 +17,7 @@ const SURVIVOR_AVATARS = [
   { 
     path: "/avatars/Assassin.png", 
     class: "Assassin",
-    description: "Agile et silencieux, il se faufile entre les pièges sans un bruit. Enfin, sauf quand il est enrhumé.",
+    description: "Agile et sournois, il peut crocheter certaines serrures. Le plus souvent celles où les portes sont déjà ouvertes.",
     illustration: "/illustrations/Assassin_animation.mp4"
   },
   { 
@@ -2292,10 +2292,73 @@ const Game = () => {
                         return null; // Don't show game_over messages meant for other role
                       }
 
-                      // Filter key_found and search_no_key messages - only for survivors
-                      if ((event.type === "key_found" || event.type === "search_no_key") && event.for_role && event.for_role !== currentPlayerRole) {
+                      // Filter search events (fouille) - only for survivors
+                      if ((event.type === "key_found" || event.type === "search_no_key" || 
+                           event.type === "search_no_quest" || event.type === "search_wrong_class" || 
+                           event.type === "quest_completed") && 
+                          event.for_role && event.for_role !== currentPlayerRole) {
                         return null; // Don't show search events meant for survivors to killers
                       }
+
+                      // Render event with avatar if player info is available
+                      const renderEventContent = () => {
+                        if (event.player_avatar) {
+                          // Extract player name and the rest of the message
+                          const message = event.message;
+                          
+                          // For revival events with two players
+                          if (event.type === "revival" && event.target_player_avatar) {
+                            // Pattern: "💚 PlayerA a ranimé PlayerB !"
+                            const reviverPlayer = gameState.players[event.player_id];
+                            const revivedPlayer = gameState.players[event.target_player_id];
+                            
+                            if (reviverPlayer && revivedPlayer) {
+                              return (
+                                <span className="event-with-avatars">
+                                  <span className="event-emoji">💚</span>
+                                  <img src={event.player_avatar} alt="" className="event-avatar" />
+                                  <span className="event-player-name">{reviverPlayer.name}</span>
+                                  <span> a ranimé </span>
+                                  <img src={event.target_player_avatar} alt="" className="event-avatar" />
+                                  <span className="event-player-name">{revivedPlayer.name}</span>
+                                  <span> !</span>
+                                </span>
+                              );
+                            }
+                          }
+                          
+                          // For all other events with a player
+                          const player = gameState.players[event.player_id];
+                          if (player) {
+                            // Extract emoji at the beginning (if present)
+                            const emojiMatch = message.match(/^([\u{1F300}-\u{1F9FF}]|\u{2600}-\u{27BF}|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{2700}-\u{27BF}])+/u);
+                            const emoji = emojiMatch ? emojiMatch[0] : '';
+                            
+                            // Remove emoji and player name from message to get the rest
+                            let restOfMessage = message;
+                            if (emoji) {
+                              restOfMessage = restOfMessage.replace(emoji, '').trim();
+                            }
+                            // Remove player name from the message
+                            const nameIndex = restOfMessage.indexOf(player.name);
+                            if (nameIndex !== -1) {
+                              restOfMessage = restOfMessage.substring(nameIndex + player.name.length);
+                            }
+                            
+                            return (
+                              <span className="event-with-avatar">
+                                <img src={event.player_avatar} alt="" className="event-avatar" />
+                                <span className="event-player-name">{player.name}</span>
+                                <span>{restOfMessage}</span>
+                                {emoji && <span className="event-emoji-suffix"> {emoji}</span>}
+                              </span>
+                            );
+                          }
+                        }
+                        
+                        // Default: show message as is
+                        return event.message;
+                      };
 
                       return (
                         <div
@@ -2303,7 +2366,7 @@ const Game = () => {
                           className={`event-item event-${event.type}`}
                           data-testid={`event-${idx}`}
                         >
-                          {event.message}
+                          {renderEventContent()}
                         </div>
                       );
                     })

@@ -2085,42 +2085,49 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":
                         room = game["rooms"][room_name]
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         
                         if room.get("has_quest", False) and room.get("quest_class"):
                             quest_class = room["quest_class"]
                             player_class = player.get("character_class")
                             
                             if player_class == quest_class:
-                                # Correct class! Quest completed
-                                room["has_quest"] = False
-                                room["quest_class"] = None
-                                game["completed_quests"].append(quest_class)
-                                game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
-                                
-                                quests_left = game["keys_needed"] - len(game["completed_quests"])
-                                event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
-                                game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
-                                # Notify only survivors about quest completed
-                                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
-                                
-                                # Send video popup to the player who completed the quest
-                                try:
-                                    video_path = f"/event/{quest_class}.mp4"
-                                    await websocket.send_json({
-                                        "type": "quest_completed_popup",
-                                        "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
-                                        "video_path": video_path,
-                                        "quests_left": quests_left
-                                    })
-                                except:
+                                # Correct class!
+                                # NEW: If room is trapped by Blizzard, don't complete the quest
+                                if is_trapped:
+                                    # Trapped in blizzard - quest not completed, no notification
                                     pass
-                                
-                                # Reset rooms searched for Vision power
-                                game["rooms_searched_this_key"] = []
-                                
-                                # NOTE: All quests are now placed at game start, no need to place next quest
+                                else:
+                                    # Quest completed normally
+                                    room["has_quest"] = False
+                                    room["quest_class"] = None
+                                    game["completed_quests"].append(quest_class)
+                                    game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
+                                    
+                                    quests_left = game["keys_needed"] - len(game["completed_quests"])
+                                    event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
+                                    game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
+                                    # Notify only survivors about quest completed
+                                    await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
+                                    
+                                    # Send video popup to the player who completed the quest
+                                    try:
+                                        video_path = f"/event/{quest_class}.mp4"
+                                        await websocket.send_json({
+                                            "type": "quest_completed_popup",
+                                            "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
+                                            "video_path": video_path,
+                                            "quests_left": quests_left
+                                        })
+                                    except:
+                                        pass
+                                    
+                                    # Reset rooms searched for Vision power
+                                    game["rooms_searched_this_key"] = []
+                                    
+                                    # NOTE: All quests are now placed at game start, no need to place next quest
                             else:
-                                # Wrong class! Show required class popup
+                                # Wrong class! Show required class popup (even if trapped by Blizzard)
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"
                                     await websocket.send_json({
@@ -2214,13 +2221,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         })
                     
                     # Check if survivor encounters the merchant (AFTER gold is awarded)
+                    # NEW: Merchant doesn't trigger if room is trapped by Blizzard
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
-                        # Send merchant encounter notification to the survivor
-                        await websocket.send_json({
-                            "type": "merchant_encounter",
-                            "message": "🧙 Vous rencontrez le marchand !",
-                            "video_path": "/event/marchand.mp4"
-                        })
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        
+                        # Only trigger merchant if NOT trapped by Blizzard
+                        if not is_trapped:
+                            # Send merchant encounter notification to the survivor
+                            await websocket.send_json({
+                                "type": "merchant_encounter",
+                                "message": "🧙 Vous rencontrez le marchand !",
+                                "video_path": "/event/marchand.mp4"
+                            })
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
