@@ -1229,17 +1229,14 @@ const Game = () => {
           setShowCrystalDestroyedPopup(false);
         }, 10000);
       } else if (data.type === "killer_elimination_popup") {
-        // Show dramatic elimination popup with death image
+        // Show dramatic elimination popup with fouille video
         setKillerEliminationMessage(data.message);
-        setKillerEliminationImage(data.death_image);
+        setKillerEliminationImage(data.fouille_video); // Reuse this state for video path
         setKillerName(data.killer_name);
         setSurvivorName(data.survivor_name);
         setEliminationRoom(data.room_name);
         setShowKillerEliminationPopup(true);
-        // Auto-hide after 6 seconds
-        setTimeout(() => {
-          setShowKillerEliminationPopup(false);
-        }, 6000);
+        // Note: Video will auto-hide when it ends or when clicked
       } else if (data.type === "player_action") {
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
@@ -1774,7 +1771,7 @@ const Game = () => {
         </div>
       )}
 
-      {/* NEW: Killer Elimination Popup with Dramatic Animation */}
+      {/* NEW: Killer Elimination Popup with Fouille Video */}
       {showKillerEliminationPopup && (
         <div 
           className="killer-elimination-overlay" 
@@ -1787,21 +1784,19 @@ const Game = () => {
             <div className="elimination-content">
               {killerEliminationImage && (
                 <div className="death-image-container">
-                  <img 
-                    src={killerEliminationImage} 
-                    alt="Élimination" 
+                  <video 
+                    src={killerEliminationImage}
+                    autoPlay
+                    onEnded={() => setShowKillerEliminationPopup(false)}
                     className="death-image"
+                    style={{ width: '100%', height: 'auto', maxHeight: '500px', objectFit: 'contain' }}
                   />
                 </div>
               )}
               <div className="elimination-text">
                 <h2 className="elimination-title">💀 ÉLIMINATION 💀</h2>
-                <p className="elimination-message">
-                  <span className="killer-name-text">{killerName}</span>
-                  <span className="elimination-action"> a tué </span>
-                  <span className="survivor-name-text">{survivorName}</span>
-                  <span className="elimination-location"> dans </span>
-                  <span className="room-name-text">{eliminationRoom}</span>
+                <p className="elimination-message" style={{ fontSize: '1.2em', textAlign: 'center' }}>
+                  {killerEliminationMessage}
                 </p>
               </div>
               <p className="elimination-dismiss">Cliquez pour continuer</p>

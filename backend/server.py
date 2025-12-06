@@ -908,23 +908,27 @@ async def process_turn(session_id: str):
                 eliminated_rooms.append(killer_room)
                 found_survivor = True
 
-                # Get survivor class for death image
+                # Get classes for fouille video
+                killer_class = killer.get("character_class", "")
                 survivor_class = survivor.get("character_class", "")
-                death_image_path = f"/death/{survivor_class}.png" if survivor_class else ""
+                
+                # Build fouille video path: /fouilles/{killer_class}-{survivor_class}.mp4
+                fouille_video_path = f"/fouilles/{killer_class}-{survivor_class}.mp4" if killer_class and survivor_class else ""
 
                 event_msg = f"💀 {survivor['name']} a été éliminé dans {killer_room} !"
                 game["events"].append({"message": event_msg, "type": "elimination"})
                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
                 
-                # Send elimination popup to ALL players with dramatic effect
-                elimination_message = f"{killer['name']} a tué {survivor['name']} dans {killer_room}"
+                # Send elimination popup to ALL players with fouille video
+                elimination_message = f"{killer['name']} fouille {killer_room} et tue {survivor['name']}"
                 await broadcast_to_session(session_id, {
                     "type": "killer_elimination_popup",
                     "killer_name": killer['name'],
                     "survivor_name": survivor['name'],
                     "room_name": killer_room,
+                    "killer_class": killer_class,
                     "survivor_class": survivor_class,
-                    "death_image": death_image_path,
+                    "fouille_video": fouille_video_path,
                     "message": elimination_message
                 })
 
