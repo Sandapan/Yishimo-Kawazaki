@@ -161,6 +161,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_spawned": False,  # NEW: whether crystal has been spawned
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
+        "goliath_active": False,  # NEW: whether Goliath is active
+        "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
+        "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -400,12 +403,24 @@ POWERS = {
         "icon": "Teleportation.mp4",
         "requires_action": True,
         "action_type": "select_two_rooms"  # select two rooms sequentially
+    },
+    "goliath": {
+        "name": "🕷️ La Goliath",
+        "description": "Invoquez la Goliath pour plusieurs tours. Cette araignée géante traque les survivants qui revisitent une pièce fouillée au tour précédent.",
+        "icon": "La goliath.mp4",
+        "requires_action": False
     }
 }
 
-def get_random_powers(exclude_powers: list = []) -> list:
-    """Get 3 random unique powers"""
-    available = [p for p in POWERS.keys() if p not in exclude_powers]
+def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> list:
+    """Get 3 random unique powers, excluding goliath if already active"""
+    excluded = list(exclude_powers)
+    
+    # Exclude goliath if already active
+    if game_state and game_state.get("goliath_active", False):
+        excluded.append("goliath")
+    
+    available = [p for p in POWERS.keys() if p not in excluded]
     return random.sample(available, min(3, len(available)))
 
 def validate_game_start(game: dict) -> tuple[bool, Optional[str]]:
@@ -678,6 +693,31 @@ async def apply_powers(session_id: str):
             event_msg = f"🌀 {player['name']} utilise Piège de Téléportation !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+        
+        elif power_name == "goliath":
+            # Activate the Goliath for 7-10 turns
+            goliath_duration = random.randint(7, 10)
+            game["goliath_active"] = True
+            game["goliath_turns_remaining"] = goliath_duration
+            game["goliath_previous_turn_rooms"] = []  # Will be populated at end of survivor turn
+            
+            # Log event for killers
+            event_msg = f"🕷️ {player['name']} utilise La Goliath !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+            
+            # Log event for everyone (appearance)
+            goliath_spawn_msg = f"🕷️ La Goliath apparait pour {goliath_duration} tours !"
+            game["events"].append({"message": goliath_spawn_msg, "type": "goliath_spawned"})
+            await broadcast_to_session(session_id, {"type": "event", "message": goliath_spawn_msg})
+            
+            # Send popup with video to all survivors
+            await broadcast_to_session(session_id, {
+                "type": "goliath_spawned",
+                "message": "La Goliath est invoquée ! Ne choisissez JAMAIS une pièce que l'un d'entre vous a visité au tour précédent tant qu'elle est présente.",
+                "video_path": "/event/Spawn-Goliath.mp4",
+                "duration": goliath_duration
+            }, role_filter="survivor")
 
 def filter_game_state(game_state: dict, player_role: str) -> dict:
     """
@@ -1148,6 +1188,27 @@ async def process_turn(session_id: str):
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
+    
+    # GOLIATH: Decrement turns remaining and check for expiration
+    if game.get("goliath_active", False):
+        game["goliath_turns_remaining"] -= 1
+        
+        if game["goliath_turns_remaining"] <= 0:
+            # Goliath disappears
+            game["goliath_active"] = False
+            game["goliath_turns_remaining"] = 0
+            game["goliath_previous_turn_rooms"] = []
+            
+            goliath_end_msg = "🕷️ La Goliath disparait !"
+            game["events"].append({"message": goliath_end_msg, "type": "goliath_disappeared"})
+            await broadcast_to_session(session_id, {"type": "event", "message": goliath_end_msg})
+        else:
+            # Goliath still active, notify remaining turns
+            turns_left = game["goliath_turns_remaining"]
+            goliath_status_msg = f"🕷️ La Goliath rôde encore pour {turns_left} tour(s)..."
+            game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
+            await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
+    
     await broadcast_to_session(session_id, {
         "type": "new_turn",
         "turn": game["turn"],
@@ -1366,6 +1427,27 @@ async def process_rage_second_selections(session_id: str):
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
+    
+    # GOLIATH: Decrement turns remaining and check for expiration
+    if game.get("goliath_active", False):
+        game["goliath_turns_remaining"] -= 1
+        
+        if game["goliath_turns_remaining"] <= 0:
+            # Goliath disappears
+            game["goliath_active"] = False
+            game["goliath_turns_remaining"] = 0
+            game["goliath_previous_turn_rooms"] = []
+            
+            goliath_end_msg = "🕷️ La Goliath disparait !"
+            game["events"].append({"message": goliath_end_msg, "type": "goliath_disappeared"})
+            await broadcast_to_session(session_id, {"type": "event", "message": goliath_end_msg})
+        else:
+            # Goliath still active, notify remaining turns
+            turns_left = game["goliath_turns_remaining"]
+            goliath_status_msg = f"🕷️ La Goliath rôde encore pour {turns_left} tour(s)..."
+            game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
+            await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
+    
     await broadcast_to_session(session_id, {
         "type": "new_turn",
         "turn": game["turn"],
@@ -1940,6 +2022,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
                                 room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
                             
+                            # GOLIATH: Update the list of rooms visited this turn for next turn's check
+                            if game.get("goliath_active", False):
+                                # Collect all rooms selected by survivors this turn
+                                current_turn_rooms = []
+                                for pid, action in game["pending_actions"].items():
+                                    if game["players"][pid]["role"] == "survivor":
+                                        room_selected = action.get("room")
+                                        if room_selected and room_selected not in current_turn_rooms:
+                                            current_turn_rooms.append(room_selected)
+                                game["goliath_previous_turn_rooms"] = current_turn_rooms
+                            
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
@@ -1948,7 +2041,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
                             for killer in alive_killers:
                                 killer_id = killer["id"]
-                                power_options = get_random_powers()
+                                power_options = get_random_powers(game_state=game)
                                 game["pending_power_selections"][killer_id] = {
                                     "options": power_options,
                                     "selected_power": None,
@@ -2044,6 +2137,92 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             room_name = target_room  # Continue processing with the target room
                             
                             logger.info(f"🌀 {player['name']} téléporté de {original_room_name} vers {target_room}")
+                    
+                    # GOLIATH CHECK: If Goliath is active, check if survivor entered a room visited last turn
+                    if player["role"] == "survivor" and game.get("goliath_active", False):
+                        previous_turn_rooms = game.get("goliath_previous_turn_rooms", [])
+                        if room_name in previous_turn_rooms:
+                            # Survivor dies to Goliath!
+                            player["eliminated"] = True
+                            player["gold"] = 0  # Reset gold when eliminated
+                            game["rooms"][room_name]["eliminated_players"].append(player_id)
+                            
+                            # Get player class for death video
+                            player_class = player.get("character_class", "Assassin")
+                            death_video_path = f"/death/{player_class}_La Goliath.mp4"
+                            
+                            # Log event
+                            event_msg = f"💀🕷️ {player['name']} s'est fait tuer par la Goliath dans {room_name} !"
+                            game["events"].append({"message": event_msg, "type": "goliath_elimination"})
+                            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+                            
+                            # Send death popup to the survivor who died
+                            await websocket.send_json({
+                                "type": "goliath_death_popup",
+                                "message": "Vous avez été éliminé par la Goliath !",
+                                "video_path": death_video_path
+                            })
+                            
+                            # Send death video popup to all OTHER players (both survivors and killers)
+                            for other_pid, other_ws in active_connections.get(session_id, {}).items():
+                                if other_pid != player_id:
+                                    try:
+                                        await other_ws.send_json({
+                                            "type": "goliath_death_popup",
+                                            "message": f"{player['name']} s'est fait tuer par la Goliath dans {room_name} !",
+                                            "video_path": death_video_path,
+                                            "victim_name": player['name'],
+                                            "room_name": room_name
+                                        })
+                                    except:
+                                        pass
+                            
+                            logger.info(f"🕷️ {player['name']} tué par la Goliath dans {room_name}")
+                            
+                            # Lock the room where elimination occurred
+                            game["rooms"][room_name]["locked"] = True
+                            lock_msg = f"⚠️ La pièce {room_name} est condamnée pour ce tour."
+                            game["events"].append({"message": lock_msg, "type": "room_locked"})
+                            await broadcast_to_session(session_id, {"type": "event", "message": lock_msg})
+                            
+                            # If survivor had medikit, respawn it
+                            if player.get("has_medikit", False):
+                                player["has_medikit"] = False
+                                new_medikit_room = respawn_medikit(game)
+                                if new_medikit_room:
+                                    respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
+                                    game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
+                                    await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
+                            
+                            # Notify all players about selection (even though player died)
+                            await broadcast_to_session(session_id, {
+                                "type": "player_action",
+                                "player_id": player_id,
+                                "player_name": player["name"],
+                                "message": f"✅ {player['name']} a fait son choix"
+                            })
+                            
+                            # Check if all survivors are now eliminated (game over)
+                            alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+                            if len(alive_survivors) == 0:
+                                game["phase"] = "game_over"
+                                game["winner"] = "killers"
+                                
+                                survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
+                                killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+                                
+                                game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+                                game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+                                
+                                await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+                                await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+                            
+                            # Broadcast updated state
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game_sessions[session_id]
+                            })
+                            continue  # Skip rest of processing for this player
                     
                     # Track rooms searched for Vision power (track the final room after teleportation)
                     if player["role"] == "survivor" and room_name not in game.get("rooms_searched_this_key", []):
@@ -2256,13 +2435,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         if len(survivors_selected) == len(alive_survivors):
                             # All survivors have selected, NOW clear traps and mimics from previous turn
                             # This ensures traps and mimics persist for exactly one turn after being set
-                            for room_name, room_data in game["rooms"].items():
+                            for room_name_clear, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
                                 room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
                                 room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
                                 room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
                                 room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
+                            
+                            # GOLIATH: Update the list of rooms visited this turn for next turn's check
+                            if game.get("goliath_active", False):
+                                # Collect all rooms selected by survivors this turn
+                                current_turn_rooms = []
+                                for pid, action in game["pending_actions"].items():
+                                    if game["players"][pid]["role"] == "survivor":
+                                        room_selected = action.get("room")
+                                        if room_selected and room_selected not in current_turn_rooms:
+                                            current_turn_rooms.append(room_selected)
+                                game["goliath_previous_turn_rooms"] = current_turn_rooms
                             
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
@@ -2272,7 +2462,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
                             for killer in alive_killers:
                                 killer_id = killer["id"]
-                                power_options = get_random_powers()
+                                power_options = get_random_powers(game_state=game)
                                 game["pending_power_selections"][killer_id] = {
                                     "options": power_options,
                                     "selected_power": None,

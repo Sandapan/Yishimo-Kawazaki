@@ -1009,6 +1009,16 @@ const Game = () => {
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
   const [antidoteMessage, setAntidoteMessage] = useState("");
 
+  // NEW: Goliath spawn popup state
+  const [showGoliathSpawnPopup, setShowGoliathSpawnPopup] = useState(false);
+  const [goliathSpawnMessage, setGoliathSpawnMessage] = useState("");
+  const [goliathSpawnVideoPath, setGoliathSpawnVideoPath] = useState("");
+
+  // NEW: Goliath death popup state
+  const [showGoliathDeathPopup, setShowGoliathDeathPopup] = useState(false);
+  const [goliathDeathMessage, setGoliathDeathMessage] = useState("");
+  const [goliathDeathVideoPath, setGoliathDeathVideoPath] = useState("");
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -1120,6 +1130,24 @@ const Game = () => {
         setTimeout(() => {
           setShowAntidotePopup(false);
         }, 3000);
+      } else if (data.type === "goliath_spawned") {
+        // Show Goliath spawn popup with video (for survivors)
+        setGoliathSpawnMessage(data.message);
+        setGoliathSpawnVideoPath(data.video_path);
+        setShowGoliathSpawnPopup(true);
+        // Auto-hide after 8 seconds
+        setTimeout(() => {
+          setShowGoliathSpawnPopup(false);
+        }, 8000);
+      } else if (data.type === "goliath_death_popup") {
+        // Show Goliath death popup with video
+        setGoliathDeathMessage(data.message);
+        setGoliathDeathVideoPath(data.video_path);
+        setShowGoliathDeathPopup(true);
+        // Auto-hide after 6 seconds
+        setTimeout(() => {
+          setShowGoliathDeathPopup(false);
+        }, 6000);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
@@ -2063,6 +2091,82 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
                 {antidoteMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Goliath Spawn Popup */}
+      {showGoliathSpawnPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowGoliathSpawnPopup(false)}
+          data-testid="goliath-spawn-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#2a2a2a', borderColor: '#8b0000' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
+                🕷️
+                <span>La Goliath est invoquée !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {goliathSpawnVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowGoliathSpawnPopup(false), 1000)}
+                >
+                  <source src={goliathSpawnVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {goliathSpawnMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Goliath Death Popup */}
+      {showGoliathDeathPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowGoliathDeathPopup(false)}
+          data-testid="goliath-death-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a1a', borderColor: '#8b0000' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
+                💀🕷️
+                <span>La Goliath frappe !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {goliathDeathVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowGoliathDeathPopup(false), 1000)}
+                >
+                  <source src={goliathDeathVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {goliathDeathMessage}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
