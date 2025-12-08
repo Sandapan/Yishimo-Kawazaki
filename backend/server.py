@@ -2216,6 +2216,54 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+                            else:
+                                # FIX: Check if all REMAINING alive survivors have selected their rooms
+                                # This prevents the game from getting stuck when a survivor dies to Goliath
+                                survivors_selected = [pid for pid in game["pending_actions"].keys()
+                                                    if game["players"][pid]["role"] == "survivor"]
+                                
+                                if len(survivors_selected) == len(alive_survivors):
+                                    # All remaining survivors have selected, move to killer power selection
+                                    # Clear traps and mimics from previous turn
+                                    for room_name_clear, room_data in game["rooms"].items():
+                                        room_data["trapped"] = False
+                                        room_data.pop("trap_triggered", None)
+                                        room_data["has_mimic"] = False
+                                        room_data["teleportation_trap"] = False
+                                        room_data["teleportation_exit"] = False
+                                        room_data["teleportation_target_room"] = None
+                                    
+                                    # GOLIATH: Update the list of rooms visited this turn for next turn's check
+                                    if game.get("goliath_active", False):
+                                        current_turn_rooms = []
+                                        for pid, action in game["pending_actions"].items():
+                                            if game["players"][pid]["role"] == "survivor":
+                                                room_selected = action.get("room")
+                                                if room_selected and room_selected not in current_turn_rooms:
+                                                    current_turn_rooms.append(room_selected)
+                                        game["goliath_previous_turn_rooms"] = current_turn_rooms
+                                    
+                                    # Move to killer power selection
+                                    game["phase"] = "killer_power_selection"
+                                    game["pending_power_selections"] = {}
+                                    
+                                    # Assign 3 random powers to each killer
+                                    alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
+                                    for killer in alive_killers:
+                                        killer_id = killer["id"]
+                                        power_options = get_random_powers(game_state=game)
+                                        game["pending_power_selections"][killer_id] = {
+                                            "options": power_options,
+                                            "selected_power": None,
+                                            "action_data": None,
+                                            "action_complete": False
+                                        }
+                                    
+                                    await broadcast_to_session(session_id, {
+                                        "type": "phase_change",
+                                        "phase": "killer_power_selection",
+                                        "message": "🎴 Les tueurs choisissent leur pouvoir"
+                                    })
                             
                             # Broadcast updated state
                             await broadcast_to_session(session_id, {
