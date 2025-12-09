@@ -2019,8 +2019,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if game["phase"] == "survivor_selection":
                         alive_survivors = [p for p in game["players"].values()\
                                          if p["role"] == "survivor" and not p["eliminated"]]
+                        # FIX: Only count non-eliminated survivors in selection check
                         survivors_selected = [pid for pid in game["pending_actions"].keys()\
-                                            if game["players"][pid]["role"] == "survivor"]
+                                            if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
                         if len(survivors_selected) == len(alive_survivors):
                             # All survivors have selected, NOW clear traps and mimics from previous turn
@@ -2444,8 +2445,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if game["phase"] == "survivor_selection":
                         alive_survivors = [p for p in game["players"].values()\
                                          if p["role"] == "survivor" and not p["eliminated"]]
+                        # FIX: Only count non-eliminated survivors in selection check
                         survivors_selected = [pid for pid in game["pending_actions"].keys()\
-                                            if game["players"][pid]["role"] == "survivor"]
+                                            if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
                         if len(survivors_selected) == len(alive_survivors):
                             # All survivors have selected, NOW clear traps and mimics from previous turn
