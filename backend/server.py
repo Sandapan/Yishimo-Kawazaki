@@ -164,6 +164,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "goliath_active": False,  # NEW: whether Goliath is active
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
+        "goliath_killed_this_turn": False,  # NEW: whether Goliath has killed a survivor this turn (only one kill per turn)
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1189,6 +1190,9 @@ async def process_turn(session_id: str):
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
     
+    # GOLIATH: Reset kill flag for new turn
+    game["goliath_killed_this_turn"] = False
+    
     # GOLIATH: Decrement turns remaining and check for expiration
     if game.get("goliath_active", False):
         game["goliath_turns_remaining"] -= 1
@@ -1428,6 +1432,9 @@ async def process_rage_second_selections(session_id: str):
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
     
+    # GOLIATH: Reset kill flag for new turn
+    game["goliath_killed_this_turn"] = False
+    
     # GOLIATH: Decrement turns remaining and check for expiration
     if game.get("goliath_active", False):
         game["goliath_turns_remaining"] -= 1
@@ -1622,6 +1629,9 @@ async def start_game(session_id: str):
     game["game_started"] = True
     game["phase"] = "survivor_selection"  # Start with survivors
     game["turn"] = 1
+    
+    # GOLIATH: Initialize kill flag for the game
+    game["goliath_killed_this_turn"] = False
 
     # Generate quests for all survivors
     game["quests"] = generate_quests(survivors)
@@ -2138,14 +2148,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             
                             logger.info(f"🌀 {player['name']} téléporté de {original_room_name} vers {target_room}")
                     
-                    # GOLIATH CHECK: If Goliath is active, check if survivor entered a room visited last turn
-                    if player["role"] == "survivor" and game.get("goliath_active", False):
+                    # GOLIATH CHECK: If Goliath is active AND hasn't killed yet this turn, check if survivor entered a room visited last turn
+                    if (player["role"] == "survivor" and 
+                        game.get("goliath_active", False) and 
+                        not game.get("goliath_killed_this_turn", False)):
                         previous_turn_rooms = game.get("goliath_previous_turn_rooms", [])
                         if room_name in previous_turn_rooms:
                             # Survivor dies to Goliath!
                             player["eliminated"] = True
                             player["gold"] = 0  # Reset gold when eliminated
                             game["rooms"][room_name]["eliminated_players"].append(player_id)
+                            
+                            # Mark that Goliath has killed this turn (prevents multiple kills in same turn)
+                            game["goliath_killed_this_turn"] = True
                             
                             # Get player class for death video
                             player_class = player.get("character_class", "Assassin")
@@ -2177,7 +2192,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     except:
                                         pass
                             
-                            logger.info(f"🕷️ {player['name']} tué par la Goliath dans {room_name}")
+                            logger.info(f"🕷️ {player['name']} tué par la Goliath dans {room_name} (Goliath désactivée pour ce tour)")
                             
                             # Lock the room where elimination occurred
                             game["rooms"][room_name]["locked"] = True
@@ -2216,54 +2231,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
-                            else:
-                                # FIX: Check if all REMAINING alive survivors have selected their rooms
-                                # This prevents the game from getting stuck when a survivor dies to Goliath
-                                survivors_selected = [pid for pid in game["pending_actions"].keys()
-                                                    if game["players"][pid]["role"] == "survivor"]
-                                
-                                if len(survivors_selected) == len(alive_survivors):
-                                    # All remaining survivors have selected, move to killer power selection
-                                    # Clear traps and mimics from previous turn
-                                    for room_name_clear, room_data in game["rooms"].items():
-                                        room_data["trapped"] = False
-                                        room_data.pop("trap_triggered", None)
-                                        room_data["has_mimic"] = False
-                                        room_data["teleportation_trap"] = False
-                                        room_data["teleportation_exit"] = False
-                                        room_data["teleportation_target_room"] = None
-                                    
-                                    # GOLIATH: Update the list of rooms visited this turn for next turn's check
-                                    if game.get("goliath_active", False):
-                                        current_turn_rooms = []
-                                        for pid, action in game["pending_actions"].items():
-                                            if game["players"][pid]["role"] == "survivor":
-                                                room_selected = action.get("room")
-                                                if room_selected and room_selected not in current_turn_rooms:
-                                                    current_turn_rooms.append(room_selected)
-                                        game["goliath_previous_turn_rooms"] = current_turn_rooms
-                                    
-                                    # Move to killer power selection
-                                    game["phase"] = "killer_power_selection"
-                                    game["pending_power_selections"] = {}
-                                    
-                                    # Assign 3 random powers to each killer
-                                    alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
-                                    for killer in alive_killers:
-                                        killer_id = killer["id"]
-                                        power_options = get_random_powers(game_state=game)
-                                        game["pending_power_selections"][killer_id] = {
-                                            "options": power_options,
-                                            "selected_power": None,
-                                            "action_data": None,
-                                            "action_complete": False
-                                        }
-                                    
-                                    await broadcast_to_session(session_id, {
-                                        "type": "phase_change",
-                                        "phase": "killer_power_selection",
-                                        "message": "🎴 Les tueurs choisissent leur pouvoir"
-                                    })
                             
                             # Broadcast updated state
                             await broadcast_to_session(session_id, {
