@@ -1639,6 +1639,200 @@ body {
   }
 }
 
+/* ========== MOBILE RESPONSIVE - HOME PAGE ========== */
+@media (max-width: 768px) {
+  .home-container {
+    padding: 0.5rem;
+    align-items: center;
+    padding-top: 0.5rem;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+  }
+
+  .home-content {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .game-title {
+    font-size: 1.8rem;
+    margin-bottom: 0.2rem;
+    letter-spacing: 1px;
+  }
+
+  .game-subtitle {
+    font-size: 0.75rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .setup-card {
+    margin-bottom: 0.8rem;
+    padding: 0.8rem !important;
+  }
+
+  .setup-card .space-y-4 > * + * {
+    margin-top: 0.6rem !important;
+  }
+
+  .input-label {
+    font-size: 0.75rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .dark-input {
+    padding: 0.6rem 0.8rem;
+    font-size: 0.9rem;
+  }
+
+  .avatar-grid {
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+    max-width: 100%;
+  }
+
+  .avatar-option {
+    border-width: 2px;
+    border-radius: 6px;
+  }
+
+  /* Character description box - more compact */
+  .setup-card [style*="margin-top: 1rem"] {
+    margin-top: 0.6rem !important;
+    padding: 0.6rem !important;
+  }
+
+  .setup-card [style*="margin-top: 1rem"] h3 {
+    font-size: 0.95rem !important;
+    margin-bottom: 0.3rem !important;
+  }
+
+  .setup-card [style*="margin-top: 1rem"] p {
+    font-size: 0.75rem !important;
+    line-height: 1.3 !important;
+  }
+
+  /* Character illustration - very compact on mobile */
+  .character-illustration-enter {
+    margin: 0.5rem auto !important;
+    max-width: 100% !important;
+  }
+
+  .character-illustration-enter video {
+    max-height: 150px !important;
+    width: auto !important;
+  }
+
+  .role-selector {
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+  }
+
+  .role-option {
+    padding: 0.8rem 0.6rem;
+    gap: 0.2rem;
+  }
+
+  .role-icon {
+    font-size: 1.8rem;
+  }
+
+  .role-name {
+    font-size: 0.8rem;
+  }
+
+  .action-buttons {
+    gap: 0.6rem;
+    margin-top: 0.6rem;
+  }
+
+  .primary-btn {
+    font-size: 0.9rem;
+    padding: 0.8rem;
+  }
+
+  .secondary-btn {
+    font-size: 0.85rem;
+    padding: 0.7rem 0.8rem;
+  }
+
+  .join-section {
+    gap: 0.4rem;
+  }
+
+  /* Reduce card header padding */
+  .setup-card > div:first-child {
+    padding: 0.8rem !important;
+  }
+
+  .setup-card > div:first-child h3 {
+    font-size: 1rem !important;
+  }
+}
+
+/* Extra small devices */
+@media (max-width: 400px) {
+  .home-container {
+    padding: 0.4rem;
+    padding-top: 0.4rem;
+  }
+
+  .game-title {
+    font-size: 1.5rem;
+    letter-spacing: 0.5px;
+  }
+
+  .game-subtitle {
+    font-size: 0.7rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .setup-card {
+    padding: 0.6rem !important;
+  }
+
+  .avatar-grid {
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.25rem;
+  }
+
+  .character-illustration-enter video {
+    max-height: 120px !important;
+  }
+
+  .role-option {
+    padding: 0.6rem 0.4rem;
+  }
+
+  .role-icon {
+    font-size: 1.5rem;
+  }
+
+  .role-name {
+    font-size: 0.75rem;
+  }
+
+  .primary-btn {
+    font-size: 0.85rem;
+    padding: 0.7rem;
+  }
+
+  .secondary-btn {
+    font-size: 0.8rem;
+    padding: 0.6rem 0.7rem;
+  }
+
+  .input-label {
+    font-size: 0.7rem;
+  }
+
+  .dark-input {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.85rem;
+  }
+}
+
 /* Responsive adjustments for elimination popup */
 @media (max-width: 768px) {
   .killer-elimination-card {
