@@ -2190,10 +2190,6 @@ const Game = () => {
       {/* Game Header */}
       <div className="game-header">
         <div className="game-info">
-          <h2 className="turn-indicator" data-testid="turn-indicator">Tour {gameState.turn}</h2>
-          <div className="keys-counter" data-testid="keys-counter">
-            🔑 {gameState.keys_collected}/{gameState.keys_needed}
-          </div>
           {gameState.phase === "survivor_selection" && (
             <div className="phase-indicator survivor-phase" data-testid="phase-indicator">
               🛡️ Tour des survivants
@@ -2214,19 +2210,10 @@ const Game = () => {
               ⏳ Traitement en cours...
             </div>
           )}
-        </div>
-
-        <div className="player-status">
-          <span className="player-avatar-display">
-            <img src={currentPlayer?.avatar} alt={currentPlayer?.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
-          </span>
-          <span className="player-name-display">{currentPlayer?.name}</span>
-          {currentPlayerRole === "killer" && <span className="role-badge killer-role">🔪 Tueur</span>}
-          {currentPlayerRole === "survivor" && <span className="role-badge survivor-role">🛡️ Survivant</span>}
-          {currentPlayer?.has_medikit && <span className="medikit-badge">⚗️</span>}
-          {isEliminated && <span className="eliminated-badge">💀 Éliminé</span>}
-          {currentPlayer?.immobilized_next_turn && <span className="immobilized-badge">🕸️ Piégé</span>}
-          {currentPlayer?.poisoned_countdown > 0 && <span className="poisoned-badge">😷 Empoisonné ({currentPlayer.poisoned_countdown})</span>}
+          <h2 className="turn-indicator" data-testid="turn-indicator">Tour {gameState.turn}</h2>
+          <div className="keys-counter" data-testid="keys-counter">
+            🔑 {gameState.keys_collected}/{gameState.keys_needed}
+          </div>
         </div>
       </div>
 

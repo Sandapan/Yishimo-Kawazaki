@@ -457,10 +457,10 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1.5rem;
-  padding: 1rem 1.5rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
   background: rgba(61, 43, 31, 0.9);
-  border-radius: 12px;
+  border-radius: 10px;
   border: 2px solid rgba(139, 92, 46, 0.5);
   backdrop-filter: blur(10px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -469,35 +469,36 @@ body {
 .game-info {
   display: flex;
   align-items: center;
-  gap: 2rem;
+  gap: 1.5rem;
+  flex-wrap: wrap;
 }
 
 .turn-indicator {
   font-family: 'MedievalSharp', cursive;
-  font-size: 1.8rem;
+  font-size: 1.5rem;
   color: #d4af37;
   text-shadow: 2px 2px 5px rgba(139, 92, 46, 0.5);
 }
 
 .keys-counter {
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: bold;
   color: #d4af37;
   background: rgba(139, 92, 46, 0.3);
-  padding: 0.5rem 1rem;
+  padding: 0.4rem 0.8rem;
   border-radius: 8px;
   border: 2px solid rgba(139, 92, 46, 0.4);
 }
 
 /* Phase indicators */
 .phase-indicator {
-  padding: 0.5rem 1rem;
+  padding: 0.4rem 0.8rem;
   border-radius: 0.5rem;
   font-weight: bold;
-  font-size: 0.9rem;
-  margin-left: 1rem;
+  font-size: 0.85rem;
   animation: pulse 2s ease-in-out infinite;
   font-family: 'Cinzel', serif;
+  white-space: nowrap;
 }
 
 .survivor-phase {
@@ -809,7 +810,7 @@ body {
 }
 
 .events-scroll {
-  height: 300px;
+  height: 150px;
 }
 
 .events-list {
@@ -1164,6 +1165,160 @@ body {
   100% {
     transform: scale(1);
     opacity: 1;
+  }
+}
+
+/* ========== POWER SELECTION RESPONSIVE ========== */
+/* Tablettes et petits écrans */
+@media (max-width: 768px) {
+  .power-selection-overlay {
+    padding: 1rem;
+  }
+
+  .power-selection-card {
+    max-height: 95vh;
+  }
+
+  .power-cards-container {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    padding: 0.5rem;
+  }
+
+  .power-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0;
+  }
+
+  .power-card-image {
+    width: 140px;
+    height: 120px;
+    flex-shrink: 0;
+  }
+
+  .power-card-content {
+    padding: 1rem;
+    flex: 1;
+  }
+
+  .power-card-name {
+    font-size: 1.1rem;
+    text-align: left;
+  }
+
+  .power-card-description {
+    font-size: 0.85rem;
+    text-align: left;
+  }
+}
+
+/* Mobiles */
+@media (max-width: 600px) {
+  .power-selection-overlay {
+    padding: 0.5rem;
+    align-items: flex-start;
+    padding-top: 1rem;
+  }
+
+  .power-selection-card {
+    max-height: 96vh;
+    overflow-y: auto;
+  }
+
+  .power-selection-title {
+    font-size: 1.4rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .power-cards-container {
+    gap: 0.75rem;
+    padding: 0.5rem;
+  }
+
+  .power-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    min-height: auto;
+  }
+
+  .power-card-image {
+    width: 100%;
+    height: 140px;
+  }
+
+  .power-card-content {
+    padding: 0.75rem;
+  }
+
+  .power-card-name {
+    font-size: 1rem;
+    text-align: center;
+    margin-bottom: 0.4rem;
+  }
+
+  .power-card-description {
+    font-size: 0.8rem;
+    text-align: center;
+    line-height: 1.3;
+  }
+
+  .power-card:hover {
+    transform: translateY(-5px) scale(1.02);
+  }
+}
+
+/* Très petits mobiles - Vue ultra-compacte */
+@media (max-width: 480px) {
+  .power-selection-overlay {
+    padding: 0.3rem;
+    padding-top: 0.5rem;
+  }
+
+  .power-selection-card {
+    max-height: 97vh;
+  }
+
+  .power-selection-title {
+    font-size: 1.2rem;
+    padding: 0.5rem;
+  }
+
+  .power-cards-container {
+    gap: 0.5rem;
+    padding: 0.3rem;
+  }
+
+  .power-card {
+    border-width: 2px;
+  }
+
+  .power-card-image {
+    height: 110px;
+  }
+
+  .power-card-content {
+    padding: 0.6rem;
+  }
+
+  .power-card-name {
+    font-size: 0.95rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .power-card-description {
+    font-size: 0.75rem;
+    line-height: 1.2;
+  }
+
+  .power-card-selected-badge {
+    width: 30px;
+    height: 30px;
+    font-size: 1.2rem;
+    top: 5px;
+    right: 5px;
   }
 }
 
@@ -1907,6 +2062,85 @@ body {
   }
 }
 
+
+/* ========== MOBILE RESPONSIVE - GAME HEADER ========== */
+@media (max-width: 768px) {
+  .game-header {
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .game-info {
+    gap: 1rem;
+  }
+
+  .turn-indicator {
+    font-size: 1.3rem;
+  }
+
+  .keys-counter {
+    font-size: 1.1rem;
+    padding: 0.35rem 0.7rem;
+  }
+
+  .phase-indicator {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+  }
+}
+
+@media (max-width: 600px) {
+  .game-header {
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .game-info {
+    gap: 0.8rem;
+  }
+
+  .turn-indicator {
+    font-size: 1.2rem;
+  }
+
+  .keys-counter {
+    font-size: 1rem;
+    padding: 0.3rem 0.6rem;
+    border-width: 1px;
+  }
+
+  .phase-indicator {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    border-width: 1px;
+  }
+}
+
+@media (max-width: 480px) {
+  .game-header {
+    padding: 0.4rem 0.6rem;
+    margin-bottom: 0.5rem;
+    border-radius: 8px;
+  }
+
+  .game-info {
+    gap: 0.6rem;
+  }
+
+  .turn-indicator {
+    font-size: 1.1rem;
+  }
+
+  .keys-counter {
+    font-size: 0.95rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .phase-indicator {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+  }
+}
 
 /* ========== MOBILE RESPONSIVE - LOBBY PAGE ========== */
 @media (max-width: 768px) {
