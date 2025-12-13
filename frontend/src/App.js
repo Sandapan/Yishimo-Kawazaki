@@ -288,7 +288,10 @@ const Home = () => {
                   backgroundColor: 'rgba(139, 92, 46, 0.2)',
                   border: '2px solid rgba(139, 92, 46, 0.5)',
                   borderRadius: '8px',
-                  textAlign: 'center'
+                  textAlign: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center'
                 }}>
                   <h3 style={{ 
                     fontSize: '1.2em', 
@@ -306,11 +309,14 @@ const Home = () => {
                       key={selectedAvatar.class}
                       className="character-illustration-enter"
                       style={{
-                        margin: '1rem auto',
+                        margin: '1rem 0',
                         maxWidth: '400px',
+                        width: '100%',
                         borderRadius: '8px',
                         overflow: 'hidden',
-                        boxShadow: '0 4px 8px rgba(0,0,0,0.3)'
+                        boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
+                        display: 'flex',
+                        justifyContent: 'center'
                       }}
                     >
                       <video 
@@ -597,33 +603,37 @@ const Lobby = () => {
                 
                 return (
                   <div key={player.id} className="player-item" data-testid={`player-${player.id}`}>
-                    <span className="player-avatar">
-                      <img src={player.avatar} alt={player.name} style={{ width: '2rem', height: '2rem', objectFit: 'contain' }} />
-                    </span>
-                    <span className="player-name">{player.name}</span>
-                    {/* MODIFIED: Non-clickable role badges */}
-                    {!gameState.conspiracy_mode && player.role === "killer" && (
-                      <span className="killer-badge">
-                        🔪 Tueur
+                    <div className="player-item-main">
+                      <span className="player-avatar">
+                        <img src={player.avatar} alt={player.name} style={{ width: '3.5rem', height: '3.5rem', objectFit: 'contain' }} />
                       </span>
-                    )}
-                    {!gameState.conspiracy_mode && player.role === "survivor" && (
-                      <span className="survivor-badge">
-                        🛡️ Survivant
-                      </span>
-                    )}
-                    {/* MODIFIED: Button to return to role/avatar selection */}
-                    {!gameState.conspiracy_mode && isCurrentPlayer && (
-                      <button
-                        className="switch-role-btn"
-                        onClick={() => changeRole(player.id, player.role)}
-                        title="Changer de rôle et d'avatar"
-                        data-testid="switch-role-btn"
-                      >
-                        🔄
-                      </button>
-                    )}
-                    {player.is_host && <span className="host-badge">Hôte</span>}
+                      <span className="player-name">{player.name}</span>
+                    </div>
+                    <div className="player-item-badges">
+                      {/* MODIFIED: Non-clickable role badges */}
+                      {!gameState.conspiracy_mode && player.role === "killer" && (
+                        <span className="killer-badge">
+                          🔪 Tueur
+                        </span>
+                      )}
+                      {!gameState.conspiracy_mode && player.role === "survivor" && (
+                        <span className="survivor-badge">
+                          🛡️ Survivant
+                        </span>
+                      )}
+                      {/* MODIFIED: Button to return to role/avatar selection */}
+                      {!gameState.conspiracy_mode && isCurrentPlayer && (
+                        <button
+                          className="switch-role-btn"
+                          onClick={() => changeRole(player.id, player.role)}
+                          title="Changer de rôle et d'avatar"
+                          data-testid="switch-role-btn"
+                        >
+                          🔄
+                        </button>
+                      )}
+                      {player.is_host && <span className="host-badge">Hôte</span>}
+                    </div>
                   </div>
                 );
               })}
