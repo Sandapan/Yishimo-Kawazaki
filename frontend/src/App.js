@@ -266,6 +266,30 @@ const Home = () => {
             </div>
 
             <div>
+              <label className="input-label">Choisissez votre rôle</label>
+              <div className="role-selector">
+                <button
+                  data-testid="role-survivor-btn"
+                  className={`role-option ${selectedRole === 'survivor' ? 'selected' : ''}`}
+                  onClick={() => setSelectedRole('survivor')}
+                  disabled={conspiracyMode}
+                >
+                  <span className="role-icon">🛡️</span>
+                  <span className="role-name">Survivant</span>
+                </button>
+                <button
+                  data-testid="role-killer-btn"
+                  className={`role-option killer ${selectedRole === 'killer' ? 'selected' : ''}`}
+                  onClick={() => setSelectedRole('killer')}
+                  disabled={conspiracyMode}
+                >
+                  <span className="role-icon">🔪</span>
+                  <span className="role-name">Tueur</span>
+                </button>
+              </div>
+            </div>
+
+            <div>
               <label className="input-label">Choisissez votre avatar</label>
               <div className="avatar-grid">
                 {availableAvatars.map((avatar, idx) => (
@@ -344,30 +368,6 @@ const Home = () => {
                   </p>
                 </div>
               )}
-            </div>
-
-            <div>
-              <label className="input-label">Choisissez votre rôle</label>
-              <div className="role-selector">
-                <button
-                  data-testid="role-survivor-btn"
-                  className={`role-option ${selectedRole === 'survivor' ? 'selected' : ''}`}
-                  onClick={() => setSelectedRole('survivor')}
-                  disabled={conspiracyMode}
-                >
-                  <span className="role-icon">🛡️</span>
-                  <span className="role-name">Survivant</span>
-                </button>
-                <button
-                  data-testid="role-killer-btn"
-                  className={`role-option killer ${selectedRole === 'killer' ? 'selected' : ''}`}
-                  onClick={() => setSelectedRole('killer')}
-                  disabled={conspiracyMode}
-                >
-                  <span className="role-icon">🔪</span>
-                  <span className="role-name">Tueur</span>
-                </button>
-              </div>
             </div>
 
             {/* NEW: Conspiracy Mode Toggle */}
