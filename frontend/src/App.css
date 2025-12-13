@@ -1993,3 +1993,284 @@ body {
   }
 }
 
+/* ========== MOBILE RESPONSIVE - GAME PAGE (ROOMS) ========== */
+
+/* Tablette - Layout intermédiaire */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .game-container {
+    padding: 1rem;
+  }
+
+  .map-section {
+    gap: 1rem;
+  }
+
+  .floor-section {
+    padding: 1rem;
+  }
+
+  .floor-title {
+    font-size: 1.1rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .rooms-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.8rem;
+  }
+
+  .room-card {
+    min-height: 85px;
+    padding: 0.8rem;
+  }
+
+  .room-name {
+    font-size: 0.9rem;
+  }
+}
+
+/* Mobile - Layout ultra-compact pour voir les 12 pièces sans scroll */
+@media (max-width: 768px) {
+  .game-container {
+    padding: 0.5rem;
+    padding-top: 0.5rem;
+  }
+
+  .game-main {
+    gap: 0.8rem;
+  }
+
+  .map-section {
+    gap: 0.6rem;
+  }
+
+  .map-title-image {
+    max-width: 200px;
+  }
+
+  .floor-section {
+    padding: 0.5rem;
+    border-radius: 8px;
+    border-width: 1px;
+  }
+
+  .floor-title {
+    font-size: 0.85rem;
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.5px;
+  }
+
+  .rooms-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.4rem;
+  }
+
+  .room-card {
+    min-height: 65px;
+    padding: 0.4rem;
+    border-width: 2px;
+    border-radius: 6px;
+  }
+
+  .room-name {
+    font-size: 0.65rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+    line-height: 1.1;
+    text-shadow: 
+      1px 1px 3px rgba(0, 0, 0, 0.9),
+      0 0 6px rgba(0, 0, 0, 0.8);
+  }
+
+  .room-indicators {
+    gap: 0.2rem;
+    flex-wrap: wrap;
+  }
+
+  .room-icon {
+    font-size: 0.9rem;
+  }
+
+  .locked-icon,
+  .skull-icon {
+    font-size: 1rem;
+  }
+
+  .room-trap-indicator,
+  .room-poison-indicator,
+  .room-mimic-indicator,
+  .room-teleport-trap-indicator,
+  .room-teleport-exit-indicator {
+    font-size: 0.85rem;
+  }
+
+  .players-in-room {
+    gap: 0.15rem;
+  }
+
+  .room-player-avatar img {
+    width: 1rem !important;
+    height: 1rem !important;
+  }
+
+  /* Events section plus compact */
+  .events-section {
+    margin-top: 0.5rem;
+  }
+
+  .events-card {
+    max-height: 250px;
+  }
+
+  .events-scroll {
+    max-height: 200px;
+  }
+
+  /* Game info section plus compact */
+  .game-info-card {
+    padding: 0.6rem;
+  }
+
+  .info-item {
+    font-size: 0.85rem;
+  }
+
+  /* Power selection plus compact */
+  .powers-grid {
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 0.4rem;
+  }
+
+  .power-card {
+    padding: 0.5rem;
+    min-height: 70px;
+  }
+}
+
+/* Très petits mobiles - Encore plus compact */
+@media (max-width: 480px) {
+  .game-container {
+    padding: 0.3rem;
+    padding-top: 0.3rem;
+  }
+
+  .game-main {
+    gap: 0.5rem;
+  }
+
+  .map-section {
+    gap: 0.4rem;
+  }
+
+  .floor-section {
+    padding: 0.4rem;
+    border-radius: 6px;
+  }
+
+  .floor-title {
+    font-size: 0.75rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .rooms-grid {
+    gap: 0.3rem;
+  }
+
+  .room-card {
+    min-height: 55px;
+    padding: 0.3rem;
+    border-width: 1.5px;
+    border-radius: 5px;
+  }
+
+  .room-name {
+    font-size: 0.6rem;
+    margin-bottom: 0.15rem;
+  }
+
+  .room-indicators {
+    gap: 0.15rem;
+  }
+
+  .room-icon {
+    font-size: 0.8rem;
+  }
+
+  .locked-icon,
+  .skull-icon {
+    font-size: 0.9rem;
+  }
+
+  .room-trap-indicator,
+  .room-poison-indicator,
+  .room-mimic-indicator,
+  .room-teleport-trap-indicator,
+  .room-teleport-exit-indicator {
+    font-size: 0.75rem;
+  }
+
+  .room-player-avatar img {
+    width: 0.85rem !important;
+    height: 0.85rem !important;
+  }
+
+  /* Top bar game info ultra compact */
+  .game-info-bar {
+    padding: 0.4rem;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+  }
+
+  .game-info-item {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.5rem;
+  }
+}
+
+/* Landscape mobile - optimisation pour mode paysage */
+@media (max-width: 900px) and (max-height: 500px) and (orientation: landscape) {
+  .game-container {
+    padding: 0.4rem;
+  }
+
+  .game-main {
+    grid-template-columns: 1.5fr 1fr;
+    gap: 0.8rem;
+  }
+
+  .map-section {
+    gap: 0.5rem;
+  }
+
+  .floor-section {
+    padding: 0.4rem;
+  }
+
+  .floor-title {
+    font-size: 0.8rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .rooms-grid {
+    gap: 0.4rem;
+  }
+
+  .room-card {
+    min-height: 50px;
+    padding: 0.3rem;
+  }
+
+  .room-name {
+    font-size: 0.65rem;
+  }
+
+  .events-card {
+    max-height: 180px;
+  }
+
+  .events-scroll {
+    max-height: 140px;
+  }
+}
+
