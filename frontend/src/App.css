@@ -528,6 +528,126 @@ body {
   }
 }
 
+/* Active Traps Section */
+.active-traps-section {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(61, 43, 31, 0.85);
+  border-radius: 10px;
+  border: 2px solid rgba(212, 175, 55, 0.4);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: trapSectionAppear 0.3s ease-out;
+}
+
+@keyframes trapSectionAppear {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.active-traps-container {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.trap-icon-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trap-icon-btn {
+  background: rgba(30, 20, 15, 0.8);
+  border: 2px solid rgba(212, 175, 55, 0.5);
+  border-radius: 12px;
+  padding: 0.5rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+}
+
+.trap-icon-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(212, 175, 55, 0.2);
+  transition: width 0.3s ease, height 0.3s ease;
+}
+
+.trap-icon-btn:hover::before {
+  width: 100%;
+  height: 100%;
+}
+
+.trap-icon-btn:hover {
+  border-color: rgba(212, 175, 55, 0.8);
+  box-shadow: 0 0 15px rgba(212, 175, 55, 0.4);
+  transform: scale(1.1);
+}
+
+.trap-icon-btn.expanded {
+  border-color: #d4af37;
+  box-shadow: 0 0 20px rgba(212, 175, 55, 0.6);
+  background: rgba(139, 92, 46, 0.3);
+}
+
+.trap-icon {
+  width: 45px;
+  height: 45px;
+  object-fit: contain;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+.trap-description {
+  background: rgba(30, 20, 15, 0.95);
+  border: 2px solid rgba(212, 175, 55, 0.6);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  color: #e8dcc4;
+  font-size: 0.85rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  animation: descriptionAppear 0.2s ease-out;
+  max-width: 280px;
+  text-align: center;
+  font-family: 'Cinzel', serif;
+  line-height: 1.4;
+  margin-top: 0.25rem;
+}
+
+@keyframes descriptionAppear {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .player-status {
   display: flex;
   align-items: center;

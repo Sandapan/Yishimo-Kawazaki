@@ -1028,6 +1028,9 @@ const Game = () => {
   const [goliathDeathMessage, setGoliathDeathMessage] = useState("");
   const [goliathDeathVideoPath, setGoliathDeathVideoPath] = useState("");
 
+  // NEW: Active traps section state
+  const [expandedTrap, setExpandedTrap] = useState(null);
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false); // Track if role notification was shown
@@ -1402,6 +1405,53 @@ const Game = () => {
   Object.entries(gameState.rooms).forEach(([name, data]) => {
     roomsByFloor[data.floor].push({ name, ...data });
   });
+
+  // Calculate active traps for survivors
+  const getActiveTraps = () => {
+    if (currentPlayerRole !== "survivor") return [];
+    
+    const traps = [];
+    
+    // Check for Blizzard (trapped rooms)
+    const trappedRoomsCount = Object.values(gameState.rooms).filter(room => room.trapped).length;
+    if (trappedRoomsCount > 0) {
+      traps.push({
+        type: "blizzard",
+        icon: "/icons/blizzard.png",
+        name: "Blizzard",
+        description: `Une pièce est prise dans un violent blizzard pour encore 1 Tour.`,
+        count: trappedRoomsCount
+      });
+    }
+    
+    // Check for Toxine (poisoned rooms)
+    const poisonedRooms = Object.values(gameState.rooms).filter(room => room.poisoned_turns_remaining > 0);
+    if (poisonedRooms.length > 0) {
+      const maxTurns = Math.max(...poisonedRooms.map(room => room.poisoned_turns_remaining));
+      traps.push({
+        type: "toxine",
+        icon: "/icons/toxine.png",
+        name: "Toxine",
+        description: `Une pièce est empoisonnée par la toxine pour encore ${maxTurns} Tour(s).`,
+        count: poisonedRooms.length
+      });
+    }
+    
+    // Check for La Goliath
+    if (gameState.goliath_active && gameState.goliath_turns_remaining > 0) {
+      traps.push({
+        type: "goliath",
+        icon: "/icons/La goliath.png",
+        name: "La Goliath",
+        description: `La goliath rôde encore pour ${gameState.goliath_turns_remaining} tours : Ne choisissez jamais une pièce que l'un de vous a visité durant le tour précédent !`,
+        count: 1
+      });
+    }
+    
+    return traps;
+  };
+
+  const activeTraps = getActiveTraps();
 
   return (
     <div className="game-container" data-testid="game-page">
@@ -2215,6 +2265,31 @@ const Game = () => {
           </div>
         </div>
       </div>
+
+      {/* Active Traps Section - Only for survivors */}
+      {currentPlayerRole === "survivor" && !isEliminated && activeTraps.length > 0 && (
+        <div className="active-traps-section" data-testid="active-traps-section">
+          <div className="active-traps-container">
+            {activeTraps.map((trap) => (
+              <div key={trap.type} className="trap-icon-wrapper">
+                <button
+                  className={`trap-icon-btn ${expandedTrap === trap.type ? 'expanded' : ''}`}
+                  onClick={() => setExpandedTrap(expandedTrap === trap.type ? null : trap.type)}
+                  title={trap.name}
+                  data-testid={`trap-icon-${trap.type}`}
+                >
+                  <img src={trap.icon} alt={trap.name} className="trap-icon" />
+                </button>
+                {expandedTrap === trap.type && (
+                  <div className="trap-description" data-testid={`trap-description-${trap.type}`}>
+                    {trap.description}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Power Selection Screen */}
       {gameState.phase === "killer_power_selection" && currentPlayerRole === "killer" && !isEliminated && (
