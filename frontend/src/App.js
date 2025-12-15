@@ -247,7 +247,6 @@ const Home = () => {
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
         <h1 className="game-title" data-testid="game-title">Le Donjon</h1>
-        <p className="game-subtitle">Qui conservera les joyaux de la couronne ?</p>
 
         <Card className="setup-card">
           <CardHeader>
