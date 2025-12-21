@@ -1028,6 +1028,11 @@ const Game = () => {
   const [goliathDeathMessage, setGoliathDeathMessage] = useState("");
   const [goliathDeathVideoPath, setGoliathDeathVideoPath] = useState("");
 
+  // NEW: Eboulement popup state
+  const [showEboulementPopup, setShowEboulementPopup] = useState(false);
+  const [eboulementMessage, setEboulementMessage] = useState("");
+  const [eboulementVideoPath, setEboulementVideoPath] = useState("");
+
   // NEW: Active traps section state
   const [expandedTrap, setExpandedTrap] = useState(null);
 
@@ -1150,6 +1155,15 @@ const Game = () => {
         // Auto-hide after 8 seconds
         setTimeout(() => {
           setShowGoliathSpawnPopup(false);
+        }, 8000);
+      } else if (data.type === "eboulement_activated") {
+        // Show Eboulement popup with video (for survivors)
+        setEboulementMessage(data.message);
+        setEboulementVideoPath(data.video_path);
+        setShowEboulementPopup(true);
+        // Auto-hide after 8 seconds
+        setTimeout(() => {
+          setShowEboulementPopup(false);
         }, 8000);
       } else if (data.type === "goliath_death_popup") {
         // Show Goliath death popup with video
@@ -1444,6 +1458,17 @@ const Game = () => {
         icon: "/icons/La goliath.png",
         name: "La Goliath",
         description: `La goliath rôde encore pour ${gameState.goliath_turns_remaining} tours : Ne choisissez jamais une pièce que l'un de vous a visité durant le tour précédent !`,
+        count: 1
+      });
+    }
+    
+    // Check for Eboulement
+    if (gameState.eboulement_active) {
+      traps.push({
+        type: "eboulement",
+        icon: "/icons/Eboulement.png",
+        name: "Eboulement",
+        description: "Durant ce tour, vous ne pouvez pas changer d'étage.",
         count: 1
       });
     }
@@ -2188,6 +2213,44 @@ const Game = () => {
               )}
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
                 {goliathSpawnMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Eboulement Popup */}
+      {showEboulementPopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowEboulementPopup(false)}
+          data-testid="eboulement-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#3a2a1a', borderColor: '#8b4513' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d2691e' }}>
+                ⛰️
+                <span>Éboulement !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {eboulementVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowEboulementPopup(false), 1000)}
+                >
+                  <source src={eboulementVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {eboulementMessage}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer

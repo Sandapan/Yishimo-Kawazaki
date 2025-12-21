@@ -165,6 +165,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
         "goliath_killed_this_turn": False,  # NEW: whether Goliath has killed a survivor this turn (only one kill per turn)
+        "eboulement_active": False,  # NEW: whether Eboulement is active (blocks floor changes for 1 turn)
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -409,6 +410,12 @@ POWERS = {
         "name": "🕷️ La Goliath",
         "description": "Invoquez la Goliath pour plusieurs tours. Cette araignée géante traque les survivants qui revisitent une pièce fouillée au tour précédent.",
         "icon": "La goliath.mp4",
+        "requires_action": False
+    },
+    "eboulement": {
+        "name": "⛰️ Eboulement",
+        "description": "Bloquez les escaliers et forcez les joueurs à rester dans leur étage durant 1 tour",
+        "icon": "Eboulement.mp4",
         "requires_action": False
     }
 }
@@ -718,6 +725,27 @@ async def apply_powers(session_id: str):
                 "message": "La Goliath est invoquée ! Ne choisissez JAMAIS une pièce que l'un d'entre vous a visité au tour précédent tant qu'elle est présente.",
                 "video_path": "/event/Spawn-Goliath.mp4",
                 "duration": goliath_duration
+            }, role_filter="survivor")
+        
+        elif power_name == "eboulement":
+            # Activate Eboulement for 1 turn (blocks floor changes)
+            game["eboulement_active"] = True
+            
+            # Log event for killers
+            event_msg = f"⛰️ {player['name']} utilise Eboulement !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+            
+            # Log event for everyone
+            eboulement_msg = f"⛰️ Un éboulement bloque les escaliers pour 1 tour !"
+            game["events"].append({"message": eboulement_msg, "type": "eboulement_activated"})
+            await broadcast_to_session(session_id, {"type": "event", "message": eboulement_msg})
+            
+            # Send popup with video to all survivors
+            await broadcast_to_session(session_id, {
+                "type": "eboulement_activated",
+                "message": "Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci.",
+                "video_path": "/powers/Eboulement.mp4"
             }, role_filter="survivor")
 
 def filter_game_state(game_state: dict, player_role: str) -> dict:
@@ -2033,6 +2061,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
                                 room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
                             
+                            # EBOULEMENT: Clear eboulement effect after one turn
+                            game["eboulement_active"] = False
+                            
                             # GOLIATH: Update the list of rooms visited this turn for next turn's check
                             if game.get("goliath_active", False):
                                 # Collect all rooms selected by survivors this turn
@@ -2078,6 +2109,28 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     continue
                 if player["role"] == "killer" and game["phase"] not in ["killer_selection", "rage_second_selection"]:
                     continue
+                
+                # Check Eboulement restriction for survivors (AFTER immobilization check, blocks floor changes)
+                if player["role"] == "survivor" and game.get("eboulement_active", False):
+                    current_room = player.get("current_room")
+                    
+                    # If player has a current room, check if they're trying to change floors
+                    if current_room and room_name in game["rooms"]:
+                        current_floor = game["rooms"][current_room]["floor"]
+                        selected_floor = game["rooms"][room_name]["floor"]
+                        
+                        # If trying to change floors, block it
+                        if current_floor != selected_floor:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "⛰️ Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci."
+                            })
+                            # Broadcast updated state even on error so frontend stays responsive
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game_sessions[session_id]
+                            })
+                            continue
                 
                 # Handle rage second selection differently
                 if game["phase"] == "rage_second_selection":
