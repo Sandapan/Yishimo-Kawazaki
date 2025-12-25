@@ -748,16 +748,23 @@ async def apply_powers(session_id: str):
                 "video_path": "/powers/Eboulement.mp4"
             }, role_filter="survivor")
 
-def filter_game_state(game_state: dict, player_role: str) -> dict:
+def filter_game_state(game_state: dict, player_role: str, player_id: Optional[str] = None) -> dict:
     """
     Filter game state based on player role for visibility rules:
     - Survivors see: other survivors' positions + eliminated players
     - Killers see: other killers' positions + eliminated players + highlighted rooms (Vision power)
     - pending_actions are filtered to only show actions from same role
+    - Blizzard: Players immobilized see all other rooms as locked (red cross)
+    - Eboulement: Survivors see rooms on other floors as locked (red cross)
     """
     filtered_state = game_state.copy()
     filtered_state["players"] = {}
     filtered_state["pending_actions"] = {}
+    
+    # Get current player data if player_id provided
+    current_player = None
+    if player_id and player_id in game_state["players"]:
+        current_player = game_state["players"][player_id]
     
     # Filter rooms based on role
     filtered_state["rooms"] = {}
@@ -772,6 +779,21 @@ def filter_game_state(game_state: dict, player_role: str) -> dict:
         elif player_role == "killer":
             # Killers see trapped and highlighted, but not trap_triggered
             room_copy.pop("trap_triggered", None)
+        
+        # BLIZZARD EFFECT: If current player is immobilized, lock all rooms except their current room
+        if current_player and current_player.get("immobilized_next_turn", False):
+            current_room = current_player.get("current_room")
+            if room_name != current_room:
+                room_copy["locked"] = True
+        
+        # EBOULEMENT EFFECT: If eboulement is active and player is survivor, lock rooms on other floors
+        if current_player and player_role == "survivor" and game_state.get("eboulement_active", False):
+            current_room = current_player.get("current_room")
+            if current_room and current_room in game_state["rooms"]:
+                current_floor = game_state["rooms"][current_room]["floor"]
+                room_floor = room_data["floor"]
+                if current_floor != room_floor:
+                    room_copy["locked"] = True
         
         filtered_state["rooms"][room_name] = room_copy
 
@@ -838,7 +860,7 @@ async def broadcast_to_session(session_id: str, message: dict, role_filter: Opti
                 # Only filter game state during active gameplay, not in lobby
                 if game.get("game_started", False):
                     player_role = game["players"][player_id]["role"]
-                    filtered_game = filter_game_state(game, player_role)
+                    filtered_game = filter_game_state(game, player_role, player_id)
                     filtered_message = message.copy()
                     filtered_message["game"] = filtered_game
                     await websocket.send_json(filtered_message)
@@ -1708,7 +1730,7 @@ async def get_game_state(session_id: str, player_id: Optional[str] = None):
     # If player_id provided, filter state based on role (only during active game, not in lobby)
     if player_id and player_id in game["players"] and game.get("game_started", False):
         player_role = game["players"][player_id]["role"]
-        return filter_game_state(game, player_role)
+        return filter_game_state(game, player_role, player_id)
 
     return game
 
@@ -1975,7 +1997,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
             # Only filter during active game, not in lobby
             if game.get("game_started", False):
                 player_role = game["players"][player_id]["role"]
-                filtered_game = filter_game_state(game, player_role)
+                filtered_game = filter_game_state(game, player_role, player_id)
                 await websocket.send_json({
                     "type": "state_update",
                     "game": filtered_game
