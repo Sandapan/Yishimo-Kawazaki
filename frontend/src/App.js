@@ -1152,10 +1152,7 @@ const Game = () => {
         setGoliathSpawnMessage(data.message);
         setGoliathSpawnVideoPath(data.video_path);
         setShowGoliathSpawnPopup(true);
-        // Auto-hide after 8 seconds
-        setTimeout(() => {
-          setShowGoliathSpawnPopup(false);
-        }, 8000);
+        // No auto-hide - survivors must click to close
       } else if (data.type === "eboulement_activated") {
         // Show Eboulement popup with video (for survivors)
         setEboulementMessage(data.message);

@@ -1794,6 +1794,11 @@ async def reset_game(session_id: str):
     game["crystal_spawned"] = False  # NEW: reset crystal spawned
     game["crystal_destroyed"] = False  # NEW: reset crystal destroyed
     game["merchant_placed"] = False  # NEW: reset merchant placement
+    game["goliath_active"] = False  # NEW: reset Goliath power
+    game["goliath_turns_remaining"] = 0  # NEW: reset Goliath turns
+    game["goliath_previous_turn_rooms"] = []  # NEW: reset Goliath tracking
+    game["goliath_killed_this_turn"] = False  # NEW: reset Goliath kill flag
+    game["eboulement_active"] = False  # NEW: reset Eboulement power
     
     logger.info(f"Game reset for session: {session_id}")
     
