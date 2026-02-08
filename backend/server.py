@@ -1263,6 +1263,14 @@ async def process_turn(session_id: str):
             game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
             await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
     
+    # EBOULEMENT: Clear eboulement effect after one complete turn
+    # The effect was active during survivor selection, now clear it for next turn
+    if game.get("eboulement_active", False):
+        game["eboulement_active"] = False
+        eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
+        game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
+        await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
+    
     await broadcast_to_session(session_id, {
         "type": "new_turn",
         "turn": game["turn"],
@@ -2087,9 +2095,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
                                 room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
                                 room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
-                            
-                            # EBOULEMENT: Clear eboulement effect after one turn
-                            game["eboulement_active"] = False
                             
                             # GOLIATH: Update the list of rooms visited this turn for next turn's check
                             if game.get("goliath_active", False):
