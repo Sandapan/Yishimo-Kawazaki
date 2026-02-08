@@ -166,6 +166,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
         "goliath_killed_this_turn": False,  # NEW: whether Goliath has killed a survivor this turn (only one kill per turn)
         "eboulement_active": False,  # NEW: whether Eboulement is active (blocks floor changes for 1 turn)
+        "eboulement_locked_floors": {},  # NEW: stores which floor each survivor is locked to during eboulement {player_id: floor}
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -731,6 +732,16 @@ async def apply_powers(session_id: str):
             # Activate Eboulement for 1 turn (blocks floor changes)
             game["eboulement_active"] = True
             
+            # Store the floor each survivor is currently selecting (from pending_actions)
+            # This will lock them to this floor on the next turn
+            game["eboulement_locked_floors"] = {}
+            for survivor_id, action in game.get("pending_actions", {}).items():
+                if survivor_id in game["players"] and game["players"][survivor_id]["role"] == "survivor":
+                    selected_room = action.get("room")
+                    if selected_room and selected_room in game["rooms"]:
+                        # Store the floor of the room they're selecting THIS turn
+                        game["eboulement_locked_floors"][survivor_id] = game["rooms"][selected_room]["floor"]
+            
             # Log event for killers
             event_msg = f"⛰️ {player['name']} utilise Eboulement !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
@@ -788,11 +799,12 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
         
         # EBOULEMENT EFFECT: If eboulement is active and player is survivor, lock rooms on other floors
         if current_player and player_role == "survivor" and game_state.get("eboulement_active", False):
-            current_room = current_player.get("current_room")
-            if current_room and current_room in game_state["rooms"]:
-                current_floor = game_state["rooms"][current_room]["floor"]
+            # Use the stored locked floor (from when eboulement was activated)
+            locked_floors = game_state.get("eboulement_locked_floors", {})
+            if player_id in locked_floors:
+                locked_floor = locked_floors[player_id]
                 room_floor = room_data["floor"]
-                if current_floor != room_floor:
+                if locked_floor != room_floor:
                     room_copy["locked"] = True
         
         filtered_state["rooms"][room_name] = room_copy
@@ -1263,13 +1275,8 @@ async def process_turn(session_id: str):
             game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
             await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
     
-    # EBOULEMENT: Clear eboulement effect after one complete turn
-    # The effect was active during survivor selection, now clear it for next turn
-    if game.get("eboulement_active", False):
-        game["eboulement_active"] = False
-        eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
-        game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
-        await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
+    # EBOULEMENT: Do NOT clear here - it should remain active for the next survivor selection phase
+    # It will be cleared when entering killer_power_selection phase of the next turn
     
     await broadcast_to_session(session_id, {
         "type": "new_turn",
@@ -1807,6 +1814,7 @@ async def reset_game(session_id: str):
     game["goliath_previous_turn_rooms"] = []  # NEW: reset Goliath tracking
     game["goliath_killed_this_turn"] = False  # NEW: reset Goliath kill flag
     game["eboulement_active"] = False  # NEW: reset Eboulement power
+    game["eboulement_locked_floors"] = {}  # NEW: reset Eboulement locked floors
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -2111,6 +2119,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
                             
+                            # EBOULEMENT: Clear eboulement effect now that survivors have finished selecting
+                            # The effect was active during the survivor selection phase, now clear it
+                            if game.get("eboulement_active", False):
+                                game["eboulement_active"] = False
+                                game["eboulement_locked_floors"] = {}  # Clear locked floors
+                                eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
+                                game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
+                                await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
+                            
                             # Assign 3 random powers to each killer
                             alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
                             for killer in alive_killers:
@@ -2144,25 +2161,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 
                 # Check Eboulement restriction for survivors (AFTER immobilization check, blocks floor changes)
                 if player["role"] == "survivor" and game.get("eboulement_active", False):
-                    current_room = player.get("current_room")
-                    
-                    # If player has a current room, check if they're trying to change floors
-                    if current_room and room_name in game["rooms"]:
-                        current_floor = game["rooms"][current_room]["floor"]
-                        selected_floor = game["rooms"][room_name]["floor"]
+                    # Use the stored locked floor (from when eboulement was activated)
+                    locked_floors = game.get("eboulement_locked_floors", {})
+                    if player_id in locked_floors:
+                        locked_floor = locked_floors[player_id]
                         
-                        # If trying to change floors, block it
-                        if current_floor != selected_floor:
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": "⛰️ Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci."
-                            })
-                            # Broadcast updated state even on error so frontend stays responsive
-                            await broadcast_to_session(session_id, {
-                                "type": "state_update",
-                                "game": game_sessions[session_id]
-                            })
-                            continue
+                        # Check if they're trying to change floors
+                        if room_name in game["rooms"]:
+                            selected_floor = game["rooms"][room_name]["floor"]
+                            
+                            # If trying to change floors, block it
+                            if locked_floor != selected_floor:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": "⛰️ Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci."
+                                })
+                                # Broadcast updated state even on error so frontend stays responsive
+                                await broadcast_to_session(session_id, {
+                                    "type": "state_update",
+                                    "game": game_sessions[session_id]
+                                })
+                                continue
                 
                 # Handle rage second selection differently
                 if game["phase"] == "rage_second_selection":
@@ -2559,6 +2578,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             # Move to killer power selection
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
+                            
+                            # EBOULEMENT: Clear eboulement effect now that survivors have finished selecting
+                            # The effect was active during the survivor selection phase, now clear it
+                            if game.get("eboulement_active", False):
+                                game["eboulement_active"] = False
+                                game["eboulement_locked_floors"] = {}  # Clear locked floors
+                                eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
+                                game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
+                                await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
                             
                             # Assign 3 random powers to each killer
                             alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
