@@ -1259,7 +1259,7 @@ async def process_turn(session_id: str):
         else:
             # Goliath still active, notify remaining turns
             turns_left = game["goliath_turns_remaining"]
-            goliath_status_msg = f"🕷️ La Goliath rôde encore pour {turns_left} tour(s)..."
+            goliath_status_msg = f"🕷️ La Goliath  {turns_left} tour(s)."
             game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
             await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
     
