@@ -1764,6 +1764,9 @@ async def reset_game(session_id: str):
     
     # Reset all game state while keeping players
     for player_id, player in game["players"].items():
+        # FIXED: Preserve is_host status during reset
+        is_host = player.get("is_host", False)
+        
         player["eliminated"] = False
         player["current_room"] = None
         player["has_medikit"] = False
@@ -1771,6 +1774,11 @@ async def reset_game(session_id: str):
         player["poisoned_countdown"] = 0  # NEW: reset poison
         player["gold"] = 0  # NEW: reset gold
         player["has_antidote"] = False  # NEW: reset antidote
+        
+        # FIXED: Ensure is_host is preserved
+        player["is_host"] = is_host
+        
+        logger.info(f"Reset player {player['name']} (id={player_id}), is_host={is_host}")
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
