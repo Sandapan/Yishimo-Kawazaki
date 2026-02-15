@@ -457,23 +457,49 @@ const Lobby = () => {
       const data = JSON.parse(event.data);
 
       if (data.type === "state_update") {
-        // FIXED: Always update game state when receiving state_update
         setGameState(data.game);
+      } else if (data.type === "player_list_update") {
+        // ✅ AJOUTÉ: Re-sync la liste des joueurs (envoyé par le serveur après identify)
+        setGameState(prev => {
+          if (!prev) return prev;
+          // Rebuild players dict from the list
+          const updatedPlayers = {};
+          data.players.forEach(p => {
+            // Merge with existing player data if available, overlay with new data
+            updatedPlayers[p.id] = { ...(prev.players?.[p.id] || {}), ...p };
+          });
+          return { ...prev, players: updatedPlayers };
+        });
       } else if (data.type === "player_joined") {
         toast.success(`${data.player.name} a rejoint la partie`);
-        // Note: state_update will follow this message from the backend
       } else if (data.type === "game_started") {
         toast.success(data.message);
         setTimeout(() => navigate(`/game/${sessionId}?pid=${storedPlayerId}`), 1000);
       } else if (data.type === "game_reset") {
+        // ✅ MODIFIÉ: Re-sync complète avec les données du broadcast
         toast.info(data.message);
-        // Fetch updated state
-        fetchGameState();
+        if (data.players) {
+          setGameState(prev => {
+            if (!prev) return prev;
+            const updatedPlayers = {};
+            data.players.forEach(p => {
+              updatedPlayers[p.id] = { ...(prev.players?.[p.id] || {}), ...p };
+            });
+            return { 
+              ...prev, 
+              players: updatedPlayers,
+              game_started: false,
+              phase: "waiting"
+            };
+          });
+        } else {
+          // Fallback: re-fetch from server
+          fetchGameState();
+        }
       } else if (data.type === "role_changed") {
         toast.info(`${data.player_name} a changé de rôle`);
       } else if (data.type === "player_updated") {
         toast.info(`${data.player.name} a mis à jour son profil`);
-        // Note: state_update will follow this message from the backend
       }
     };
 
@@ -593,7 +619,24 @@ const Lobby = () => {
 
         <Card className="players-card">
           <CardHeader>
-            <CardTitle>Joueurs ({playerCount}/8)</CardTitle>
+            <CardTitle>
+              Joueurs ({playerCount}/8)
+              {!isHost && (
+                <span style={{ 
+                  fontSize: '0.65em', 
+                  fontWeight: 'normal', 
+                  color: '#d4af37', 
+                  marginLeft: '0.75rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}>
+                  <span className="hourglass-spin">⏳</span>
+                  En attente de l'hôte
+                  <span className="waiting-dots"></span>
+                </span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="players-list">
@@ -649,10 +692,6 @@ const Lobby = () => {
           >
             Démarrer la partie
           </Button>
-        )}
-
-        {!isHost && (
-          <p className="waiting-text">En attente que l'hôte démarre la partie...</p>
         )}
       </div>
     </div>
@@ -2304,16 +2343,16 @@ const Game = () => {
               🛡️ Tour des survivants
             </div>
           )}
-          {gameState.phase === "killer_power_selection" && (
-            <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-              🎴 Sélection de pouvoir
-            </div>
-          )}
-          {gameState.phase === "killer_selection" && (
-            <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-              🔪 Tour des tueurs
-            </div>
-          )}
+{gameState.phase === "killer_power_selection" && (
+    <div className="phase-indicator killer-phase" data-testid="phase-indicator">
+      {currentPlayerRole === "killer" ? "🎴 Sélection de pouvoir" : "🔪 Tour des tueurs"}
+    </div>
+)}
+{gameState.phase === "killer_selection" && (
+    <div className="phase-indicator killer-phase" data-testid="phase-indicator">
+      🔪 {currentPlayerRole === "killer" ? "Choisissez une pièce à fouiller" : "Tour des tueurs"}
+    </div>
+)}
           {gameState.phase === "processing" && (
             <div className="phase-indicator processing-phase" data-testid="phase-indicator">
               ⏳ Traitement en cours...
@@ -2383,22 +2422,25 @@ const Game = () => {
                   : "Les tueurs ont éliminé tous les survivants..."}
               </p>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
-                <Button
-                  data-testid="back-lobby-btn"
-                  onClick={async () => {
-                    // Reset game and go back to lobby
-                    try {
-                      await axios.post(`${API}/game/${sessionId}/reset`);
-                      window.location.href = `/lobby/${sessionId}`;
-                    } catch (error) {
-                      console.error("Error resetting game:", error);
-                      window.location.href = `/lobby/${sessionId}`;
-                    }
-                  }}
-                  className="back-home-btn"
-                >
-                  🔄 Rejouer
-                </Button>
+<Button
+  data-testid="back-lobby-btn"
+  onClick={async () => {
+    // Reset game - the server will broadcast game_reset to ALL players
+    // The game_reset handler below will redirect everyone to lobby
+    try {
+      await axios.post(`${API}/game/${sessionId}/reset`);
+      // Don't navigate here - wait for the game_reset broadcast
+      // which will redirect ALL players including this one
+    } catch (error) {
+      console.error("Error resetting game:", error);
+      // Fallback: redirect manually if reset fails
+      window.location.href = `/lobby/${sessionId}`;
+    }
+  }}
+  className="back-home-btn"
+>
+  🔄 Rejouer
+</Button>
                 <Button
                   data-testid="back-home-btn"
                   onClick={() => window.location.href = '/'}

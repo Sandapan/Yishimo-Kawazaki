@@ -489,7 +489,7 @@ async def check_power_selection_complete(session_id: str):
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "killer_selection",
-            "message": "🔪 Les tueurs sélectionnent leur pièce"
+            "message": "🔪 Choisissez une pièce à fouiller"
         })
 
 async def apply_powers(session_id: str):
@@ -1770,10 +1770,10 @@ async def reset_game(session_id: str):
         player["eliminated"] = False
         player["current_room"] = None
         player["has_medikit"] = False
-        player["immobilized_next_turn"] = False  # NEW: reset immobilization
-        player["poisoned_countdown"] = 0  # NEW: reset poison
-        player["gold"] = 0  # NEW: reset gold
-        player["has_antidote"] = False  # NEW: reset antidote
+        player["immobilized_next_turn"] = False
+        player["poisoned_countdown"] = 0
+        player["gold"] = 0
+        player["has_antidote"] = False
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
@@ -1786,18 +1786,18 @@ async def reset_game(session_id: str):
         room_data["has_medikit"] = False
         room_data["locked"] = False
         room_data["eliminated_players"] = []
-        room_data["trapped"] = False  # NEW: reset traps
-        room_data["highlighted"] = False  # NEW: reset highlights
-        room_data.pop("trap_triggered", None)  # NEW: remove trap_triggered
-        room_data["poisoned_turns_remaining"] = 0  # NEW: reset poison
-        room_data["has_mimic"] = False  # NEW: reset mimics
-        room_data["has_quest"] = False  # NEW: reset quests
-        room_data["quest_class"] = None  # NEW: reset quest class
-        room_data["has_crystal"] = False  # NEW: reset crystal
-        room_data["teleportation_trap"] = False  # NEW: reset teleportation trap
-        room_data["teleportation_exit"] = False  # NEW: reset teleportation exit
-        room_data["teleportation_target_room"] = None  # NEW: reset teleportation target
-        room_data["has_merchant"] = False  # NEW: reset merchant
+        room_data["trapped"] = False
+        room_data["highlighted"] = False
+        room_data.pop("trap_triggered", None)
+        room_data["poisoned_turns_remaining"] = 0
+        room_data["has_mimic"] = False
+        room_data["has_quest"] = False
+        room_data["quest_class"] = None
+        room_data["has_crystal"] = False
+        room_data["teleportation_trap"] = False
+        room_data["teleportation_exit"] = False
+        room_data["teleportation_target_room"] = None
+        room_data["has_merchant"] = False
     
     # Reset game state
     game["keys_collected"] = 0
@@ -1808,28 +1808,43 @@ async def reset_game(session_id: str):
     game["events"] = []
     game["pending_actions"] = {}
     game["should_place_next_key"] = False
-    game["quests"] = []  # NEW: reset quests
-    game["active_quest"] = None  # NEW: reset active quest
-    game["completed_quests"] = []  # NEW: reset completed quests
-    game["active_powers"] = {}  # NEW: reset powers
-    game["pending_power_selections"] = {}  # NEW: reset power selections
-    game["rooms_searched_this_key"] = []  # NEW: reset searched rooms
-    game["crystal_spawned"] = False  # NEW: reset crystal spawned
-    game["crystal_destroyed"] = False  # NEW: reset crystal destroyed
-    game["merchant_placed"] = False  # NEW: reset merchant placement
-    game["goliath_active"] = False  # NEW: reset Goliath power
-    game["goliath_turns_remaining"] = 0  # NEW: reset Goliath turns
-    game["goliath_previous_turn_rooms"] = []  # NEW: reset Goliath tracking
-    game["goliath_killed_this_turn"] = False  # NEW: reset Goliath kill flag
-    game["eboulement_active"] = False  # NEW: reset Eboulement power
-    game["eboulement_locked_floors"] = {}  # NEW: reset Eboulement locked floors
+    game["quests"] = []
+    game["active_quest"] = None
+    game["completed_quests"] = []
+    game["active_powers"] = {}
+    game["pending_power_selections"] = {}
+    game["rooms_searched_this_key"] = []
+    game["crystal_spawned"] = False
+    game["crystal_destroyed"] = False
+    game["merchant_placed"] = False
+    game["goliath_active"] = False
+    game["goliath_turns_remaining"] = 0
+    game["goliath_previous_turn_rooms"] = []
+    game["goliath_killed_this_turn"] = False
+    game["eboulement_active"] = False
+    game["eboulement_locked_floors"] = {}
     
     logger.info(f"Game reset for session: {session_id}")
     
-    # Broadcast game reset to all players
+    # Build a clean players list for the frontend to re-sync
+    players_list = []
+    for pid, pdata in game["players"].items():
+        players_list.append({
+            "id": pid,
+            "name": pdata.get("name", ""),
+            "is_host": pdata.get("is_host", False),
+            "role": pdata.get("role", "survivor"),
+            "class": pdata.get("class", ""),
+            "avatar": pdata.get("avatar", ""),
+            "eliminated": False
+        })
+    
+    # Broadcast game reset WITH full player data so all clients re-sync
     await broadcast_to_session(session_id, {
         "type": "game_reset",
-        "message": "La partie est terminée. Prêts pour une revanche ?"
+        "message": "La partie est terminée. Prêts pour une revanche ?",
+        "session_id": session_id,
+        "players": players_list
     })
     
     # Send updated state to all players so they see the correct lobby state
@@ -1838,7 +1853,7 @@ async def reset_game(session_id: str):
         "game": game
     })
     
-    return {"status": "reset"}
+    return {"status": "reset", "session_id": session_id, "players": players_list}
 
 @api_router.post("/game/{session_id}/change_role")
 async def change_role(session_id: str, player_id: str, new_role: str):
@@ -2017,6 +2032,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
     if session_id not in active_connections:
         active_connections[session_id] = {}
 
+    # ✅ AJOUTÉ: Fermer l'ancienne connexion WS si ce joueur en avait déjà une (stale après navigation)
+    if player_id in active_connections[session_id]:
+        old_ws = active_connections[session_id][player_id]
+        try:
+            await old_ws.close()
+        except Exception:
+            pass
+        logger.info(f"Closed stale WS for player {player_id} in session {session_id}")
+
     active_connections[session_id][player_id] = websocket
 
     try:
@@ -2036,6 +2060,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 await websocket.send_json({
                     "type": "state_update",
                     "game": game
+                })
+                
+                # ✅ AJOUTÉ: Envoyer aussi un player_list_update pour que le client se sync correctement
+                players_list = []
+                for pid, pdata in game["players"].items():
+                    players_list.append({
+                        "id": pid,
+                        "name": pdata.get("name", ""),
+                        "is_host": pdata.get("is_host", False),
+                        "role": pdata.get("role", "survivor"),
+                        "class": pdata.get("class", ""),
+                        "character_class": pdata.get("character_class", ""),
+                        "avatar": pdata.get("avatar", ""),
+                        "eliminated": pdata.get("eliminated", False)
+                    })
+                await websocket.send_json({
+                    "type": "player_list_update",
+                    "players": players_list
                 })
                 
                 # FIXED: Notify all other connected players that someone reconnected
@@ -2107,14 +2149,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             for room_name_clear, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
-                                room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
-                                room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
-                                room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
+                                room_data["has_mimic"] = False
+                                room_data["teleportation_trap"] = False
+                                room_data["teleportation_exit"] = False
+                                room_data["teleportation_target_room"] = None
                             
                             # GOLIATH: Update the list of rooms visited this turn for next turn's check
                             if game.get("goliath_active", False):
-                                # Collect all rooms selected by survivors this turn
                                 current_turn_rooms = []
                                 for pid, action in game["pending_actions"].items():
                                     if game["players"][pid]["role"] == "survivor":
@@ -2127,11 +2168,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
                             
-                            # EBOULEMENT: Clear eboulement effect now that survivors have finished selecting
-                            # The effect was active during the survivor selection phase, now clear it
+                            # EBOULEMENT: Clear eboulement effect
                             if game.get("eboulement_active", False):
                                 game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}  # Clear locked floors
+                                game["eboulement_locked_floors"] = {}
                                 eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
                                 game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
                                 await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
@@ -2161,30 +2201,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     })
                     continue
                 
-                # Check if it's the player's turn based on their role and current phase (AFTER immobilization check)
+                # Check if it's the player's turn based on their role and current phase
                 if player["role"] == "survivor" and game["phase"] != "survivor_selection":
                     continue
                 if player["role"] == "killer" and game["phase"] not in ["killer_selection", "rage_second_selection"]:
                     continue
                 
-                # Check Eboulement restriction for survivors (AFTER immobilization check, blocks floor changes)
+                # Check Eboulement restriction for survivors
                 if player["role"] == "survivor" and game.get("eboulement_active", False):
-                    # Use the stored locked floor (from when eboulement was activated)
                     locked_floors = game.get("eboulement_locked_floors", {})
                     if player_id in locked_floors:
                         locked_floor = locked_floors[player_id]
                         
-                        # Check if they're trying to change floors
                         if room_name in game["rooms"]:
                             selected_floor = game["rooms"][room_name]["floor"]
                             
-                            # If trying to change floors, block it
                             if locked_floor != selected_floor:
                                 await websocket.send_json({
                                     "type": "error",
                                     "message": "⛰️ Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci."
                                 })
-                                # Broadcast updated state even on error so frontend stays responsive
                                 await broadcast_to_session(session_id, {
                                     "type": "state_update",
                                     "game": game_sessions[session_id]
@@ -2193,7 +2229,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 
                 # Handle rage second selection differently
                 if game["phase"] == "rage_second_selection":
-                    # Only killers with rage second chance can select
                     if player_id not in game.get("rage_second_chances", {}):
                         continue
                     
@@ -2201,18 +2236,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         game["rage_second_chances"][player_id]["room_selected"] = room_name
                         game["rage_second_chances"][player_id]["can_select"] = False
                         
-                        # LOG: Rage second room selection
                         logger.info(f"😡 {player['name']} a choisi la seconde pièce '{room_name}' (Rage)")
                         
-                        # Check if all killers with rage have selected their second room
                         all_selected = all(not data["can_select"] for data in game["rage_second_chances"].values())
                         
                         if all_selected:
-                            # Process rage second selections
                             game["phase"] = "processing"
                             await process_rage_second_selections(session_id)
                         
-                        # Broadcast updated state
                         await broadcast_to_session(session_id, {
                             "type": "state_update",
                             "game": game_sessions[session_id]
@@ -2225,29 +2256,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "room": room_name
                     }
                     
-                    # LOG: Player room selection
                     original_room_name = room_name
                     logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}'")
 
-                    # DISABLED: Sound clue functionality kept for Traque power
-                    # The get_survivor_floor_hints() function can be used when Traque is activated
-                    # if player["role"] == "survivor":
-                    #     survivor_floor = game["rooms"][room_name]["floor"]
-                    #     sound_event_msg = f"👂 Vous entendez du bruit {floor_names[survivor_floor]}..."
-                    #     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
-                    #     await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
-                    
-                    # PRIORITY CHECK: Teleportation trap - must be checked BEFORE any other event
+                    # PRIORITY CHECK: Teleportation trap
                     if player["role"] == "survivor" and game["rooms"][room_name].get("teleportation_trap", False):
-                        # Survivor triggered teleportation trap!
                         target_room = game["rooms"][room_name].get("teleportation_target_room")
                         
                         if target_room and target_room in game["rooms"]:
-                            # Get player class for video path
                             player_class = player.get("character_class", "Mage")
                             video_path = f"/death/{player_class}_teleportation.mp4"
                             
-                            # Send teleportation notification to the survivor with video
                             await websocket.send_json({
                                 "type": "teleportation_notification",
                                 "message": f"Vous déclenchez un piège de téléportation vers {target_room} !",
@@ -2255,43 +2274,36 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "target_room": target_room
                             })
                             
-                            # Teleport player to target room - update their selected room
                             game["pending_actions"][player_id]["room"] = target_room
-                            room_name = target_room  # Continue processing with the target room
+                            room_name = target_room
                             
                             logger.info(f"🌀 {player['name']} téléporté de {original_room_name} vers {target_room}")
                     
-                    # GOLIATH CHECK: If Goliath is active AND hasn't killed yet this turn, check if survivor entered a room visited last turn
+                    # GOLIATH CHECK
                     if (player["role"] == "survivor" and 
                         game.get("goliath_active", False) and 
                         not game.get("goliath_killed_this_turn", False)):
                         previous_turn_rooms = game.get("goliath_previous_turn_rooms", [])
                         if room_name in previous_turn_rooms:
-                            # Survivor dies to Goliath!
                             player["eliminated"] = True
-                            player["gold"] = 0  # Reset gold when eliminated
+                            player["gold"] = 0
                             game["rooms"][room_name]["eliminated_players"].append(player_id)
                             
-                            # Mark that Goliath has killed this turn (prevents multiple kills in same turn)
                             game["goliath_killed_this_turn"] = True
                             
-                            # Get player class for death video
                             player_class = player.get("character_class", "Assassin")
                             death_video_path = f"/death/{player_class}_La Goliath.mp4"
                             
-                            # Log event
                             event_msg = f"💀🕷️ {player['name']} s'est fait tuer par la Goliath dans {room_name} !"
                             game["events"].append({"message": event_msg, "type": "goliath_elimination"})
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
                             
-                            # Send death popup to the survivor who died
                             await websocket.send_json({
                                 "type": "goliath_death_popup",
                                 "message": "Vous avez été éliminé par la Goliath !",
                                 "video_path": death_video_path
                             })
                             
-                            # Send death video popup to all OTHER players (both survivors and killers)
                             for other_pid, other_ws in active_connections.get(session_id, {}).items():
                                 if other_pid != player_id:
                                     try:
@@ -2307,13 +2319,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             
                             logger.info(f"🕷️ {player['name']} tué par la Goliath dans {room_name} (Goliath désactivée pour ce tour)")
                             
-                            # Lock the room where elimination occurred
                             game["rooms"][room_name]["locked"] = True
                             lock_msg = f"⚠️ La pièce {room_name} est condamnée pour ce tour."
                             game["events"].append({"message": lock_msg, "type": "room_locked"})
                             await broadcast_to_session(session_id, {"type": "event", "message": lock_msg})
                             
-                            # If survivor had medikit, respawn it
                             if player.get("has_medikit", False):
                                 player["has_medikit"] = False
                                 new_medikit_room = respawn_medikit(game)
@@ -2322,7 +2332,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
                                     await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
                             
-                            # Notify all players about selection (even though player died)
                             await broadcast_to_session(session_id, {
                                 "type": "player_action",
                                 "player_id": player_id,
@@ -2330,7 +2339,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "message": f"✅ {player['name']} a fait son choix"
                             })
                             
-                            # Check if all survivors are now eliminated (game over)
                             alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
                             if len(alive_survivors) == 0:
                                 game["phase"] = "game_over"
@@ -2345,14 +2353,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
                                 await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
                             
-                            # Broadcast updated state
                             await broadcast_to_session(session_id, {
                                 "type": "state_update",
                                 "game": game_sessions[session_id]
                             })
-                            continue  # Skip rest of processing for this player
+                            continue
                     
-                    # Track rooms searched for Vision power (track the final room after teleportation)
+                    # Track rooms searched for Vision power
                     if player["role"] == "survivor" and room_name not in game.get("rooms_searched_this_key", []):
                         if "rooms_searched_this_key" not in game:
                             game["rooms_searched_this_key"] = []
@@ -2361,14 +2368,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     # Check if survivor enters trapped room
                     if player["role"] == "survivor" and game["rooms"][room_name].get("trapped", False):
                         player["immobilized_next_turn"] = True
-                        # Mark room as trap triggered for survivors
                         game["rooms"][room_name]["trap_triggered"] = True
                         
-                        # Get player class for video path
                         player_class = player.get("character_class", "Mage").lower()
                         video_path = f"/death/Blizzard_{player_class}.mp4"
                         
-                        # NEW: Send trap notification immediately to the survivor with video
                         await websocket.send_json({
                             "type": "trapped_notification",
                             "message": "🥶 C'est un blizzard ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.",
@@ -2377,15 +2381,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     
                     # Check if survivor enters poisoned room
                     if player["role"] == "survivor" and game["rooms"][room_name].get("poisoned_turns_remaining", 0) > 0:
-                        # Only poison if not already poisoned
                         if player.get("poisoned_countdown", 0) == 0:
                             player["poisoned_countdown"] = 10
                             
-                            # Get player class for video path
                             player_class = player.get("character_class", "Assassin")
                             video_path = f"/death/{player_class}_toxine.mp4"
                             
-                            # Send poisoned notification immediately to the survivor
                             await websocket.send_json({
                                 "type": "poisoned_notification",
                                 "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
@@ -2403,25 +2404,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             player_class = player.get("character_class")
                             
                             if player_class == quest_class:
-                                # Correct class!
-                                # NEW: If room is trapped by Blizzard, don't complete the quest
                                 if is_trapped:
-                                    # Trapped in blizzard - quest not completed, no notification
                                     pass
                                 else:
-                                    # Quest completed normally
                                     room["has_quest"] = False
                                     room["quest_class"] = None
                                     game["completed_quests"].append(quest_class)
-                                    game["keys_collected"] = len(game["completed_quests"])  # Update for frontend compatibility
+                                    game["keys_collected"] = len(game["completed_quests"])
                                     
                                     quests_left = game["keys_needed"] - len(game["completed_quests"])
                                     event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
                                     game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
-                                    # Notify only survivors about quest completed
                                     await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
                                     
-                                    # Send video popup to the player who completed the quest
                                     try:
                                         video_path = f"/event/{quest_class}.mp4"
                                         await websocket.send_json({
@@ -2433,12 +2428,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     except:
                                         pass
                                     
-                                    # Reset rooms searched for Vision power
                                     game["rooms_searched_this_key"] = []
-                                    
-                                    # NOTE: All quests are now placed at game start, no need to place next quest
                             else:
-                                # Wrong class! Show required class popup (even if trapped by Blizzard)
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"
                                     await websocket.send_json({
@@ -2450,38 +2441,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 except:
                                     pass
                                 
-                                # Log that a survivor tried but wrong class - only visible to survivors
                                 event_msg = f"🔍 {player['name']} explore {room_name} mais ne peut pas accomplir cette quête."
                                 game["events"].append({"message": event_msg, "type": "search_wrong_class", "for_role": "survivor"})
                                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
                         else:
-                            # No quest in this room
-                            # Log unsuccessful search - only visible to survivors
                             event_msg = f"🔍 {player['name']} fouille {room_name} mais ne trouve rien de particulier."
                             game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
-                            # Notify only survivors about unsuccessful search
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
                         
-                        # Check for crystal (no class requirement - any survivor can destroy it)
+                        # Check for crystal
                         if room.get("has_crystal", False) and game.get("crystal_spawned", False):
-                            # Survivor found the crystal!
                             room["has_crystal"] = False
                             game["crystal_destroyed"] = True
                             game["phase"] = "game_over"
                             game["winner"] = "survivors"
                             
-                            # Get the survivor's class for the appropriate video
-                            survivor_class = player.get("character_class", "Guerrier")  # Default to Guerrier if class not found
+                            survivor_class = player.get("character_class", "Guerrier")
                             crystal_video = f"/event/Cristal_{survivor_class}.mp4"
                             
-                            # Send different messages based on role
                             survivor_msg = "🎉 VICTOIRE ! Le cristal a été détruit ! Vous vous êtes échappés !"
                             killer_msg = "💀 DEFAITE ! Le cristal a été détruit..."
                             
                             game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
                             game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
                             
-                            # Send game over to survivors with crystal destroyed video
                             await broadcast_to_session(session_id, {
                                 "type": "game_over",
                                 "winner": "survivors",
@@ -2489,7 +2472,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "video_path": crystal_video
                             }, role_filter="survivor")
                             
-                            # Send game over to killers with crystal destroyed video
                             await broadcast_to_session(session_id, {
                                 "type": "game_over",
                                 "winner": "survivors",
@@ -2497,13 +2479,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "video_path": crystal_video
                             }, role_filter="killer")
                     
-                    # GOLD SYSTEM: Give gold to survivor if not trapped (blizzard)
+                    # GOLD SYSTEM
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):
-                        # Generate gold reward
                         gold_amount, gold_image = generate_gold_reward()
                         player["gold"] += gold_amount
                         
-                        # Send personal gold notification to this survivor only
                         try:
                             await websocket.send_json({
                                 "type": "gold_found",
@@ -2515,15 +2495,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         except:
                             pass
                     
-                    # Check if survivor enters room with mimic (AFTER gold is awarded)
+                    # Check for mimic
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
                         gold_stolen = player.get("gold", 0)
                         player["gold"] = 0
                         
-                        # Clear mimic from room after it triggers
                         game["rooms"][room_name]["has_mimic"] = False
                         
-                        # Send mimic notification immediately to the survivor with video
                         await websocket.send_json({
                             "type": "mimic_notification",
                             "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
@@ -2531,14 +2509,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "gold_stolen": gold_stolen
                         })
                     
-                    # Check if survivor encounters the merchant (AFTER gold is awarded)
-                    # NEW: Merchant doesn't trigger if room is trapped by Blizzard
+                    # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         
-                        # Only trigger merchant if NOT trapped by Blizzard
                         if not is_trapped:
-                            # Send merchant encounter notification to the survivor
                             await websocket.send_json({
                                 "type": "merchant_encounter",
                                 "message": "🧙 Vous rencontrez le marchand !",
@@ -2557,24 +2532,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if game["phase"] == "survivor_selection":
                         alive_survivors = [p for p in game["players"].values()\
                                          if p["role"] == "survivor" and not p["eliminated"]]
-                        # FIX: Only count non-eliminated survivors in selection check
                         survivors_selected = [pid for pid in game["pending_actions"].keys()\
                                             if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
                         if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, NOW clear traps and mimics from previous turn
-                            # This ensures traps and mimics persist for exactly one turn after being set
                             for room_name_clear, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False  # Clear mimics after all survivors have selected
-                                room_data["teleportation_trap"] = False  # Clear teleportation trap after one turn
-                                room_data["teleportation_exit"] = False  # Clear teleportation exit after one turn
-                                room_data["teleportation_target_room"] = None  # Clear teleportation target after one turn
+                                room_data["has_mimic"] = False
+                                room_data["teleportation_trap"] = False
+                                room_data["teleportation_exit"] = False
+                                room_data["teleportation_target_room"] = None
                             
-                            # GOLIATH: Update the list of rooms visited this turn for next turn's check
                             if game.get("goliath_active", False):
-                                # Collect all rooms selected by survivors this turn
                                 current_turn_rooms = []
                                 for pid, action in game["pending_actions"].items():
                                     if game["players"][pid]["role"] == "survivor":
@@ -2583,20 +2553,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             current_turn_rooms.append(room_selected)
                                 game["goliath_previous_turn_rooms"] = current_turn_rooms
                             
-                            # Move to killer power selection
                             game["phase"] = "killer_power_selection"
                             game["pending_power_selections"] = {}
                             
-                            # EBOULEMENT: Clear eboulement effect now that survivors have finished selecting
-                            # The effect was active during the survivor selection phase, now clear it
                             if game.get("eboulement_active", False):
                                 game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}  # Clear locked floors
+                                game["eboulement_locked_floors"] = {}
                                 eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
                                 game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
                                 await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
                             
-                            # Assign 3 random powers to each killer
                             alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
                             for killer in alive_killers:
                                 killer_id = killer["id"]
@@ -2621,12 +2587,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                           if game["players"][pid]["role"] == "killer"]
 
                         if len(killers_selected) == len(alive_killers):
-                            # All killers have selected, process the turn
                             game["phase"] = "processing"
                             await process_turn(session_id)
             
             elif data["type"] == "select_power":
-                # Only killers can select powers during power selection phase
                 if player["role"] != "killer" or game["phase"] != "killer_power_selection":
                     continue
                 
@@ -2639,7 +2603,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 
                 game["pending_power_selections"][player_id]["selected_power"] = power_name
                 
-                # Check if power requires action
                 power_def = POWERS[power_name]
                 if power_def["requires_action"]:
                     game["pending_power_selections"][player_id]["action_complete"] = False
@@ -2658,11 +2621,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "message": f"✅ {game['players'][player_id]['name']} a choisi son pouvoir"
                     })
                     
-                    # Check if all killers have completed their power selection
                     await check_power_selection_complete(session_id)
             
             elif data["type"] == "power_action":
-                # Handle power actions (e.g., selecting rooms for piege or barricade)
                 if player["role"] != "killer" or game["phase"] != "killer_power_selection":
                     continue
                 
@@ -2683,11 +2644,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     "message": f"✅ {game['players'][player_id]['name']} a configuré son pouvoir"
                 })
                 
-                # Check if all killers have completed their power selection
                 await check_power_selection_complete(session_id)
 
             elif data["type"] == "use_medikit":
-                # Only survivors can use medikits
                 if game["players"][player_id]["role"] != "survivor":
                     continue
 
@@ -2700,13 +2659,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     current_room = game["players"][player_id]["current_room"]
 
                     if target_room == current_room:
-                        # Revive player
                         game["players"][target_player_id]["eliminated"] = False
-                        # Reset poison status when revived
                         game["players"][target_player_id]["poisoned_countdown"] = 0
                         game["players"][player_id]["has_medikit"] = False
 
-                        # Remove from eliminated list
                         if target_player_id in game["rooms"][target_room]["eliminated_players"]:
                             game["rooms"][target_room]["eliminated_players"].remove(target_player_id)
 
@@ -2714,7 +2670,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         game["events"].append({"message": event_msg, "type": "revival"})
                         await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
 
-                        # Respawn the medikit
                         new_medikit_room = respawn_medikit(game)
                         if new_medikit_room:
                             respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
@@ -2722,15 +2677,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
             elif data["type"] == "use_antidote":
-                # Only survivors can use antidotes
                 if game["players"][player_id]["role"] != "survivor":
                     continue
 
-                # Check if player has antidote
                 if not game["players"][player_id].get("has_antidote", False):
                     continue
 
-                # Check if player is poisoned
                 if game["players"][player_id].get("poisoned_countdown", 0) <= 0:
                     await websocket.send_json({
                         "type": "event",
@@ -2738,7 +2690,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     })
                     continue
 
-                # Use antidote to cure poison
                 game["players"][player_id]["poisoned_countdown"] = 0
                 game["players"][player_id]["has_antidote"] = False
 
