@@ -115,179 +115,469 @@ const copyToClipboard = (text) => {
   }
 };
 
-// Home Page - Create or Join Game
 const Home = () => {
+  // Step: "menu" = create/join choice, "configure" = player setup
+  const [step, setStep] = useState("menu");
+  const [mode, setMode] = useState(null); // "create" or "join"
+  
   const [playerName, setPlayerName] = useState("");
-  const [selectedRole, setSelectedRole] = useState("survivor"); // "survivor" or "killer"
+  const [selectedRole, setSelectedRole] = useState("survivor");
   const [selectedAvatar, setSelectedAvatar] = useState(SURVIVOR_AVATARS[0]);
-  const [conspiracyMode, setConspiracyMode] = useState(false); // NEW: conspiracy mode
+  const [conspiracyMode, setConspiracyMode] = useState(false);
   const [joinSessionId, setJoinSessionId] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  const [createdSessionId, setCreatedSessionId] = useState(null);
+  const [showJoinInput, setShowJoinInput] = useState(false);
   const navigate = useNavigate();
 
-  // Get available avatars based on selected role
   const availableAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
 
   // Check if returning from lobby to change role/avatar
   useEffect(() => {
-    const returningFromLobby = localStorage.getItem('returning_from_lobby');
-    const pendingSessionId = localStorage.getItem('pending_session_id');
-    const currentPlayerName = localStorage.getItem('player_name');
+    const returningFromLobby = sessionStorage.getItem('returning_from_lobby');
+    const pendingSessionId = sessionStorage.getItem('pending_session_id');
+    const currentPlayerName = sessionStorage.getItem('player_name');
 
     if (returningFromLobby === 'true' && pendingSessionId) {
-      // Pre-fill the form with existing data
       setJoinSessionId(pendingSessionId);
       if (currentPlayerName) {
         setPlayerName(currentPlayerName);
       }
-      
-      // Mark that we're updating an existing player
-      localStorage.setItem('is_updating_player', 'true');
-      
-      // Show info message
+      sessionStorage.setItem('is_updating_player', 'true');
       toast.info("Choisissez un nouveau rôle et avatar pour rejoindre le lobby");
+      sessionStorage.removeItem('returning_from_lobby');
+      sessionStorage.removeItem('pending_session_id');
       
-      // Clean up the flags
-      localStorage.removeItem('returning_from_lobby');
-      localStorage.removeItem('pending_session_id');
+      // Go directly to configure step in join mode
+      setMode("join");
+      setStep("configure");
     }
   }, []);
 
-  // Update selected avatar when role changes
   useEffect(() => {
     const newAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
     setSelectedAvatar(newAvatars[0]);
   }, [selectedRole]);
 
-  const createGame = async () => {
-    if (!playerName.trim()) {
-      toast.error("Veuillez entrer un nom");
-      return;
-    }
-
-    setIsCreating(true);
-    try {
-      const response = await axios.post(`${API}/game/create`, {
-        host_name: playerName,
-        host_avatar: selectedAvatar.path,  // MODIFIED: send path instead of full object
-        role: selectedRole,
-        conspiracy_mode: conspiracyMode // NEW: send conspiracy mode
-      });
-
-      const { session_id, player_id } = response.data;
-      localStorage.setItem('player_id', player_id);
-      localStorage.setItem('player_name', playerName);
-      navigate(`/lobby/${session_id}`);
-    } catch (error) {
-      console.error("Error creating game:", error);
-      toast.error("Erreur lors de la création de la partie");
-    } finally {
-      setIsCreating(false);
-    }
+  // Step 1: Create → create session on server, get session ID, then go to configure
+  const handleCreateClick = async () => {
+    setMode("create");
+    setStep("configure");
   };
 
-  const joinGame = async () => {
-    if (!playerName.trim()) {
-      toast.error("Veuillez entrer un nom");
-      return;
-    }
+  // Step 1: Join → validate session exists, then go to configure
+  const handleJoinClick = async () => {
     if (!joinSessionId.trim()) {
       toast.error("Veuillez entrer un code de session");
       return;
     }
-
-    setIsJoining(true);
+    
+    // Verify session exists
     try {
-      const isUpdatingPlayer = localStorage.getItem('is_updating_player') === 'true';
-      // FIXED: Use the specific player_id that was stored when clicking "change role"
-      const updatingPlayerId = localStorage.getItem('updating_player_id');
-      
-      // If we're updating an existing player (coming back from lobby)
-      if (isUpdatingPlayer && updatingPlayerId) {
-        await axios.post(`${API}/game/${joinSessionId}/update_player`, {
-          player_name: playerName,
-          player_avatar: selectedAvatar.path,
-          role: selectedRole
-        }, {
-          params: {
-            player_id: updatingPlayerId  // Use the specific player ID who clicked "change role"
-          }
-        });
-        
-        // Keep the same player_id in localStorage
-        localStorage.setItem('player_id', updatingPlayerId);
-        localStorage.setItem('player_name', playerName);
-        localStorage.removeItem('is_updating_player');
-        localStorage.removeItem('updating_player_id'); // Clean up
-        toast.success("Profil mis à jour !");
-        navigate(`/lobby/${joinSessionId}`);
-      } else {
-        // Normal join for a new player
-        const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
-          player_name: playerName,
-          player_avatar: selectedAvatar.path,
-          role: selectedRole
-        });
-
-        const { session_id, player_id } = response.data;
-        localStorage.setItem('player_id', player_id);
-        localStorage.setItem('player_name', playerName);
-        navigate(`/lobby/${session_id}`);
-      }
+      await axios.get(`${API}/game/${joinSessionId}/state`);
+      setMode("join");
+      setStep("configure");
     } catch (error) {
-      console.error("Error joining game:", error);
-      toast.error("Erreur : session introuvable ou partie déjà commencée");
-    } finally {
-      setIsJoining(false);
+      toast.error("Session introuvable. Vérifiez le code.");
     }
   };
 
+  // Step 2: Confirm configuration and create/join
+  const confirmConfiguration = async () => {
+    if (!playerName.trim()) {
+      toast.error("Veuillez entrer un nom");
+      return;
+    }
+
+    if (mode === "create") {
+      setIsCreating(true);
+      try {
+        const response = await axios.post(`${API}/game/create`, {
+          host_name: playerName,
+          host_avatar: selectedAvatar.path,
+          role: selectedRole,
+          conspiracy_mode: conspiracyMode
+        });
+
+        const { session_id, player_id } = response.data;
+        sessionStorage.setItem('player_id', player_id);
+        sessionStorage.setItem('player_name', playerName);
+        navigate(`/lobby/${session_id}`);
+      } catch (error) {
+        console.error("Error creating game:", error);
+        toast.error("Erreur lors de la création de la partie");
+      } finally {
+        setIsCreating(false);
+      }
+    } else {
+      // Join mode
+      setIsJoining(true);
+      try {
+        const isUpdatingPlayer = sessionStorage.getItem('is_updating_player') === 'true';
+        const updatingPlayerId = sessionStorage.getItem('updating_player_id');
+
+        if (isUpdatingPlayer && updatingPlayerId) {
+          await axios.post(`${API}/game/${joinSessionId}/update_player`, {
+            player_name: playerName,
+            player_avatar: selectedAvatar.path,
+            role: selectedRole
+          }, {
+            params: { player_id: updatingPlayerId }
+          });
+
+          sessionStorage.setItem('player_id', updatingPlayerId);
+          sessionStorage.setItem('player_name', playerName);
+          sessionStorage.removeItem('is_updating_player');
+          sessionStorage.removeItem('updating_player_id');
+          toast.success("Profil mis à jour !");
+          navigate(`/lobby/${joinSessionId}`);
+        } else {
+          const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
+            player_name: playerName,
+            player_avatar: selectedAvatar.path,
+            role: selectedRole
+          });
+
+          const { session_id, player_id } = response.data;
+          sessionStorage.setItem('player_id', player_id);
+          sessionStorage.setItem('player_name', playerName);
+          navigate(`/lobby/${session_id}`);
+        }
+      } catch (error) {
+        console.error("Error joining game:", error);
+        toast.error("Erreur : session introuvable ou partie déjà commencée");
+      } finally {
+        setIsJoining(false);
+      }
+    }
+  };
+
+   // ==================== MENU STEP ====================
+  if (step === "menu") {
+    return (
+      <div className="home-container" data-testid="home-page">
+        <div className="home-content">
+          <h1 className="game-title" data-testid="game-title">Le Donjon</h1>
+
+          {/* Lore Introduction */}
+          <div style={{
+            maxWidth: '500px',
+            margin: '1.5rem auto 2rem auto',
+            padding: '1.5rem',
+            background: 'linear-gradient(135deg, rgba(30, 20, 10, 0.9) 0%, rgba(50, 30, 15, 0.9) 100%)',
+            border: '2px solid rgba(212, 175, 55, 0.4)',
+            borderRadius: '12px',
+            position: 'relative',
+            overflow: 'hidden'
+          }}>
+            {/* Decorative corners */}
+            <div style={{
+              position: 'absolute', top: '4px', left: '4px',
+              width: '20px', height: '20px',
+              borderTop: '2px solid #d4af37', borderLeft: '2px solid #d4af37'
+            }} />
+            <div style={{
+              position: 'absolute', top: '4px', right: '4px',
+              width: '20px', height: '20px',
+              borderTop: '2px solid #d4af37', borderRight: '2px solid #d4af37'
+            }} />
+            <div style={{
+              position: 'absolute', bottom: '4px', left: '4px',
+              width: '20px', height: '20px',
+              borderBottom: '2px solid #d4af37', borderLeft: '2px solid #d4af37'
+            }} />
+            <div style={{
+              position: 'absolute', bottom: '4px', right: '4px',
+              width: '20px', height: '20px',
+              borderBottom: '2px solid #d4af37', borderRight: '2px solid #d4af37'
+            }} />
+
+            <h2 style={{
+              textAlign: 'center',
+              color: '#d4af37',
+              fontSize: '1.2em',
+              fontWeight: 'bold',
+              marginBottom: '1rem',
+              textShadow: '1px 1px 3px rgba(0,0,0,0.8)',
+              fontFamily: 'Georgia, serif'
+            }}>
+              ⚜️ Bienvenue dans le donjon ! ⚜️
+            </h2>
+
+            <p style={{
+              color: '#c8b88a',
+              fontSize: '0.92em',
+              lineHeight: '1.6',
+              marginBottom: '1rem',
+              fontFamily: 'Georgia, serif',
+              textAlign: 'justify'
+            }}>
+                            <span style={{ color: '#7cb342', fontWeight: 'bold' }}>Les joueurs aventuriers</span>, doivent trouver et détruire le cœur de ce repère : <span style={{ color: '#ce93d8', fontWeight: 'bold' }}>le cristal maudit</span>. Fouillez les pièces, évitez les pièges et terminez vos quêtes pour mettre la main dessus, mais ne croisez pas les Orcs !
+            </p>
+
+            <p style={{
+              color: '#c8b88a',
+              fontSize: '0.92em',
+              lineHeight: '1.6',
+              marginBottom: '0',
+              fontFamily: 'Georgia, serif',
+              textAlign: 'justify'
+            }}>
+                            <span style={{ color: '#ef5350', fontWeight: 'bold' }}>Les joueurs Orcs</span>,  doivent protéger ce cristal. Fouillez les pièces, déployez des pièges et tuez ces maudits envahisseurs jusqu'au dernier avant qu'ils ne s'en prennent au cristal !
+            </p>
+          </div>
+
+          <div className="menu-buttons" style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.5rem',
+            maxWidth: '500px',
+            margin: '0 auto'
+          }}>
+            {/* Create Game Button */}
+            <button
+              data-testid="create-game-btn"
+              onClick={handleCreateClick}
+              className="menu-card-btn"
+              style={{
+                position: 'relative',
+                overflow: 'hidden',
+                borderRadius: '12px',
+                border: '3px solid #d4af37',
+                background: 'transparent',
+                cursor: 'pointer',
+                minHeight: '120px',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              <img 
+                src="/illustrations/creerunepartie.png" 
+                alt="" 
+                style={{
+                  position: 'absolute',
+                  top: 0, left: 0,
+                  width: '100%', height: '100%',
+                  objectFit: 'cover',
+                  opacity: 0.9
+                }}
+              />
+              <div style={{
+                position: 'relative',
+                zIndex: 1,
+                padding: '2rem',
+                background: 'linear-gradient(transparent 20%, rgba(0,0,0,0.8) 100%)',
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <span style={{ fontSize: '2em', marginBottom: '0.5rem' }}>⚔️</span>
+                <span style={{ 
+                  fontSize: '1.4em', 
+                  fontWeight: 'bold', 
+                  color: '#d4af37',
+                  textShadow: '2px 2px 4px rgba(0,0,0,0.8)'
+                }}>
+                  Créer une partie
+                </span>
+              </div>
+            </button>
+
+            {/* Join Game Button - Collapsible */}
+            <div style={{
+              borderRadius: '12px',
+              border: '3px solid #555',
+              background: 'rgba(30, 30, 30, 0.8)',
+              overflow: 'hidden',
+              transition: 'all 0.3s ease'
+            }}>
+              <button
+                onClick={() => setShowJoinInput(prev => !prev)}
+                style={{
+                  width: '100%',
+                  padding: '1.5rem 2rem',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.75rem',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                <span style={{ 
+                  fontSize: '1.4em', 
+                  fontWeight: 'bold', 
+                  color: '#ccc',
+                  textShadow: '2px 2px 4px rgba(0,0,0,0.8)'
+                }}>
+                  Rejoindre une partie
+                </span>
+                <span style={{
+                  color: '#d4af37',
+                  fontSize: '1.2em',
+                  transition: 'transform 0.3s ease',
+                  transform: showJoinInput ? 'rotate(180deg)' : 'rotate(0deg)',
+                  display: 'inline-block'
+                }}>
+                  ▼
+                </span>
+              </button>
+
+              {/* Collapsible content */}
+              <div style={{
+                maxHeight: showJoinInput ? '200px' : '0',
+                opacity: showJoinInput ? 1 : 0,
+                overflow: 'hidden',
+                transition: 'all 0.3s ease',
+                padding: showJoinInput ? '0 1.5rem 1.5rem 1.5rem' : '0 1.5rem'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <Input
+                    data-testid="join-session-input"
+                    placeholder="Code de session"
+                    value={joinSessionId}
+                    onChange={(e) => setJoinSessionId(e.target.value.toUpperCase())}
+                    className="dark-input"
+                    style={{ textTransform: 'uppercase', textAlign: 'center', fontSize: '1.2em' }}
+                  />
+                  <Button
+                    data-testid="join-game-btn"
+                    onClick={handleJoinClick}
+                    className="secondary-btn"
+                    style={{ width: '100%' }}
+                  >
+                    Rejoindre
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== CONFIGURE STEP ====================
   return (
     <div className="home-container" data-testid="home-page">
       <div className="home-content">
         <h1 className="game-title" data-testid="game-title">Le Donjon</h1>
 
+        {/* Back button */}
+        <button
+          onClick={() => { setStep("menu"); setCreatedSessionId(null); }}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#d4af37',
+            cursor: 'pointer',
+            fontSize: '1em',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}
+        >
+          ← Retour
+        </button>
+
         <Card className="setup-card">
-          <CardHeader>
-            <CardTitle>Configuration du joueur</CardTitle>
-          </CardHeader>
+
           <CardContent className="space-y-4">
-            <div>
-              <label className="input-label">Votre nom</label>
+            {/* Player Name */}
+            <div style={{ textAlign: 'center' }}>
+              <label className="input-label" style={{ textAlign: 'center' }}>Votre nom</label>
               <Input
                 data-testid="player-name-input"
-                placeholder="Entrez votre nom"
+                placeholder="Entrez votre pseudo"
                 value={playerName}
                 onChange={(e) => setPlayerName(e.target.value)}
                 className="dark-input"
+                style={{ textAlign: 'center' }}
               />
             </div>
 
+            {/* Role Selection */}
             <div>
-              <label className="input-label">Choisissez votre rôle</label>
-              <div className="role-selector">
+              <label className="input-label" style={{ textAlign: 'center', display: 'block' }}>Choisissez votre rôle</label>
+                            <div className="role-selector">
                 <button
                   data-testid="role-survivor-btn"
-                  className={`role-option ${selectedRole === 'survivor' ? 'selected' : ''}`}
+                  className={`role-option role-image-btn ${selectedRole === 'survivor' ? 'selected' : ''}`}
                   onClick={() => setSelectedRole('survivor')}
                   disabled={conspiracyMode}
+                  style={{ position: 'relative', overflow: 'hidden', padding: 0 }}
                 >
-                  <span className="role-icon">🛡️</span>
-                  <span className="role-name">Survivant</span>
+                  <img 
+                    src="/illustrations/Survivant.png" 
+                    alt="Survivant" 
+                    style={{ 
+                      width: '100%', height: '100%', objectFit: 'cover',
+                      position: 'absolute', top: 0, left: 0,
+                      opacity: selectedRole === 'survivor' ? 1 : 0.5,
+                      transition: 'opacity 0.3s ease'
+                    }} 
+                  />
+                  <div style={{
+                    position: 'relative', zIndex: 1,
+                    display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'flex-end',
+                    height: '100%', padding: '1rem',
+                    background: 'linear-gradient(transparent 40%, rgba(0,0,0,0.7) 100%)'
+                  }}>
+                    <span className="role-name" style={{ 
+                      fontSize: '1.2em', fontWeight: 'bold', color: '#fff',
+                      textShadow: '2px 2px 4px rgba(0,0,0,0.8)'
+                    }}>
+                      🛡️ Aventurier
+                    </span>
+                  </div>
                 </button>
                 <button
                   data-testid="role-killer-btn"
-                  className={`role-option killer ${selectedRole === 'killer' ? 'selected' : ''}`}
+                  className={`role-option killer role-image-btn ${selectedRole === 'killer' ? 'selected' : ''}`}
                   onClick={() => setSelectedRole('killer')}
                   disabled={conspiracyMode}
+                  style={{ position: 'relative', overflow: 'hidden', padding: 0 }}
                 >
-                  <span className="role-icon">🔪</span>
-                  <span className="role-name">Tueur</span>
+                  <img 
+                    src="/illustrations/Tueur.png" 
+                    alt="Tueur" 
+                    style={{ 
+                      width: '100%', height: '100%', objectFit: 'cover',
+                      position: 'absolute', top: 0, left: 0,
+                      opacity: selectedRole === 'killer' ? 1 : 0.5,
+                      transition: 'opacity 0.3s ease'
+                    }} 
+                  />
+                  <div style={{
+                    position: 'relative', zIndex: 1,
+                    display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'flex-end',
+                    height: '100%', padding: '1rem',
+                    background: 'linear-gradient(transparent 40%, rgba(0,0,0,0.7) 100%)'
+                  }}>
+                    <span className="role-name" style={{ 
+                      fontSize: '1.2em', fontWeight: 'bold', color: '#fff',
+                      textShadow: '2px 2px 4px rgba(0,0,0,0.8)'
+                    }}>
+                    🔪 Orc
+                    </span>
+                  </div>
                 </button>
               </div>
             </div>
 
+            {/* Avatar Selection */}
             <div>
               <label className="input-label">Choisissez votre avatar</label>
               <div className="avatar-grid">
@@ -306,62 +596,42 @@ const Home = () => {
               {/* Character class description */}
               {selectedAvatar && (
                 <div style={{ 
-                  marginTop: '1rem', 
-                  padding: '1rem', 
+                  marginTop: '1rem', padding: '1rem', 
                   backgroundColor: 'rgba(139, 92, 46, 0.2)',
                   border: '2px solid rgba(139, 92, 46, 0.5)',
-                  borderRadius: '8px',
-                  textAlign: 'center',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center'
+                  borderRadius: '8px', textAlign: 'center',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center'
                 }}>
                   <h3 style={{ 
-                    fontSize: '1.2em', 
-                    fontWeight: 'bold', 
-                    color: '#d4af37',
+                    fontSize: '1.2em', fontWeight: 'bold', color: '#d4af37',
                     marginBottom: '0.5rem',
                     textShadow: '1px 1px 2px rgba(0,0,0,0.5)'
                   }}>
                     {selectedAvatar.class}
                   </h3>
                   
-                  {/* Character illustration */}
                   {selectedAvatar.illustration && (
                     <div 
                       key={selectedAvatar.class}
                       className="character-illustration-enter"
                       style={{
-                        margin: '1rem 0',
-                        maxWidth: '400px',
-                        width: '100%',
-                        borderRadius: '8px',
-                        overflow: 'hidden',
+                        margin: '1rem 0', maxWidth: '400px', width: '100%',
+                        borderRadius: '8px', overflow: 'hidden',
                         boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
-                        display: 'flex',
-                        justifyContent: 'center'
+                        display: 'flex', justifyContent: 'center'
                       }}
                     >
                       <video 
                         src={selectedAvatar.illustration} 
-                        autoPlay
-                        loop
-                        muted
-                        playsInline
-                        style={{
-                          width: '100%',
-                          height: 'auto',
-                          display: 'block'
-                        }}
+                        autoPlay loop muted playsInline
+                        style={{ width: '100%', height: 'auto', display: 'block' }}
                       />
                     </div>
                   )}
                   
                   <p style={{ 
-                    fontSize: '0.95em', 
-                    color: '#e0e0e0',
-                    fontStyle: 'italic',
-                    lineHeight: '1.4'
+                    fontSize: '0.95em', color: '#e0e0e0',
+                    fontStyle: 'italic', lineHeight: '1.4'
                   }}>
                     {selectedAvatar.description}
                   </p>
@@ -369,56 +639,58 @@ const Home = () => {
               )}
             </div>
 
-            {/* NEW: Conspiracy Mode Toggle */}
-            <div>
-              <label className="input-label">Mode de jeu</label>
-              <button
-                data-testid="conspiracy-mode-btn"
-                className={`role-option ${conspiracyMode ? 'selected' : ''}`}
-                onClick={() => setConspiracyMode(!conspiracyMode)}
-                style={{ width: '100%', marginTop: '0.5rem' }}
-              >
-                <span className="role-icon">🎭</span>
-                <span className="role-name">Mode Complot</span>
-                {conspiracyMode && <span style={{ marginLeft: '0.5rem', fontSize: '0.9em' }}>✓ Activé</span>}
-              </button>
-              {conspiracyMode && (
-                <p style={{ fontSize: '0.85em', color: '#888', marginTop: '0.5rem', textAlign: 'center' }}>
-                  Les rôles seront attribués aléatoirement au début de la partie
-                </p>
-              )}
-            </div>
+            {/* Conspiracy Mode - Only for create mode */}
+            {mode === "create" && (
+              <div style={{ marginTop: '0.5rem' }}>
+                <button
+                  data-testid="conspiracy-mode-btn"
+                  onClick={() => setConspiracyMode(!conspiracyMode)}
+                  style={{ 
+                    width: '100%',
+                    padding: '0.6rem 1rem',
+                    borderRadius: '8px',
+                    border: conspiracyMode ? '2px solid #9333ea' : '2px solid #555',
+                    background: conspiracyMode ? 'rgba(147, 51, 234, 0.15)' : 'rgba(30, 30, 30, 0.6)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem',
+                    transition: 'all 0.3s ease'
+                  }}
+                >
+                  <span style={{ fontSize: '1em' }}>🎭</span>
+                  <span style={{ 
+                    fontSize: '0.9em', 
+                    color: conspiracyMode ? '#c084fc' : '#888',
+                    fontWeight: conspiracyMode ? 'bold' : 'normal'
+                  }}>
+                    Mode Complot
+                  </span>
+                  {conspiracyMode && <span style={{ fontSize: '0.85em', color: '#c084fc' }}>✓</span>}
+                </button>
+                {conspiracyMode && (
+                  <p style={{ fontSize: '0.75em', color: '#888', marginTop: '0.3rem', textAlign: 'center' }}>
+                    Les rôles seront attribués aléatoirement
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        <div className="action-buttons">
+        {/* Confirm Button */}
+        <div style={{ marginTop: '1.5rem' }}>
           <Button
-            data-testid="create-game-btn"
-            onClick={createGame}
-            disabled={isCreating}
+            data-testid="confirm-config-btn"
+            onClick={confirmConfiguration}
+            disabled={isCreating || isJoining}
             className="primary-btn"
+            style={{ width: '100%', padding: '1rem', fontSize: '1.1em' }}
           >
-            {isCreating ? "Création..." : "Créer une partie"}
+            {isCreating ? "Création..." : isJoining ? "Connexion..." : 
+              mode === "create" ? "⚔️ Créer et entrer dans le donjon" : "🚪 Rejoindre le donjon"}
           </Button>
-
-          <div className="join-section">
-            <Input
-              data-testid="join-session-input"
-              placeholder="Code de session"
-              value={joinSessionId}
-              onChange={(e) => setJoinSessionId(e.target.value.toUpperCase())}
-              className="dark-input"
-              style={{ textTransform: 'uppercase' }}
-            />
-            <Button
-              data-testid="join-game-btn"
-              onClick={joinGame}
-              disabled={isJoining}
-              className="secondary-btn"
-            >
-              {isJoining ? "Connexion..." : "Rejoindre"}
-            </Button>
-          </div>
         </div>
       </div>
     </div>
@@ -655,12 +927,12 @@ const Lobby = () => {
                       {/* MODIFIED: Non-clickable role badges */}
                       {!gameState.conspiracy_mode && player.role === "killer" && (
                         <span className="killer-badge">
-                          🔪 Tueur
+                          🔪 Orc
                         </span>
                       )}
                       {!gameState.conspiracy_mode && player.role === "survivor" && (
                         <span className="survivor-badge">
-                          🛡️ Survivant
+                          🛡️ Aventurier
                         </span>
                       )}
                       {/* MODIFIED: Button to return to role/avatar selection */}
@@ -794,7 +1066,7 @@ const PowerSelectionOverlay = ({
         <Card className="power-waiting-card">
           <CardContent className="text-center" style={{ padding: '2rem' }}>
             <h2 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>✅ Pouvoir sélectionné</h2>
-            <p>En attente des autres tueurs...</p>
+            <p>En attente des autres Orcs...</p>
           </CardContent>
         </Card>
       </div>
@@ -1370,7 +1642,7 @@ const Game = () => {
 
     if (!isMyTurn) {
       if (currentPlayer.role === "survivor" && (gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection")) {
-        toast.error("C'est le tour des tueurs !");
+        toast.error("C'est le tour des Orcs !");
       } else if (currentPlayer.role === "killer" && gameState.phase === "survivor_selection") {
         toast.error("C'est le tour des survivants !");
       }
@@ -1534,8 +1806,8 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center' }}>
                 {assignedRole === "survivor" 
-                  ? "Vous êtes survivant, trouvez les clefs et échappez-vous d'ici !" 
-                  : "Vous êtes tueur, trouvez les survivants et débarrassez-vous d'eux !"}
+                  ? "Vous êtes un aventurier, trouvez le cristal et échappez-vous d'ici !" 
+                  : "Vous êtes un Orc, trouvez les survivants et débarrassez-vous d'eux !"}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#888', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -2345,12 +2617,12 @@ const Game = () => {
           )}
 {gameState.phase === "killer_power_selection" && (
     <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-      {currentPlayerRole === "killer" ? "🎴 Sélection de pouvoir" : "🔪 Tour des tueurs"}
+      {currentPlayerRole === "killer" ? "🎴 Sélection de pouvoir" : "🔪 Tour des Orcs"}
     </div>
 )}
 {gameState.phase === "killer_selection" && (
     <div className="phase-indicator killer-phase" data-testid="phase-indicator">
-      🔪 {currentPlayerRole === "killer" ? "Choisissez une pièce à fouiller" : "Tour des tueurs"}
+      🔪 {currentPlayerRole === "killer" ? "Choisissez une pièce à fouiller" : "Tour des Orcs"}
     </div>
 )}
           {gameState.phase === "processing" && (
@@ -2418,8 +2690,8 @@ const Game = () => {
             <CardContent>
               <p className="game-over-message">
                 {gameState.winner === "survivors"
-                  ? "Les survivants ont collecté toutes les clefs !"
-                  : "Les tueurs ont éliminé tous les survivants..."}
+                  ? "Les aventuriers ont collecté toutes les clefs !"
+                  : "Les Orcs ont éliminé tous les survivants..."}
               </p>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
 <Button

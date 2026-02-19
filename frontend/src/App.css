@@ -1597,6 +1597,29 @@ body {
   }
 }
 
+/* Role selection image buttons */
+.role-image-btn {
+  min-height: 150px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: 3px solid transparent;
+}
+
+.role-image-btn:hover:not(:disabled) {
+  transform: scale(1.03);
+}
+
+.role-image-btn.selected {
+  border-color: #d4af37;
+  box-shadow: 0 0 15px rgba(212, 175, 55, 0.5);
+}
+
+.role-image-btn:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+
 /* Character illustration animation */
 .character-illustration-enter {
   animation: illustrationAppear 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
