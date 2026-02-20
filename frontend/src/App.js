@@ -911,55 +911,79 @@ const Lobby = () => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="players-list">
-              {Object.values(gameState.players).map((player) => {
-                const isCurrentPlayer = player.id === playerId;
-                
-                return (
-                  <div key={player.id} className="player-item" data-testid={`player-${player.id}`}>
-                    <div className="player-item-main">
-                      <span className="player-avatar">
-                        <img src={player.avatar} alt={player.name} style={{ width: '3.5rem', height: '3.5rem', objectFit: 'contain' }} />
-                      </span>
-                      <span className="player-name">{player.name}</span>
-                    </div>
-                    <div className="player-item-badges">
-                      {/* MODIFIED: Non-clickable role badges */}
-                      {!gameState.conspiracy_mode && player.role === "killer" && (
-                        <span className="killer-badge">
-                          🔪 Orc
-                        </span>
-                      )}
-                      {!gameState.conspiracy_mode && player.role === "survivor" && (
-                        <span className="survivor-badge">
-                          🛡️ Aventurier
-                        </span>
-                      )}
-                      {/* MODIFIED: Button to return to role/avatar selection */}
-                      {!gameState.conspiracy_mode && isCurrentPlayer && (
-                        <button
-                          className="switch-role-btn"
-                          onClick={() => changeRole(player.id, player.role)}
-                          title="Changer de rôle et d'avatar"
-                          data-testid="switch-role-btn"
-                        >
-                          🔄
-                        </button>
-                      )}
-                      {player.is_host && <span className="host-badge">Hôte</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
+  <div className="players-list">
+    {Object.values(gameState.players).map((player) => {
+      const isCurrentPlayer = player.id === playerId;
+      
+      return (
+        <div key={player.id} className="player-item" data-testid={`player-${player.id}`}>
+          <div className="player-item-main">
+            <span className="player-avatar">
+              <img src={player.avatar} alt={player.name} style={{ width: '3.5rem', height: '3.5rem', objectFit: 'contain' }} />
+            </span>
+            <span className="player-name">{player.name}</span>
+          </div>
+          <div className="player-item-badges">
+            {/* Affichage du rôle – toujours visible en salle d'attente */}
+            {player.role === "killer" && (
+              <span className="killer-badge">Orc</span>
+            )}
+            {player.role === "survivor" && (
+              <span className="survivor-badge">Aventurier</span>
+            )}
+            {!player.role && (
+              <em>Choisit son rôle...</em>
+            )}
+
+            {/* BOUTON CHANGER RÔLE & AVATAR – visible seulement en salle d'attente */}
+            {!gameState.game_started && isCurrentPlayer && (
+              <button
+                className="switch-role-btn"
+                onClick={() => changeRole(player.id, player.role)}
+                title="Changer de rôle et d'avatar"
+                data-testid="switch-role-btn"
+              >
+                Changer
+              </button>
+            )}
+
+            {player.is_host && <span className="host-badge">Hôte</span>}
+          </div>
+        </div>
+      );
+    })}
+  </div>
+
+  {/* BOUTON DÉMARRER LA PARTIE – juste en dessous de la liste */}
+  {isHost && !gameState.game_started && (
+    <div style={{ marginTop: '2rem', textAlign: 'center' }}>
+      <button
+        onClick={startGame}
+        disabled={Object.values(gameState.players).some(p => !p.role)}
+        style={{
+          padding: '1rem 2rem',
+          fontSize: '1.5rem',
+          backgroundColor: Object.values(gameState.players).every(p => p.role) ? '#d32f2f' : '#666',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          cursor: Object.values(gameState.players).every(p => p.role) ? 'pointer' : 'not-allowed'
+        }}
+      >
+        {Object.values(gameState.players).every(p => p.role)
+          ? `Démarrer la partie (${Object.keys(gameState.players).length}/8)`
+          : "En attente des rôles..."}
+      </button>
+    </div>
+  )}
+</CardContent>
         </Card>
 
         {isHost && (
           <Button
             data-testid="start-game-btn"
             onClick={startGame}
-            disabled={playerCount < 1}
+            disabled={!gameState.players.every(p => p.role && p.role !== "")}
             className="start-btn"
           >
             Démarrer la partie
