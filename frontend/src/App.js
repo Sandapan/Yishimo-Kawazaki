@@ -706,7 +706,7 @@ const Lobby = () => {
   const ws = useRef(null);
 
   useEffect(() => {
-    const storedPlayerId = localStorage.getItem('player_id');
+const storedPlayerId = sessionStorage.getItem('player_id');
     setPlayerId(storedPlayerId);
 
     // Fetch initial game state
@@ -817,9 +817,9 @@ const Lobby = () => {
     }
     
     // FIXED: Store the SPECIFIC player_id who is changing role
-    localStorage.setItem('returning_from_lobby', 'true');
-    localStorage.setItem('pending_session_id', sessionId);
-    localStorage.setItem('updating_player_id', targetPlayerId); // Store the specific player ID
+sessionStorage.setItem('returning_from_lobby', 'true');
+sessionStorage.setItem('pending_session_id', sessionId);
+sessionStorage.setItem('updating_player_id', targetPlayerId);
     
     // Close WebSocket connection before leaving
     if (ws.current) {
@@ -979,16 +979,7 @@ const Lobby = () => {
 </CardContent>
         </Card>
 
-        {isHost && (
-          <Button
-            data-testid="start-game-btn"
-            onClick={startGame}
-            disabled={!gameState.players.every(p => p.role && p.role !== "")}
-            className="start-btn"
-          >
-            Démarrer la partie
-          </Button>
-        )}
+
       </div>
     </div>
   );
