@@ -2136,63 +2136,83 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "message": f"✅ {game['players'][player_id]['name']} a fait son choix"
                     })
                     
-                    # Check if all survivors have selected
-                    if game["phase"] == "survivor_selection":
-                        alive_survivors = [p for p in game["players"].values()\
-                                         if p["role"] == "survivor" and not p["eliminated"]]
-                        # FIX: Only count non-eliminated survivors in selection check
-                        survivors_selected = [pid for pid in game["pending_actions"].keys()\
-                                            if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
+                   # Check if all survivors have selected
+if game["phase"] == "survivor_selection":
+    alive_survivors = [p for p in game["players"].values()\
+                     if p["role"] == "survivor" and not p["eliminated"]]
+    # FIX: Only count non-eliminated survivors in selection check
+    survivors_selected = [pid for pid in game["pending_actions"].keys()\
+                        if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
-                        if len(survivors_selected) == len(alive_survivors):
-                            # All survivors have selected, NOW clear traps and mimics from previous turn
-                            for room_name_clear, room_data in game["rooms"].items():
-                                room_data["trapped"] = False
-                                room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False
-                                room_data["teleportation_trap"] = False
-                                room_data["teleportation_exit"] = False
-                                room_data["teleportation_target_room"] = None
-                            
-                            # GOLIATH: Update the list of rooms visited this turn for next turn's check
-                            if game.get("goliath_active", False):
-                                current_turn_rooms = []
-                                for pid, action in game["pending_actions"].items():
-                                    if game["players"][pid]["role"] == "survivor":
-                                        room_selected = action.get("room")
-                                        if room_selected and room_selected not in current_turn_rooms:
-                                            current_turn_rooms.append(room_selected)
-                                game["goliath_previous_turn_rooms"] = current_turn_rooms
-                            
-                            # Move to killer power selection
-                            game["phase"] = "killer_power_selection"
-                            game["pending_power_selections"] = {}
-                            
-                            # EBOULEMENT: Clear eboulement effect
-                            if game.get("eboulement_active", False):
-                                game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}
-                                eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
-                                game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
-                                await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
-                            
-                            # Assign 3 random powers to each killer
-                            alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
-                            for killer in alive_killers:
-                                killer_id = killer["id"]
-                                power_options = get_random_powers(game_state=game)
-                                game["pending_power_selections"][killer_id] = {
-                                    "options": power_options,
-                                    "selected_power": None,
-                                    "action_data": None,
-                                    "action_complete": False
-                                }
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "phase_change",
-                                "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir"
-                            })
+    if len(survivors_selected) == len(alive_survivors):
+        # Broadcast pour que les survivants voient le dernier choix
+        await broadcast_to_session(session_id, {
+            "type": "state_update",
+            "game": game_sessions[session_id]
+        })
+        # Pause pour laisser le flash s'afficher
+        await asyncio.sleep(2)
+        
+        # All survivors have selected, NOW clear traps and mimics from previous turn
+        for room_name_clear, room_data in game["rooms"].items():
+            room_data["trapped"] = False
+            room_data.pop("trap_triggered", None)
+            room_data["has_mimic"] = False
+            room_data["teleportation_trap"] = False
+            room_data["teleportation_exit"] = False
+            room_data["teleportation_target_room"] = None
+
+        # GOLIATH
+        if game.get("goliath_active", False):
+            current_turn_rooms = []
+            for pid, action in game["pending_actions"].items():
+                if game["players"][pid]["role"] == "survivor":
+                    room_selected = action.get("room")
+                    if room_selected and room_selected not in current_turn_rooms:
+                        current_turn_rooms.append(room_selected)
+
+            game["goliath_previous_turn_rooms"] = current_turn_rooms
+
+        # Move to killer power selection
+        game["phase"] = "killer_power_selection"
+        game["pending_power_selections"] = {}
+
+        # EBOULEMENT reset
+        if game.get("eboulement_active", False):
+            game["eboulement_active"] = False
+            game["eboulement_locked_floors"] = {}
+            eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
+            game["events"].append({
+                "message": eboulement_clear_msg,
+                "type": "eboulement_cleared"
+            })
+            await broadcast_to_session(session_id, {
+                "type": "event",
+                "message": eboulement_clear_msg
+            })
+
+        # Assign powers
+        alive_killers = [
+            p for p in game["players"].values()
+            if p["role"] == "killer" and not p["eliminated"]
+        ]
+
+        for killer in alive_killers:
+            killer_id = killer["id"]
+            power_options = get_random_powers(game_state=game)
+
+            game["pending_power_selections"][killer_id] = {
+                "options": power_options,
+                "selected_power": None,
+                "action_data": None,
+                "action_complete": False
+            }
+
+        await broadcast_to_session(session_id, {
+            "type": "phase_change",
+            "phase": "killer_power_selection",
+            "message": "🎴 Les tueurs choisissent leur pouvoir"
+        })
                     
                     # Broadcast updated state
                     await broadcast_to_session(session_id, {
@@ -2536,6 +2556,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                             if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
                         if len(survivors_selected) == len(alive_survivors):
+
+                                # ← AJOUTER: Broadcast pour que les survivants voient le dernier choix
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game_sessions[session_id]
+    })
+    # ← AJOUTER: Pause pour laisser le flash s'afficher
+    await asyncio.sleep(2)
                             for room_name_clear, room_data in game["rooms"].items():
                                 room_data["trapped"] = False
                                 room_data.pop("trap_triggered", None)

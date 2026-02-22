@@ -160,41 +160,7 @@ const Home = () => {
     setSelectedAvatar(newAvatars[0]);
   }, [selectedRole]);
 
-  // NEW: Detect teammate room selections and trigger flash
-useEffect(() => {
-  if (!gameState || !playerId) return;
-
-  const currentPlayer = gameState.players?.[playerId];
-  if (!currentPlayer || currentPlayer.role !== 'survivor') return;
-  if (gameState.phase !== 'survivor_selection') return;
-
-  const currentActions = gameState.pending_actions || {};
-  const currentStr = JSON.stringify(currentActions);
-
-  if (currentStr !== prevPendingActionsRef.current) {
-    const prevActions = JSON.parse(prevPendingActionsRef.current);
-
-    Object.entries(currentActions).forEach(([pid, action]) => {
-      if (pid === playerId) return; // ignore own selection
-      if (!prevActions[pid] || prevActions[pid].room !== action.room) {
-        const roomName = action.room;
-
-        setFlashingRooms(prev => new Set([...prev, roomName]));
-
-        // Stop flashing after 2s
-        setTimeout(() => {
-          setFlashingRooms(prev => {
-            const next = new Set(prev);
-            next.delete(roomName);
-            return next;
-          });
-        }, 2000);
-      }
-    });
-
-    prevPendingActionsRef.current = currentStr;
-  }
-}, [gameState?.pending_actions, gameState?.phase, playerId]);
+ 
 
   // Step 1: Create → create session on server, get session ID, then go to configure
   const handleCreateClick = async () => {
@@ -1700,6 +1666,42 @@ const prevPendingActionsRef = useRef('{}');
     // Auto-scroll to latest event
     eventsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [gameState?.events]);
+
+ // NEW: Detect teammate room selections and trigger flash
+useEffect(() => {
+  if (!gameState || !playerId) return;
+
+  const currentPlayer = gameState.players?.[playerId];
+  if (!currentPlayer || currentPlayer.role !== 'survivor') return;
+  if (gameState.phase !== 'survivor_selection') return;
+
+  const currentActions = gameState.pending_actions || {};
+  const currentStr = JSON.stringify(currentActions);
+
+  if (currentStr !== prevPendingActionsRef.current) {
+    const prevActions = JSON.parse(prevPendingActionsRef.current);
+
+    Object.entries(currentActions).forEach(([pid, action]) => {
+      if (pid === playerId) return; // ignore own selection
+      if (!prevActions[pid] || prevActions[pid].room !== action.room) {
+        const roomName = action.room;
+
+        setFlashingRooms(prev => new Set([...prev, roomName]));
+
+        // Stop flashing after 2s
+        setTimeout(() => {
+          setFlashingRooms(prev => {
+            const next = new Set(prev);
+            next.delete(roomName);
+            return next;
+          });
+        }, 2000);
+      }
+    });
+
+    prevPendingActionsRef.current = currentStr;
+  }
+}, [gameState?.pending_actions, gameState?.phase, playerId]);
 
   const selectRoom = (roomName) => {
     if (hasSelectedRoom || !gameState) return;
