@@ -160,6 +160,42 @@ const Home = () => {
     setSelectedAvatar(newAvatars[0]);
   }, [selectedRole]);
 
+  // NEW: Detect teammate room selections and trigger flash
+useEffect(() => {
+  if (!gameState || !playerId) return;
+
+  const currentPlayer = gameState.players?.[playerId];
+  if (!currentPlayer || currentPlayer.role !== 'survivor') return;
+  if (gameState.phase !== 'survivor_selection') return;
+
+  const currentActions = gameState.pending_actions || {};
+  const currentStr = JSON.stringify(currentActions);
+
+  if (currentStr !== prevPendingActionsRef.current) {
+    const prevActions = JSON.parse(prevPendingActionsRef.current);
+
+    Object.entries(currentActions).forEach(([pid, action]) => {
+      if (pid === playerId) return; // ignore own selection
+      if (!prevActions[pid] || prevActions[pid].room !== action.room) {
+        const roomName = action.room;
+
+        setFlashingRooms(prev => new Set([...prev, roomName]));
+
+        // Stop flashing after 2s
+        setTimeout(() => {
+          setFlashingRooms(prev => {
+            const next = new Set(prev);
+            next.delete(roomName);
+            return next;
+          });
+        }, 2000);
+      }
+    });
+
+    prevPendingActionsRef.current = currentStr;
+  }
+}, [gameState?.pending_actions, gameState?.phase, playerId]);
+
   // Step 1: Create → create session on server, get session ID, then go to configure
   const handleCreateClick = async () => {
     setMode("create");
@@ -743,8 +779,20 @@ const storedPlayerId = sessionStorage.getItem('player_id');
           return { ...prev, players: updatedPlayers };
         });
       } else if (data.type === "player_joined") {
-        toast.success(`${data.player.name} a rejoint la partie`);
-      } else if (data.type === "game_started") {
+    toast(`🚪 ${data.player.name} rejoint la partie !`, {
+      duration: 1000,
+      style: {
+        background: 'rgba(61, 43, 31, 0.7)',
+        color: '#d4af37',
+        border: '1px solid rgba(212, 175, 55, 0.3)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        fontFamily: "'Cinzel', serif",
+        fontSize: '0.95rem',
+        pointerEvents: 'none',
+      },
+    });
+} else if (data.type === "game_started") {
         toast.success(data.message);
         setTimeout(() => navigate(`/game/${sessionId}?pid=${storedPlayerId}`), 1000);
       } else if (data.type === "game_reset") {
@@ -1263,6 +1311,10 @@ const Game = () => {
   const [hasSelectedRoom, setHasSelectedRoom] = useState(false);
   const [showRoleNotification, setShowRoleNotification] = useState(false); // NEW: role notification
   const [assignedRole, setAssignedRole] = useState(null); // NEW: assigned role
+
+  // NEW: Flashing rooms when teammates select
+const [flashingRooms, setFlashingRooms] = useState(new Set());
+const prevPendingActionsRef = useRef('{}');
   
   // NEW: Power selection states
   const [selectedPower, setSelectedPower] = useState(null);
@@ -1506,15 +1558,19 @@ const Game = () => {
       } else if (data.type === "event") {
         toast.info(data.message);
       } else if (data.type === "new_turn") {
+    setHasSelectedRoom(false);
+    setSelectedRoom(null);
+    setSelectedPower(null);
+    setPowerActionData(null);
+    setShowPowerAction(false);
+    setFlashingRooms(new Set());           // ← AJOUTER
+    prevPendingActionsRef.current = '{}';  // ← AJOUTER
+    toast.info(data.message);
+} else if (data.type === "phase_change") {
         setHasSelectedRoom(false);
         setSelectedRoom(null);
-        setSelectedPower(null);
-        setPowerActionData(null);
-        setShowPowerAction(false);
-        toast.info(data.message);
-      } else if (data.type === "phase_change") {
-        setHasSelectedRoom(false);
-        setSelectedRoom(null);
+        setFlashingRooms(new Set());           // ← AJOUTER
+    prevPendingActionsRef.current = '{}';  // ← AJOUTER
         if (data.phase !== "killer_power_selection" && data.phase !== "rage_second_selection") {
           setSelectedPower(null);
           setPowerActionData(null);
@@ -2789,7 +2845,7 @@ const Game = () => {
                       className={`room-card ${
                         selectedRoom === room.name ? 'selected' :
                         room.locked ? 'locked' : ''
-                      } ${isHighlighted ? 'room-highlighted' : ''}`}
+                       } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''}`}
                       onClick={() => selectRoom(room.name)}
                       disabled={isEliminated || hasSelectedRoom || room.locked}
                     >
