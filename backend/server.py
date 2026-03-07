@@ -122,7 +122,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "teleportation_trap": False,  # NEW: for teleportation power (entrance trap ➡️🌀)
             "teleportation_exit": False,  # NEW: for teleportation power (exit portal 🌀➡️)
             "teleportation_target_room": None,  # NEW: destination room for teleportation
-            "has_merchant": False  # NEW: for merchant system
+            "has_merchant": False,  # NEW: for merchant system
+            "merchant_discovered": False,  # NOUVEAU: pour afficher l'avatar du marchand aux survivants
         }
 
     # Get character class from avatar
@@ -797,6 +798,7 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
         elif player_role == "killer":
             # Killers see trapped and highlighted, but not trap_triggered
             room_copy.pop("trap_triggered", None)
+            room_copy["merchant_discovered"] = False  # NOUVEAU: Masquer le marchand découvert aux Orcs
         
         # BLIZZARD EFFECT: If current player is immobilized, lock all rooms except their current room
         if current_player and current_player.get("immobilized_next_turn", False):
@@ -2541,6 +2543,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         
                         if not is_trapped:
+                            game["rooms"][room_name]["merchant_discovered"] = True
                             await websocket.send_json({
                                 "type": "merchant_encounter",
                                 "message": "🧙 Vous rencontrez le marchand !",

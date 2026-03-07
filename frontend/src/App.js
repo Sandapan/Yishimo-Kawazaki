@@ -2861,6 +2861,11 @@ useEffect(() => {
                         {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
                         {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
                         {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
+                        {room.merchant_discovered && (
+                           <span className="room-player-avatar" title="Marchand">
+                               <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                           </span>
+                        )}                        
                         {playersSelectingThisRoom.length > 0 && (
                           <div className="players-in-room">
                             {playersSelectingThisRoom.map((p) => (
