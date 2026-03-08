@@ -1380,9 +1380,17 @@ const prevPendingActionsRef = useRef('{}');
   // NEW: Active traps section state
   const [expandedTrap, setExpandedTrap] = useState(null);
 
+  // NEW: Turn announcement popups (flashing)
+  const [showAdventurerTurnPopup, setShowAdventurerTurnPopup] = useState(false);
+  const [showOrcSearchPopup, setShowOrcSearchPopup] = useState(false);
+
+  // NEW: Room selection with confirmation - preSelectedRoom is the room clicked once, selectedRoom is confirmed
+  const [preSelectedRoom, setPreSelectedRoom] = useState(null);
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
-  const hasShownRoleNotification = useRef(false); // Track if role notification was shown
+  const hasShownRoleNotification = useRef(false);
+  const lastShownAdventurerTurn = useRef(0); // Track last turn where adventurer popup was shown // Track if role notification was shown
 
   useEffect(() => {
     // Get player_id from URL query params or localStorage
@@ -1438,6 +1446,24 @@ const prevPendingActionsRef = useRef('{}');
           setTimeout(() => {
             setShowRoleNotification(false);
           }, 5000);
+        }
+
+        // NEW: Show adventurer turn popup when game started and it's survivor_selection phase
+        if (data.game.game_started && 
+            data.game.phase === "survivor_selection" &&
+            storedPlayerId in data.game.players) {
+          const currentPlayer = data.game.players[storedPlayerId];
+          const currentTurn = data.game.turn || 1;
+          
+          if (currentPlayer.role === "survivor" && 
+              !currentPlayer.eliminated &&
+              lastShownAdventurerTurn.current < currentTurn) {
+            lastShownAdventurerTurn.current = currentTurn;
+            setShowAdventurerTurnPopup(true);
+            setTimeout(() => {
+              setShowAdventurerTurnPopup(false);
+            }, 3000);
+          }
         }
       } else if (data.type === "trapped_notification") {
         // NEW: Show trap popup for survivor who entered trapped room with video
@@ -1526,17 +1552,47 @@ const prevPendingActionsRef = useRef('{}');
       } else if (data.type === "new_turn") {
     setHasSelectedRoom(false);
     setSelectedRoom(null);
+    setPreSelectedRoom(null); // Reset pre-selection
     setSelectedPower(null);
     setPowerActionData(null);
     setShowPowerAction(false);
-    setFlashingRooms(new Set());           // ← AJOUTER
-    prevPendingActionsRef.current = '{}';  // ← AJOUTER
+    setFlashingRooms(new Set());
+    prevPendingActionsRef.current = '{}';
     toast.info(data.message);
+    
+    // NEW: Show adventurer turn popup if survivor_selection phase
+    if (data.phase === "survivor_selection" && data.game) {
+      const currentPlayer = data.game.players?.[storedPlayerId];
+      const currentTurn = data.game.turn || 1;
+      
+      if (currentPlayer && 
+          currentPlayer.role === "survivor" && 
+          !currentPlayer.eliminated &&
+          lastShownAdventurerTurn.current < currentTurn) {
+        lastShownAdventurerTurn.current = currentTurn;
+        setShowAdventurerTurnPopup(true);
+        setTimeout(() => { setShowAdventurerTurnPopup(false); }, 3000);
+      }
+    }
 } else if (data.type === "phase_change") {
         setHasSelectedRoom(false);
         setSelectedRoom(null);
-        setFlashingRooms(new Set());           // ← AJOUTER
-    prevPendingActionsRef.current = '{}';  // ← AJOUTER
+        setPreSelectedRoom(null); // Reset pre-selection
+        setFlashingRooms(new Set());
+    prevPendingActionsRef.current = '{}';
+    
+    // NEW: Show adventurer turn popup when entering survivor_selection phase
+    if (data.phase === "survivor_selection") {
+      const currentPlayer = gameState?.players?.[storedPlayerId];
+      if (currentPlayer && currentPlayer.role === "survivor" && !currentPlayer.eliminated) {
+        setShowAdventurerTurnPopup(true);
+        // Auto-hide after 3 seconds
+        setTimeout(() => {
+          setShowAdventurerTurnPopup(false);
+        }, 3000);
+      }
+    }
+    
         if (data.phase !== "killer_power_selection" && data.phase !== "rage_second_selection") {
           setSelectedPower(null);
           setPowerActionData(null);
@@ -1703,7 +1759,7 @@ useEffect(() => {
   }
 }, [gameState?.pending_actions, gameState?.phase, playerId]);
 
-  const selectRoom = (roomName) => {
+const selectRoom = (roomName) => {
     if (hasSelectedRoom || !gameState) return;
 
     // Check if it's the current player's turn
@@ -1732,16 +1788,36 @@ useEffect(() => {
       return;
     }
 
-    setSelectedRoom(roomName);
+    // NEW: Two-step selection - first click pre-selects, clicking again deselects
+    if (preSelectedRoom === roomName) {
+      // Clicking the same room again deselects it
+      setPreSelectedRoom(null);
+    } else {
+      // Pre-select the room (visual feedback)
+      setPreSelectedRoom(roomName);
+    }
+  };
+
+  // NEW: Confirm room selection function
+  const confirmRoomSelection = () => {
+    if (!preSelectedRoom || hasSelectedRoom || !gameState) return;
+
+    const currentPlayer = gameState.players[playerId];
+    if (!currentPlayer || currentPlayer.eliminated) return;
+
+    setSelectedRoom(preSelectedRoom);
     setHasSelectedRoom(true);
 
     // Send selection to server
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({
         type: "select_room",
-        room: roomName
+        room: preSelectedRoom
       }));
     }
+
+    // Clear pre-selection
+    setPreSelectedRoom(null);
   };
 
   const useMedikit = (targetPlayerId) => {
@@ -1766,6 +1842,16 @@ useEffect(() => {
         power: powerName
       }));
     }
+
+    // NEW: For powers that don't require action, show "Fouillez une pièce" popup immediately
+    const powerDef = powerDefinitions[powerName];
+    if (powerDef && !powerDef.requires_action) {
+      setShowOrcSearchPopup(true);
+      // Auto-hide after 3 seconds
+      setTimeout(() => {
+        setShowOrcSearchPopup(false);
+      }, 3000);
+    }
   };
   
   const confirmPowerAction = (actionData) => {
@@ -1780,6 +1866,13 @@ useEffect(() => {
         action_data: actionData
       }));
     }
+
+    // NEW: Show "Fouillez une pièce" popup for this orc after confirming power action
+    setShowOrcSearchPopup(true);
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setShowOrcSearchPopup(false);
+    }, 3000);
   };
 
   if (!gameState) {
@@ -2679,6 +2772,41 @@ useEffect(() => {
         </div>
       )}
 
+      {/* NEW: Adventurer Turn Announcement Popup - Flashing */}
+      {showAdventurerTurnPopup && (
+        <div 
+          className="turn-announcement-overlay"
+          onClick={() => setShowAdventurerTurnPopup(false)}
+          data-testid="adventurer-turn-popup"
+        >
+          <div className="turn-announcement-content">
+            <img 
+              src="/event/Tour-Aventurier.png" 
+              alt="Tour des Aventuriers" 
+              className="turn-announcement-image"
+            />
+            <h2 className="turn-announcement-text">Aventuriers, explorez le donjon !</h2>
+          </div>
+        </div>
+      )}
+
+      {/* NEW: Orc Search Announcement Popup - Flashing (Individual) */}
+      {showOrcSearchPopup && (
+        <div 
+          className="turn-announcement-overlay"
+          onClick={() => setShowOrcSearchPopup(false)}
+          data-testid="orc-search-popup"
+        >
+          <div className="turn-announcement-content">
+            <img 
+              src="/event/Tour-Orc.png" 
+              alt="Tour des Orcs" 
+              className="turn-announcement-image"
+            />
+            <h2 className="turn-announcement-text">Fouillez une pièce !</h2>
+          </div>
+        </div>
+      )}
 
       {/* Game Header */}
       <div className="game-header">
@@ -2839,44 +2967,62 @@ useEffect(() => {
                   const hasTeleportationTrap = room.teleportation_trap && currentPlayerRole === "killer";
                   const hasTeleportationExit = room.teleportation_exit && currentPlayerRole === "killer";
 
+                  // Check if this room is pre-selected (for confirmation step)
+                  const isPreSelected = preSelectedRoom === room.name;
+
                   return (
-                    <button
-                      key={room.name}
-                      data-testid={`room-${room.name.replace(/\s+/g, '-').toLowerCase()}`}
-                      data-room-name={room.name}
-                      className={`room-card ${
-                        selectedRoom === room.name ? 'selected' :
-                        room.locked ? 'locked' : ''
-                       } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''}`}
-                      onClick={() => selectRoom(room.name)}
-                      disabled={isEliminated || hasSelectedRoom || room.locked}
-                    >
-                      <div className="room-name">{room.name}</div>
-                      <div className="room-indicators">
-                        {room.locked && <span className="room-icon locked-icon">❌</span>}
-                        {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
-                        {isTrapped && <span className="room-icon room-trap-indicator" title="Blizzard">🥶</span>}
-                        {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
-                        {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
-                        {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
-                        {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
-                        {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
-                        {room.merchant_discovered && (
-                           <span className="room-player-avatar" title="Marchand">
-                               <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
-                           </span>
-                        )}                        
-                        {playersSelectingThisRoom.length > 0 && (
-                          <div className="players-in-room">
-                            {playersSelectingThisRoom.map((p) => (
-                              <span key={p.id} className="room-player-avatar" title={p.name}>
-                                <img src={p.avatar} alt={p.name} style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </button>
+                    <div key={room.name} className="room-card-wrapper" style={{ position: 'relative' }}>
+                      <button
+                        data-testid={`room-${room.name.replace(/\s+/g, '-').toLowerCase()}`}
+                        data-room-name={room.name}
+                        className={`room-card ${
+                          selectedRoom === room.name ? 'selected' :
+                          isPreSelected ? 'pre-selected' :
+                          room.locked ? 'locked' : ''
+                         } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''}`}
+                        onClick={() => selectRoom(room.name)}
+                        disabled={isEliminated || hasSelectedRoom || room.locked}
+                      >
+                        <div className="room-name">{room.name}</div>
+                        <div className="room-indicators">
+                          {room.locked && <span className="room-icon locked-icon">❌</span>}
+                          {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
+                          {isTrapped && <span className="room-icon room-trap-indicator" title="Blizzard">🥶</span>}
+                          {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
+                          {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
+                          {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
+                          {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
+                          {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
+                          {room.merchant_discovered && (
+                             <span className="room-player-avatar" title="Marchand">
+                                 <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                             </span>
+                          )}                        
+                          {playersSelectingThisRoom.length > 0 && (
+                            <div className="players-in-room">
+                              {playersSelectingThisRoom.map((p) => (
+                                <span key={p.id} className="room-player-avatar" title={p.name}>
+                                  <img src={p.avatar} alt={p.name} style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                      {/* Validation button appears when room is pre-selected */}
+                      {isPreSelected && !hasSelectedRoom && (
+                        <button
+                          className="room-confirm-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            confirmRoomSelection();
+                          }}
+                          data-testid={`confirm-room-${room.name.replace(/\s+/g, '-').toLowerCase()}`}
+                        >
+                          ✓ Valider
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>

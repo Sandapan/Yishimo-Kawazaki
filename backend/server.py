@@ -497,8 +497,9 @@ async def check_power_selection_complete(session_id: str):
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "killer_selection",
-            "message": "🔪 Choisissez une pièce à fouiller"
-        })
+            "message": "🔪 Choisissez une pièce à fouiller",
+        "game": game
+    })
 
 async def apply_powers(session_id: str):
     """Apply all selected powers"""
@@ -1093,8 +1094,9 @@ async def process_turn(session_id: str):
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "rage_second_selection",
-            "message": "😡 Tueurs en rage - Sélectionnez une seconde pièce !"
-        })
+            "message": "😡 Tueurs en rage - Sélectionnez une seconde pièce !",
+        "game": game
+    })
         return  # Exit early, will continue after second room selections
     
     # Apply Secousse power: relocate key if not found this turn
@@ -1291,7 +1293,8 @@ async def process_turn(session_id: str):
         "type": "new_turn",
         "turn": game["turn"],
         "phase": "survivor_selection",
-        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce",
+        "game": game
     })
 
 async def process_rage_second_selections(session_id: str):
@@ -1533,7 +1536,8 @@ async def process_rage_second_selections(session_id: str):
         "type": "new_turn",
         "turn": game["turn"],
         "phase": "survivor_selection",
-        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce"
+        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce",
+        "game": game
     })
 
 
@@ -2220,8 +2224,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir"
-                            })
+                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+        "game": game
+    })
                     
                     # Broadcast updated state
                     await broadcast_to_session(session_id, {
@@ -2614,8 +2619,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir"
-                            })
+                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+        "game": game
+    })
 
                     elif game["phase"] == "killer_selection":
                         alive_killers = [p for p in game["players"].values()\
