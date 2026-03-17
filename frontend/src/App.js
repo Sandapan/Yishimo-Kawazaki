@@ -2988,20 +2988,35 @@ const selectRoom = (roomName) => {
                   // CORRECTION: Show players that are in this room during selection phase
                   let playersSelectingThisRoom = [];
 
-                  // During survivor_selection or killer_selection phase, show who is selecting this room
+                  // During survivor_selection, killer_power_selection, killer_selection phase, show who is selecting this room
                   // Only show players of the same role as current player
-                  if (gameState.phase === "survivor_selection" || gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection" || gameState.phase === "processing") {
-                    // Get all players whose pending action is to go to this room AND have the same role as current player
-                    playersSelectingThisRoom = Object.entries(gameState.pending_actions || {})
+                  if (gameState.phase === "survivor_selection" || gameState.phase === "killer_power_selection" || gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection" || gameState.phase === "processing") {
+                    // 1. Joueurs qui ont déjà fait un choix de pièce (pending_action)
+                    const playersWithPendingAction = Object.entries(gameState.pending_actions || {})
                       .filter(([pid, action]) => {
                         const player = gameState.players[pid];
-                        // Only show if: action is for this room, player exists, not eliminated, and has same role as current player
                         return action.room === room.name &&
                                player &&
                                !player.eliminated &&
                                player.role === currentPlayerRole;
                       })
                       .map(([pid]) => gameState.players[pid]);
+
+                    // 2. Pour les aventuriers : afficher aussi la position actuelle (current_room) des joueurs qui n'ont PAS encore fait de choix
+                    let playersAtCurrentPosition = [];
+                    if (currentPlayerRole === "survivor") {
+                      playersAtCurrentPosition = Object.values(gameState.players)
+                        .filter(player => {
+                          // Joueur survivant, non éliminé, avec cette pièce comme position actuelle
+                          if (player.role !== "survivor" || player.eliminated) return false;
+                          if (player.current_room !== room.name) return false;
+                          // Ne pas afficher si le joueur a déjà une pending_action (il sera affiché via playersWithPendingAction)
+                          const hasPendingAction = gameState.pending_actions && gameState.pending_actions[player.id];
+                          return !hasPendingAction;
+                        });
+                    }
+
+                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition];
                   }
 
                   const eliminatedInRoom = room.eliminated_players || [];
