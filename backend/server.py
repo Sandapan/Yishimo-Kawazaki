@@ -157,6 +157,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "phase": "waiting",  # waiting, survivor_selection, killer_power_selection, killer_selection, processing, game_over, rage_second_selection
         "events": [],
         "pending_actions": {},
+        "pending_events": {},  # NEW: Track players with active event popups
         "should_place_next_key": False,
         "conspiracy_mode": False,  # NEW: conspiracy mode flag
         "active_powers": {},  # NEW: {power_name: {used_by: [player_ids], data: {...}}}
@@ -2157,7 +2158,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         survivors_selected = [pid for pid in game["pending_actions"].keys()\
                                             if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
-                        if len(survivors_selected) == len(alive_survivors):
+                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
                             # Broadcast pour que les survivants voient le dernier choix
                             await broadcast_to_session(session_id, {
                                 "type": "state_update",
@@ -2298,6 +2299,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         target_room = game["rooms"][room_name].get("teleportation_target_room")
                         
                         if target_room and target_room in game["rooms"]:
+
+                            game["pending_events"][player_id] = "teleportation"
                             player_class = player.get("character_class", "Mage")
                             video_path = f"/death/{player_class}_teleportation.mp4"
                             
@@ -2403,6 +2406,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if player["role"] == "survivor" and game["rooms"][room_name].get("trapped", False):
                         player["immobilized_next_turn"] = True
                         game["rooms"][room_name]["trap_triggered"] = True
+
+                        game["pending_events"][player_id] = "trap"
                         
                         player_class = player.get("character_class", "Mage").lower()
                         video_path = f"/death/Blizzard_{player_class}.mp4"
@@ -2417,6 +2422,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if player["role"] == "survivor" and game["rooms"][room_name].get("poisoned_turns_remaining", 0) > 0:
                         if player.get("poisoned_countdown", 0) == 0:
                             player["poisoned_countdown"] = 10
+
+                            game["pending_events"][player_id] = "poison"
                             
                             player_class = player.get("character_class", "Assassin")
                             video_path = f"/death/{player_class}_toxine.mp4"
@@ -2516,8 +2523,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     # GOLD SYSTEM
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):
                         gold_amount, gold_image = generate_gold_reward()
-                        player["gold"] += gold_amount
-                        
+                        player["gold"] += gold_amount                        
                         try:
                             await websocket.send_json({
                                 "type": "gold_found",
@@ -2535,6 +2541,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         player["gold"] = 0
                         
                         game["rooms"][room_name]["has_mimic"] = False
+
+                        game["pending_events"][player_id] = "mimic"
                         
                         await websocket.send_json({
                             "type": "mimic_notification",
@@ -2549,6 +2557,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         
                         if not is_trapped:
                             game["rooms"][room_name]["merchant_discovered"] = True
+
+                            game["pending_events"][player_id] = "merchant"
                             await websocket.send_json({
                                 "type": "merchant_encounter",
                                 "message": "🧙 Vous rencontrez le marchand !",
@@ -2570,7 +2580,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         survivors_selected = [pid for pid in game["pending_actions"].keys()\
                                             if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
 
-                        if len(survivors_selected) == len(alive_survivors):
+                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
                             # Broadcast pour que les survivants voient le dernier choix
                             await broadcast_to_session(session_id, {
                                 "type": "state_update",
@@ -2741,6 +2751,76 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 await broadcast_to_session(session_id, {"type": "antidote_used", "message": event_msg})
                 
                 logger.info(f"Player {player_id} used antidote to cure poison")
+
+            
+            # NEW: Handle event completion notification from frontend
+            elif data["type"] == "event_completed":
+                if player_id in game.get("pending_events", {}):
+                    del game["pending_events"][player_id]
+                    logger.info(f"Player {player_id} completed their event")
+                    
+                    # Check if we can now transition to killer phase
+                    if game["phase"] == "survivor_selection":
+                        alive_survivors = [p for p in game["players"].values()
+                                         if p["role"] == "survivor" and not p["eliminated"]]
+                        survivors_selected = [pid for pid in game["pending_actions"].keys()
+                                            if game["players"][pid]["role"] == "survivor" 
+                                            and not game["players"][pid]["eliminated"]]
+                        
+                        # All survivors selected AND no pending events
+                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
+                            logger.info("All survivors ready - transitioning to killer phase")
+                            
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game_sessions[session_id]
+                            })
+                            await asyncio.sleep(2)
+                            
+                            # Clear traps
+                            for room_name_clear, room_data in game["rooms"].items():
+                                room_data["trapped"] = False
+                                room_data.pop("trap_triggered", None)
+                                room_data["has_mimic"] = False
+                                room_data["teleportation_trap"] = False
+                                room_data["teleportation_exit"] = False
+                                room_data["teleportation_target_room"] = None
+                            
+                            if game.get("goliath_active", False):
+                                current_turn_rooms = []
+                                for pid, action in game["pending_actions"].items():
+                                    if game["players"][pid]["role"] == "survivor":
+                                        room_selected = action.get("room")
+                                        if room_selected and room_selected not in current_turn_rooms:
+                                            current_turn_rooms.append(room_selected)
+                                game["goliath_previous_turn_rooms"] = current_turn_rooms
+                            
+                            game["phase"] = "killer_power_selection"
+                            game["pending_power_selections"] = {}
+                            
+                            if game.get("eboulement_active", False):
+                                game["eboulement_active"] = False
+                                game["eboulement_locked_floors"] = {}
+                            
+                            alive_killers = [p for p in game["players"].values()
+                                           if p["role"] == "killer" and not p["eliminated"]]
+                            for killer in alive_killers:
+                                killer_id = killer["id"]
+                                power_options = get_random_powers(game_state=game)
+                                game["pending_power_selections"][killer_id] = {
+                                    "options": power_options,
+                                    "selected_power": None,
+                                    "action_data": None,
+                                    "action_complete": False
+                                }
+                            
+                            await broadcast_to_session(session_id, {
+                                "type": "phase_change",
+                                "phase": "killer_power_selection",
+                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+                                "game": game
+                            })
+
 
             # Broadcast updated state (filtered per player)
             await broadcast_to_session(session_id, {

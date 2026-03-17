@@ -1472,7 +1472,8 @@ const prevPendingActionsRef = useRef('{}');
         // Auto-hide after 5 seconds
         setTimeout(() => {
           setShowTrapPopup(false);
-        }, 5000);
+  notifyEventCompleted();
+}, 5000);
       } else if (data.type === "poisoned_notification") {
         // NEW: Show poison video popup first, then image popup
         setPoisonMessage(data.message);
@@ -1486,7 +1487,8 @@ const prevPendingActionsRef = useRef('{}');
           setShowPoisonPopup(true);
           setTimeout(() => {
             setShowPoisonPopup(false);
-          }, 5000);
+  notifyEventCompleted();
+}, 5000);
         }
       } else if (data.type === "mimic_notification") {
         // NEW: Show mimic popup for survivor who entered room with mimic
@@ -1496,7 +1498,8 @@ const prevPendingActionsRef = useRef('{}');
         // Auto-hide after 7 seconds (video is longer)
         setTimeout(() => {
           setShowMimicPopup(false);
-        }, 7000);
+  notifyEventCompleted();
+}, 7000);
       } else if (data.type === "teleportation_notification") {
         // NEW: Show teleportation popup for survivor who entered teleportation trap with video
         setTeleportationVideoPath(data.video_path || "");
@@ -1505,7 +1508,8 @@ const prevPendingActionsRef = useRef('{}');
         // Auto-hide after 5 seconds
         setTimeout(() => {
           setShowTeleportationPopup(false);
-        }, 5000);
+  notifyEventCompleted();
+}, 5000);
       } else if (data.type === "merchant_encounter") {
         // NEW: Show merchant popup for survivor who encountered the merchant
         setMerchantVideoPath(data.video_path || "");
@@ -1673,7 +1677,7 @@ const prevPendingActionsRef = useRef('{}');
         // Auto-hide after video ends (assuming ~10 seconds)
         setTimeout(() => {
           setShowCrystalSpawnedPopup(false);
-        }, 10000);
+        }, 5000);
       } else if (data.type === "crystal_destroyed_popup") {
         // Show popup with video for crystal destroyed
         setCrystalDestroyedMessage(data.message);
@@ -1799,6 +1803,17 @@ const selectRoom = (roomName) => {
   };
 
   // NEW: Confirm room selection function
+  
+  // NEW: Notify server that an event popup has been closed
+  const notifyEventCompleted = () => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({    // <-- ws.current.send, pas ws.send
+        type: "event_completed",
+        player_id: playerId
+      }));
+    }
+  };
+
   const confirmRoomSelection = () => {
     if (!preSelectedRoom || hasSelectedRoom || !gameState) return;
 
@@ -2015,7 +2030,10 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowTrapPopup(false)}
+          onClick={() => {
+  setShowTrapPopup(false);
+  notifyEventCompleted();  // NEW
+}}
           data-testid="trap-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a3f4f', borderColor: '#60a5fa' }}>
@@ -2031,7 +2049,10 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowTrapPopup(false), 1000)}
+                  onEnded={() => setTimeout(() => {
+  setShowTrapPopup(false);
+  notifyEventCompleted();
+}, 1000)}
                 >
                   <source src={trapVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -2058,6 +2079,7 @@ const selectRoom = (roomName) => {
             setShowPoisonPopup(true);
             setTimeout(() => {
               setShowPoisonPopup(false);
+              notifyEventCompleted();
             }, 5000);
           }}
           data-testid="poison-video-popup"
@@ -2081,6 +2103,7 @@ const selectRoom = (roomName) => {
                       setShowPoisonPopup(true);
                       setTimeout(() => {
                         setShowPoisonPopup(false);
+                        notifyEventCompleted();
                       }, 5000);
                     }, 500);
                   }}
@@ -2090,6 +2113,7 @@ const selectRoom = (roomName) => {
                     setShowPoisonPopup(true);
                     setTimeout(() => {
                       setShowPoisonPopup(false);
+                      notifyEventCompleted();
                     }, 5000);
                   }}
                 >
@@ -2110,7 +2134,10 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowPoisonPopup(false)}
+          onClick={() => {
+  setShowPoisonPopup(false);
+  notifyEventCompleted();  // NEW
+}}
           data-testid="poison-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#3a4a2a', borderColor: '#84cc16' }}>
@@ -2142,7 +2169,10 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowMimicPopup(false)}
+          onClick={() => {
+  setShowMimicPopup(false);
+  notifyEventCompleted();  // NEW
+}}
           data-testid="mimic-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a3a2a', borderColor: '#f59e0b' }}>
@@ -2158,7 +2188,10 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowMimicPopup(false), 1000)}
+                  onEnded={() => setTimeout(() => {
+  setShowMimicPopup(false);
+  notifyEventCompleted();
+}, 1000)}
                 >
                   <source src={mimicVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -2180,7 +2213,10 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowTeleportationPopup(false)}
+          onClick={() => {
+  setShowTeleportationPopup(false);
+  notifyEventCompleted();  // NEW
+}}
           data-testid="teleportation-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a3a4a', borderColor: '#06b6d4' }}>
@@ -2196,7 +2232,10 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowTeleportationPopup(false), 1000)}
+                  onEnded={() => setTimeout(() => {
+  setShowTeleportationPopup(false);
+  notifyEventCompleted();
+}, 1000)}
                 >
                   <source src={teleportationVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -2328,7 +2367,10 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowGoldFoundPopup(false)}
+          onClick={() => {
+  setShowGoldFoundPopup(false);
+  notifyEventCompleted();  // NEW
+}}
           data-testid="gold-found-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2d1b00', borderColor: '#FFD700' }}>
@@ -2499,7 +2541,10 @@ const selectRoom = (roomName) => {
                   Qu'avez-vous à me vendre ?
                 </Button>
                 <Button
-                  onClick={() => setShowMerchantPopup(false)}
+                  onClick={() => {
+                    setShowMerchantPopup(false);
+                    notifyEventCompleted();  // NEW
+                  }}
                   style={{ 
                     backgroundColor: '#555', 
                     color: '#fff',
@@ -2615,7 +2660,10 @@ const selectRoom = (roomName) => {
               {/* Close button */}
               <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
                 <Button
-                  onClick={() => setShowShopDialog(false)}
+                  onClick={() => {
+                    setShowShopDialog(false);
+                    notifyEventCompleted();  // NEW
+                  }}
                   style={{ 
                     backgroundColor: '#dc2626', 
                     color: '#fff',
