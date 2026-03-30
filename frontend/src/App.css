@@ -2927,4 +2927,39 @@ body {
     border-radius: 12px;
   }
 }
+/* ========== GOBLIN COMBAT ANIMATIONS ========== */
 
+@keyframes hitFlash {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes attackShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+}
+
+.combat-player-attack {
+  animation: attackShake 0.3s ease;
+}
+
+.combat-enemy-attack {
+  animation: attackShake 0.3s ease;
+}

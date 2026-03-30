@@ -115,6 +115,310 @@ const copyToClipboard = (text) => {
   }
 };
 
+
+// ========== GOBLIN COMBAT COMPONENT ==========
+const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
+  // L'orc a 6 PV, l'aventurier a 36 PV
+  const isDefender = event.defender_id === playerId;
+  const isAttacker = event.attacker_id === playerId;
+  
+  // Seul le DÉFENSEUR (survivant) simule le combat et envoie le résultat
+  const isSimulator = isDefender;
+  
+  // PV initiaux selon le rôle dans le combat
+  const [survivorHP, setSurvivorHP] = useState(36);
+  const [orcHP, setOrcHP] = useState(6);
+  const [turn, setTurn] = useState("survivor");
+  const [speed, setSpeed] = useState(400);
+  const [combatLog, setCombatLog] = useState([]);
+  const [combatOver, setCombatOver] = useState(false);
+  const [combatResult, setCombatResult] = useState(null);
+  const [survivorAttacking, setSurvivorAttacking] = useState(false);
+  const [orcAttacking, setOrcAttacking] = useState(false);
+  const [canClose, setCanClose] = useState(false);
+  const [totalDamageToSurvivor, setTotalDamageToSurvivor] = useState(0);
+
+  // Classes et noms
+  const survivorClass = event.defender_class;
+  const survivorName = event.defender_name || survivorClass;
+  const orcClass = event.attacker_class;
+  const orcName = event.attacker_name || orcClass;
+
+  // Images
+  const survivorImage = `/fight/${survivorClass}-fight.png`;
+  const orcImage = `/fight/Gobelin-fight.png`;
+
+  useEffect(() => {
+    // Seul le défenseur (survivant) simule le combat
+    if (!isSimulator) return;
+
+    let mounted = true;
+
+    const runCombat = async () => {
+      let currentSurvivorHP = 36;
+      let currentOrcHP = 6;
+      let currentTurn = "survivor";
+      let currentSpeed = 400;
+      const log = [];
+      let damageToSurvivor = 0;
+
+      while (currentSurvivorHP > 0 && currentOrcHP > 0 && mounted) {
+        await new Promise((resolve) => setTimeout(resolve, currentSpeed));
+
+        const damage = Math.floor(Math.random() * 6) + 1; // 1-6
+
+        if (currentTurn === "survivor") {
+          // Le survivant attaque l'orc
+          setSurvivorAttacking(true);
+          setTimeout(() => setSurvivorAttacking(false), 300);
+
+          currentOrcHP = Math.max(0, currentOrcHP - damage);
+          setOrcHP(currentOrcHP);
+          log.push(`⚔️ ${survivorClass} inflige ${damage} dégâts !`);
+          setCombatLog([...log]);
+
+          currentTurn = "orc";
+        } else {
+          // L'orc attaque le survivant
+          setOrcAttacking(true);
+          setTimeout(() => setOrcAttacking(false), 300);
+
+          currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
+          damageToSurvivor += damage;
+          setSurvivorHP(currentSurvivorHP);
+          setTotalDamageToSurvivor(damageToSurvivor);
+          log.push(`🩸 L'Orc inflige ${damage} dégâts !`);
+          setCombatLog([...log]);
+
+          currentTurn = "survivor";
+        }
+
+        setTurn(currentTurn);
+        currentSpeed = Math.max(120, currentSpeed - 40);
+        setSpeed(currentSpeed);
+      }
+
+      if (!mounted) return;
+
+      // Combat terminé
+      setCombatOver(true);
+      
+      // Résultat : si l'orc est à 0 PV, le survivant gagne
+      const result = currentOrcHP <= 0 ? "defender_win" : "attacker_win";
+      setCombatResult(result);
+
+      // Pause dramatique puis envoyer le résultat
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      try {
+        await axios.post(`${API}/game/${sessionId}/resolve_combat`, {
+          attacker_id: event.attacker_id,
+          defender_id: event.defender_id,
+          result: result,
+          damage_dealt: damageToSurvivor
+        });
+      } catch (error) {
+        console.error("Erreur lors de la résolution du combat:", error);
+      }
+
+      // Permettre de fermer après 1 seconde
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setCanClose(true);
+    };
+
+    runCombat();
+
+    return () => {
+      mounted = false;
+    };
+  }, [isSimulator, sessionId, event, survivorClass]);
+
+  // Pour l'attaquant (orc), on affiche juste une vue simplifiée
+  if (isAttacker && !isDefender) {
+    return (
+      <div
+        className="game-over-overlay"
+        style={{ zIndex: 3000, cursor: canClose ? "pointer" : "default" }}
+        onClick={() => canClose && onClose && onClose()}
+        data-testid="goblin-combat"
+      >
+        <Card
+          className="game-over-card"
+          style={{
+            maxWidth: "600px",
+            backgroundColor: "#2a1f17",
+            borderColor: "#d4af37",
+          }}
+        >
+          <CardHeader>
+            <CardTitle style={{ color: "#d4af37", textAlign: "center", fontSize: "1.8rem" }}>
+              ⚔️ COMBAT EN COURS !
+            </CardTitle>
+          </CardHeader>
+          <CardContent style={{ textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "2rem", marginBottom: "1.5rem" }}>
+              <div>
+                <img src={orcImage} alt={orcClass} style={{ width: "150px", height: "84px", objectFit: "contain" }} />
+                <p style={{ color: "#ef4444", fontWeight: "bold" }}>{orcClass}</p>
+              </div>
+              <span style={{ fontSize: "2rem", color: "#d4af37" }}>VS</span>
+              <div>
+                <img src={survivorImage} alt={survivorClass} style={{ width: "150px", height: "84px", objectFit: "contain" }} />
+                <p style={{ color: "#10b981", fontWeight: "bold" }}>{survivorClass}</p>
+              </div>
+            </div>
+            
+            <p style={{ color: "#e8dcc4", fontSize: "1.1rem", marginBottom: "1rem" }}>
+              Vous attaquez {survivorName} !
+            </p>
+            
+            <p style={{ color: "#888", fontSize: "0.9rem" }}>
+              En attente du résultat...
+            </p>
+
+            {canClose && (
+              <p style={{ color: "#d4af37", marginTop: "1rem", fontSize: "0.9rem" }}>
+                Cliquez pour fermer
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Vue pour le défenseur (survivant) - combat complet
+  return (
+    <div
+      className="game-over-overlay"
+      style={{ zIndex: 3000, cursor: canClose ? "pointer" : "default" }}
+      onClick={() => canClose && onClose && onClose()}
+      data-testid="goblin-combat"
+    >
+      <Card
+        className="game-over-card"
+        style={{
+          maxWidth: "800px",
+          backgroundColor: "#2a1f17",
+          borderColor: "#d4af37",
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: "#d4af37", textAlign: "center", fontSize: "1.8rem" }}>
+            ⚔️ COMBAT !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
+            {/* Survivant (vous) */}
+            <div style={{ textAlign: "center", flex: 1 }}>
+              <div style={{ position: "relative", marginBottom: "1rem" }}>
+                <img
+                  src={survivorImage}
+                  alt={survivorClass}
+                  style={{
+                    width: "200px",
+                    height: "112px",
+                    objectFit: "contain",
+                    transform: survivorAttacking ? "translateX(30px) scale(1.1)" : "translateX(0) scale(1)",
+                    transition: "transform 0.2s ease",
+                  }}
+                />
+                {survivorAttacking && (
+                  <div style={{ position: "absolute", top: "50%", right: "-20px", fontSize: "2rem" }}>💥</div>
+                )}
+              </div>
+              <h3 style={{ color: "#10b981", marginBottom: "0.5rem" }}>{survivorClass} (Vous)</h3>
+              <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
+                <div
+                  style={{
+                    width: `${(survivorHP / 36) * 100}%`,
+                    height: "100%",
+                    backgroundColor: survivorHP > 12 ? "#10b981" : "#ef4444",
+                    transition: "width 0.3s ease",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "0.75rem",
+                    fontWeight: "bold",
+                    color: "#fff",
+                  }}
+                >
+                  {survivorHP}/36
+                </div>
+              </div>
+            </div>
+
+            {/* VS */}
+            <div style={{ fontSize: "3rem", fontWeight: "bold", color: "#d4af37", margin: "0 2rem" }}>VS</div>
+
+            {/* Orc */}
+            <div style={{ textAlign: "center", flex: 1 }}>
+              <div style={{ position: "relative", marginBottom: "1rem" }}>
+                <img
+                  src={orcImage}
+                  alt="Orc"
+                  style={{
+                    width: "200px",
+                    height: "112px",
+                    objectFit: "contain",
+                    transform: orcAttacking ? "translateX(-30px) scale(1.1)" : "translateX(0) scale(1)",
+                    transition: "transform 0.2s ease",
+                  }}
+                />
+                {orcAttacking && (
+                  <div style={{ position: "absolute", top: "50%", left: "-20px", fontSize: "2rem" }}>💥</div>
+                )}
+              </div>
+              <h3 style={{ color: "#ef4444", marginBottom: "0.5rem" }}>{orcClass}</h3>
+              <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
+                <div
+                  style={{
+                    width: `${(orcHP / 6) * 100}%`,
+                    height: "100%",
+                    backgroundColor: orcHP > 2 ? "#ef4444" : "#991b1b",
+                    transition: "width 0.3s ease",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "0.75rem",
+                    fontWeight: "bold",
+                    color: "#fff",
+                  }}
+                >
+                  {orcHP}/6
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Combat Log */}
+          <div style={{ backgroundColor: "rgba(0,0,0,0.5)", padding: "1rem", borderRadius: "8px", maxHeight: "120px", overflowY: "auto", marginBottom: "1rem" }}>
+            {combatLog.map((logEntry, idx) => (
+              <div key={idx} style={{ color: "#e8dcc4", fontSize: "0.9rem", marginBottom: "0.3rem" }}>
+                {logEntry}
+              </div>
+            ))}
+          </div>
+
+          {combatOver && (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: "1.5rem", fontWeight: "bold", color: combatResult === "defender_win" ? "#10b981" : "#ef4444" }}>
+                {combatResult === "defender_win" ? "🎉 VICTOIRE ! Vous avez vaincu l'Orc !" : "💀 DÉFAITE ! L'Orc vous a terrassé !"}
+              </div>
+              {canClose && (
+                <p style={{ color: "#d4af37", marginTop: "1rem", fontSize: "0.9rem" }}>
+                  Cliquez pour fermer
+                </p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 const Home = () => {
   // Step: "menu" = create/join choice, "configure" = player setup
   const [step, setStep] = useState("menu");
@@ -1278,6 +1582,10 @@ const Game = () => {
   const [showRoleNotification, setShowRoleNotification] = useState(false); // NEW: role notification
   const [assignedRole, setAssignedRole] = useState(null); // NEW: assigned role
 
+  // NEW: Goblin combat popup states
+  const [showGoblinCombat, setShowGoblinCombat] = useState(false);
+  const [goblinCombatEvent, setGoblinCombatEvent] = useState(null);
+
   // NEW: Flashing rooms when teammates select
 const [flashingRooms, setFlashingRooms] = useState(new Set());
 const prevPendingActionsRef = useRef('{}');
@@ -1430,6 +1738,19 @@ const prevPendingActionsRef = useRef('{}');
 
       if (data.type === "state_update") {
         setGameState(data.game);
+
+        // Gérer l'événement de combat
+        if (data.type === "state_update" && data.game) {
+          const pendingEvents = data.game.pending_events || {};
+
+          if (
+            pendingEvents[storedPlayerId] &&
+            pendingEvents[storedPlayerId].type === "goblin_combat"
+          ) {
+            setGoblinCombatEvent(pendingEvents[storedPlayerId]);
+            setShowGoblinCombat(true);
+          }
+        }
         
         // NEW: Check if conspiracy mode and game just started - show role notification ONCE
         if (data.game.conspiracy_mode && 
@@ -1996,6 +2317,19 @@ const selectRoom = (roomName) => {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Goblin Combat Popup */}
+      {showGoblinCombat && goblinCombatEvent && (
+        <GoblinCombat
+          event={goblinCombatEvent}
+          playerId={playerId}
+          sessionId={sessionId}
+          onClose={() => {
+            setShowGoblinCombat(false);
+            setGoblinCombatEvent(null);
+          }}
+        />
       )}
 
       {/* NEW: Key Found Popup */}

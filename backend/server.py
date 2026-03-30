@@ -85,6 +85,12 @@ class PlayerAction(BaseModel):
     room: Optional[str] = None
     target_player: Optional[str] = None
 
+class ResolveCombatRequest(BaseModel):
+    attacker_id: str
+    defender_id: str
+    result: str  # "attacker_win" or "defender_win"
+
+
 # Helper functions
 def generate_short_code() -> str:
     """Generate a short 4-character alphanumeric code"""
@@ -1009,53 +1015,35 @@ async def process_turn(session_id: str):
         killer_room = killer["current_room"]
 
         found_survivor = False
-        # Check if any survivors are in the same room
-        for survivor_id, survivor in game["players"].items():
-            if (survivor["role"] == "survivor" and
-                not survivor["eliminated"] and
-                survivor["current_room"] == killer_room):
+        # Check for killer-survivor encounters
+    for killer_id, killer_action in killers_actions.items():
+        killer = game["players"][killer_id]
+        killer_room = killer_action.get("room")
 
-                # Eliminate the survivor
-                survivor["eliminated"] = True
-                survivor["gold"] = 0  # Reset gold when eliminated
-                game["rooms"][killer_room]["eliminated_players"].append(survivor_id)
-                eliminated_rooms.append(killer_room)
-                found_survivor = True
+        if not killer_room:
+            continue
 
-                # Get classes for fouille video
-                killer_class = killer.get("character_class", "")
-                survivor_class = survivor.get("character_class", "")
-                
-                # Build fouille video path: /fouilles/{killer_class}-{survivor_class}.mp4
-                fouille_video_path = f"/fouilles/{killer_class}-{survivor_class}.mp4" if killer_class and survivor_class else ""
+        # Find survivors in the same room
+        for survivor_id, survivor_action in survivors_actions.items():
+            survivor = game["players"][survivor_id]
+            survivor_room = survivor_action.get("room")
 
-                event_msg = f"💀 {survivor['name']} a été éliminé dans {killer_room} !"
-                game["events"].append({"message": event_msg, "type": "elimination"})
-                await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-                
-                # Send elimination popup to ALL players with fouille video
-                elimination_message = f"{killer['name']} fouille {killer_room} et tue {survivor['name']}"
-                await broadcast_to_session(session_id, {
-                    "type": "killer_elimination_popup",
-                    "killer_name": killer['name'],
-                    "survivor_name": survivor['name'],
-                    "room_name": killer_room,
-                    "killer_class": killer_class,
-                    "survivor_class": survivor_class,
-                    "fouille_video": fouille_video_path,
-                    "message": elimination_message
-                })
+            if survivor_room == killer_room and not survivor["eliminated"]:
+                # ✅ NOUVEAU : Déclencher un combat au lieu d'éliminer directement
+                combat_event = {
+                    "type": "goblin_combat",
+                    "attacker_id": killer_id,
+                    "defender_id": survivor_id,
+                    "attacker_class": killer.get("character_class", "Orc"),
+                    "defender_class": survivor.get("character_class", "Guerrier")
+                }
 
-                # If survivor had medikit, destroy it and respawn a new one
-                if survivor["has_medikit"]:
-                    survivor["has_medikit"] = False
-                    new_medikit_room = respawn_medikit(game)
-                    if new_medikit_room:
-                        respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
-                        game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
-                        await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
-        
-        # Check if this killer has rage power and found a survivor
+                # Ajouter l'event aux deux joueurs
+                game["pending_events"][survivor_id] = combat_event
+                game["pending_events"][killer_id] = combat_event
+
+                logger.info(f"⚔️ Combat déclenché : {killer['name']} VS {survivor['name']} dans {killer_room}")
+# Check if this killer has rage power and found a survivor
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
             if rage_data and not rage_data.get("used_second_chance", False):
@@ -1629,6 +1617,9 @@ async def start_game(session_id: str):
     """Start the game"""
     logger.info(f"Attempting to start game: {session_id}")
 
+
+
+
     if session_id not in game_sessions:
         logger.error(f"Session not found: {session_id}")
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1679,10 +1670,13 @@ async def start_game(session_id: str):
                 # Assign unique survivor avatar and class
                 if survivor_index < len(available_survivor_avatars):
                     avatar_data = available_survivor_avatars[survivor_index]
-                    game["players"][player_id]["avatar"] = avatar_data["path"]
-                    game["players"][player_id]["character_class"] = avatar_data["class"]
                     survivor_index += 1
-                    logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
+                else:
+                    avatar_data = random.choice(SURVIVOR_AVATARS)
+
+                game["players"][player_id]["avatar"] = avatar_data["path"]
+                game["players"][player_id]["character_class"] = avatar_data["class"]
+                logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
                 # Assign killer role
                 game["players"][player_id]["role"] = "killer"
@@ -1691,7 +1685,6 @@ async def start_game(session_id: str):
                 avatar_data = random.choice(available_killer_avatars)
                 game["players"][player_id]["avatar"] = avatar_data["path"]
                 game["players"][player_id]["character_class"] = avatar_data["class"]
-                killer_index += 1
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers with unique survivor classes")
