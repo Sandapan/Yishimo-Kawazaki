@@ -117,8 +117,8 @@ const copyToClipboard = (text) => {
 
 
 // ========== GOBLIN COMBAT COMPONENT ==========
-const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
-  // L'orc a 6 PV, l'aventurier a 36 PV
+const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
+  // L'orc a 6 PV, l'aventurier a ses PV actuels (depuis le serveur, défaut 36)
   const isDefender = event.defender_id === playerId;
   const isAttacker = event.attacker_id === playerId;
   
@@ -126,6 +126,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
   const isSimulator = isDefender;
   
   // PV initiaux selon le rôle dans le combat
+  const initialSurvivorHP = event.defender_hp || 36;
   const [survivorHP, setSurvivorHP] = useState(36);
   const [orcHP, setOrcHP] = useState(6);
   const [turn, setTurn] = useState("survivor");
@@ -148,6 +149,54 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
   const survivorImage = `/fight/${survivorClass}-fight.png`;
   const orcImage = `/fight/Gobelin-fight.png`;
 
+  // A) Attacker (orc) listens for combat logs from server
+  useEffect(() => {
+    if (!isAttacker || isDefender) return;
+    if (!wsRef?.current) return;
+
+    const ws = wsRef.current;
+
+    const handleMessage = (messageEvent) => {
+      try {
+        const data = JSON.parse(messageEvent.data);
+
+        // We accept multiple possible server message types to avoid breaking
+        if (data.type === "combat_log_update") {
+          // Ensure it's the correct combat
+          if (
+            data.attacker_id === event.attacker_id &&
+            data.defender_id === event.defender_id
+          ) {
+            if (data.log_entry) {
+              setCombatLog((prev) => [...prev, data.log_entry]);
+            } else if (data.entry) {
+              setCombatLog((prev) => [...prev, data.entry]);
+            }
+          }
+        }
+
+        // Optional: allow server to force close / end combat view
+        if (data.type === "combat_result") {
+          if (
+            data.attacker_id === event.attacker_id &&
+            data.defender_id === event.defender_id
+          ) {
+            if (data.result) setCombatResult(data.result);
+            setCombatOver(true);
+            setCanClose(true);
+          }
+        }
+      } catch (e) {
+        // ignore parsing errors
+      }
+    };
+
+    ws.addEventListener("message", handleMessage);
+
+    return () => {
+      ws.removeEventListener("message", handleMessage);
+    };
+  }, [isAttacker, isDefender, wsRef, event]);
   useEffect(() => {
     // Seul le défenseur (survivant) simule le combat
     if (!isSimulator) return;
@@ -155,7 +204,8 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
     let mounted = true;
 
     const runCombat = async () => {
-      let currentSurvivorHP = 36;
+      // Utiliser les PV actuels du survivant depuis le serveur
+      let currentSurvivorHP = initialSurvivorHP;
       let currentOrcHP = 6;
       let currentTurn = "survivor";
       let currentSpeed = 400;
@@ -166,6 +216,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
         await new Promise((resolve) => setTimeout(resolve, currentSpeed));
 
         const damage = Math.floor(Math.random() * 6) + 1; // 1-6
+        let logEntry = "";
 
         if (currentTurn === "survivor") {
           // Le survivant attaque l'orc
@@ -174,7 +225,8 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
 
           currentOrcHP = Math.max(0, currentOrcHP - damage);
           setOrcHP(currentOrcHP);
-          log.push(`⚔️ ${survivorClass} inflige ${damage} dégâts !`);
+          logEntry = `⚔️ ${survivorClass} inflige ${damage} dégâts !`;
+          log.push(logEntry);
           setCombatLog([...log]);
 
           currentTurn = "orc";
@@ -187,11 +239,21 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
           damageToSurvivor += damage;
           setSurvivorHP(currentSurvivorHP);
           setTotalDamageToSurvivor(damageToSurvivor);
-          log.push(`🩸 L'Orc inflige ${damage} dégâts !`);
+          logEntry = `🩸 L'Orc inflige ${damage} dégâts !`;
+          log.push(logEntry);
           setCombatLog([...log]);
 
           currentTurn = "survivor";
         }
+
+        // C) Send log entry to server (so attacker can see it)
+        try {
+          await axios.post(`${API}/game/${sessionId}/combat_log`, {
+            attacker_id: event.attacker_id,
+            defender_id: event.defender_id,
+            log_entry: logEntry,
+          });
+        } catch (e) {}
 
         setTurn(currentTurn);
         currentSpeed = Math.max(120, currentSpeed - 40);
@@ -233,7 +295,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
     };
   }, [isSimulator, sessionId, event, survivorClass]);
 
-  // Pour l'attaquant (orc), on affiche juste une vue simplifiée
+  // Pour l'attaquant (orc), on affiche la vue avec les logs (sans simuler le combat)
   if (isAttacker && !isDefender) {
     return (
       <div
@@ -245,39 +307,125 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose }) => {
         <Card
           className="game-over-card"
           style={{
-            maxWidth: "600px",
+            maxWidth: "800px",
             backgroundColor: "#2a1f17",
             borderColor: "#d4af37",
           }}
         >
           <CardHeader>
             <CardTitle style={{ color: "#d4af37", textAlign: "center", fontSize: "1.8rem" }}>
-              ⚔️ COMBAT EN COURS !
+              ⚔️ COMBAT !
             </CardTitle>
           </CardHeader>
-          <CardContent style={{ textAlign: "center" }}>
-            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "2rem", marginBottom: "1.5rem" }}>
-              <div>
-                <img src={orcImage} alt={orcClass} style={{ width: "150px", height: "84px", objectFit: "contain" }} />
-                <p style={{ color: "#ef4444", fontWeight: "bold" }}>{orcClass}</p>
+          <CardContent>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
+              {/* Orc (vous) */}
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ position: "relative", marginBottom: "1rem" }}>
+                  <img
+                    src={orcImage}
+                    alt={orcClass}
+                    style={{
+                      width: "200px",
+                      height: "112px",
+                      objectFit: "contain",
+                      transform: orcAttacking ? "translateX(-30px) scale(1.1)" : "translateX(0) scale(1)",
+                      transition: "transform 0.2s ease",
+                    }}
+                  />
+                  {orcAttacking && (
+                    <div style={{ position: "absolute", top: "50%", left: "-20px", fontSize: "2rem" }}>💥</div>
+                  )}
+                </div>
+                <h3 style={{ color: "#ef4444", marginBottom: "0.5rem" }}>{orcClass} (Vous)</h3>
+                <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
+                  <div
+                    style={{
+                      width: `${(orcHP / 6) * 100}%`,
+                      height: "100%",
+                      backgroundColor: orcHP > 2 ? "#ef4444" : "#991b1b",
+                      transition: "width 0.3s ease",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                      color: "#fff",
+                    }}
+                  >
+                    {orcHP}/6
+                  </div>
+                </div>
               </div>
-              <span style={{ fontSize: "2rem", color: "#d4af37" }}>VS</span>
-              <div>
-                <img src={survivorImage} alt={survivorClass} style={{ width: "150px", height: "84px", objectFit: "contain" }} />
-                <p style={{ color: "#10b981", fontWeight: "bold" }}>{survivorClass}</p>
+
+              {/* VS */}
+              <div style={{ fontSize: "3rem", fontWeight: "bold", color: "#d4af37", margin: "0 2rem" }}>VS</div>
+
+              {/* Survivant */}
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ position: "relative", marginBottom: "1rem" }}>
+                  <img
+                    src={survivorImage}
+                    alt={survivorClass}
+                    style={{
+                      width: "200px",
+                      height: "112px",
+                      objectFit: "contain",
+                      transform: survivorAttacking ? "translateX(30px) scale(1.1)" : "translateX(0) scale(1)",
+                      transition: "transform 0.2s ease",
+                    }}
+                  />
+                  {survivorAttacking && (
+                    <div style={{ position: "absolute", top: "50%", right: "-20px", fontSize: "2rem" }}>💥</div>
+                  )}
+                </div>
+                <h3 style={{ color: "#10b981", marginBottom: "0.5rem" }}>{survivorClass}</h3>
+                <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
+                  <div
+                    style={{
+                      width: `${(survivorHP / initialSurvivorHP) * 100}%`,
+                      height: "100%",
+                      backgroundColor: survivorHP > 12 ? "#10b981" : "#ef4444",
+                      transition: "width 0.3s ease",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.75rem",
+                      fontWeight: "bold",
+                      color: "#fff",
+                    }}
+                  >
+                    {survivorHP}/{initialSurvivorHP}
+                  </div>
+                </div>
               </div>
             </div>
-            
-            <p style={{ color: "#e8dcc4", fontSize: "1.1rem", marginBottom: "1rem" }}>
-              Vous attaquez {survivorName} !
-            </p>
-            
-            <p style={{ color: "#888", fontSize: "0.9rem" }}>
-              En attente du résultat...
-            </p>
+
+            {/* Combat Log */}
+            <div style={{ backgroundColor: "rgba(0,0,0,0.5)", padding: "1rem", borderRadius: "8px", maxHeight: "120px", overflowY: "auto", marginBottom: "1rem" }}>
+              {combatLog.length === 0 ? (
+                <div style={{ color: "#888", textAlign: "center" }}>En attente des actions...</div>
+              ) : (
+                combatLog.map((entry, idx) => (
+                  <div key={idx} style={{ color: "#e8dcc4", fontSize: "0.9rem", marginBottom: "0.3rem" }}>
+                    {entry}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {combatOver && (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: "1.5rem", fontWeight: "bold", color: combatResult === "attacker_win" ? "#10b981" : "#ef4444" }}>
+                  {combatResult === "attacker_win"
+                    ? "🎉 VICTOIRE ! Vous avez vaincu l'aventurier !"
+                    : "💀 DÉFAITE ! L'aventurier vous a repoussé !"}
+                </div>
+              </div>
+            )}
 
             {canClose && (
-              <p style={{ color: "#d4af37", marginTop: "1rem", fontSize: "0.9rem" }}>
+              <p style={{ color: "#d4af37", marginTop: "1rem", fontSize: "0.9rem", textAlign: "center" }}>
                 Cliquez pour fermer
               </p>
             )}
@@ -2325,6 +2473,7 @@ const selectRoom = (roomName) => {
           event={goblinCombatEvent}
           playerId={playerId}
           sessionId={sessionId}
+          wsRef={ws}
           onClose={() => {
             setShowGoblinCombat(false);
             setGoblinCombatEvent(null);
@@ -3554,6 +3703,12 @@ const selectRoom = (roomName) => {
                     <span className="status-name">{player.name}</span>
                     {player.role === "killer" && <span className="status-role killer">🔪</span>}
                     {player.role === "survivor" && <span className="status-role survivor">🛡️</span>}
+                    {/* Afficher les PV pour les aventuriers */}
+                    {player.role === "survivor" && player.hp !== undefined && !player.eliminated && (
+                      <span className="status-hp" style={{ color: player.hp > 12 ? '#ef4444' : '#ff6b6b', fontWeight: 'bold', marginLeft: '4px' }}>
+                        ❤️{player.hp}
+                      </span>
+                    )}
                     {player.has_medikit && <span className="status-medikit">⚗️</span>}
                     {player.has_antidote && <span className="status-antidote">💊</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}

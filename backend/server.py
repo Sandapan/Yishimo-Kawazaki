@@ -152,7 +152,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "immobilized_next_turn": False,  # NEW: for piege power
                 "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
                 "gold": 0,  # NEW: gold accumulated by survivors
-                "has_antidote": False  # NEW: for merchant system - antidote item
+                "has_antidote": False,  # NEW: for merchant system - antidote item
+                "hp": 36 if host_role == "survivor" else None  # PV pour les aventuriers (36 au départ)
             }
         },
         "rooms": rooms_state,
@@ -1035,14 +1036,17 @@ async def process_turn(session_id: str):
                     "attacker_id": killer_id,
                     "defender_id": survivor_id,
                     "attacker_class": killer.get("character_class", "Orc"),
-                    "defender_class": survivor.get("character_class", "Guerrier")
+                    "defender_class": survivor.get("character_class", "Survivor"),
+                    "attacker_name": killer.get("name", "Orc"),
+                    "defender_name": survivor.get("name", "Aventurier"),
+                    "defender_hp": survivor.get("hp", 36)  # PV actuels du survivant
                 }
 
                 # Ajouter l'event aux deux joueurs
                 game["pending_events"][survivor_id] = combat_event
                 game["pending_events"][killer_id] = combat_event
 
-                logger.info(f"⚔️ Combat déclenché : {killer['name']} VS {survivor['name']} dans {killer_room}")
+                logger.info(f"⚔️ Combat déclenché : {killer['name']} VS {survivor['name']} dans {killer_room} (PV survivant: {survivor.get('hp', 36)})")
 # Check if this killer has rage power and found a survivor
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
@@ -1592,7 +1596,8 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "immobilized_next_turn": False,  # NEW: for piege power
         "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
         "gold": 0,  # NEW: gold accumulated by survivors
-        "has_antidote": False  # NEW: for merchant system - antidote item
+        "has_antidote": False,  # NEW: for merchant system - antidote item
+        "hp": 36 if request.role == "survivor" else None  # PV pour les aventuriers (36 au départ)
     }
 
     # Broadcast new player joined
@@ -1676,6 +1681,7 @@ async def start_game(session_id: str):
 
                 game["players"][player_id]["avatar"] = avatar_data["path"]
                 game["players"][player_id]["character_class"] = avatar_data["class"]
+                game["players"][player_id]["hp"] = 36  # PV pour les aventuriers
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
                 # Assign killer role
@@ -1685,6 +1691,7 @@ async def start_game(session_id: str):
                 avatar_data = random.choice(available_killer_avatars)
                 game["players"][player_id]["avatar"] = avatar_data["path"]
                 game["players"][player_id]["character_class"] = avatar_data["class"]
+                game["players"][player_id]["hp"] = None  # Les orcs n'ont pas de PV
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers with unique survivor classes")
@@ -1781,11 +1788,13 @@ async def reset_game(session_id: str):
         player["poisoned_countdown"] = 0
         player["gold"] = 0
         player["has_antidote"] = False
+        # Réinitialiser les PV des survivants à 36
+        player["hp"] = 36 if player.get("role") == "survivor" else None
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
         
-        logger.info(f"Reset player {player['name']} (id={player_id}), is_host={is_host}")
+        logger.info(f"Reset player {player['name']} (id={player_id}), is_host={is_host}, hp={player.get('hp')}")
     
     # Reset rooms
     for room_name, room_data in game["rooms"].items():
@@ -1923,6 +1932,8 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["character_class"] = character_class
     game["players"][player_id]["role"] = request.role
     game["players"][player_id]["is_host"] = is_host  # Preserve host status
+     # Mettre à jour les PV selon le rôle (36 pour survivants, None pour orcs)
+    game["players"][player_id]["hp"] = 36 if request.role == "survivor" else None
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
@@ -2025,6 +2036,147 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     })
     
     return {"status": "success", "message": f"{item['name']} acheté !"}
+
+# Combat resolution models
+class CombatLogUpdate(BaseModel):
+    attacker_id: str
+    defender_id: str
+    log_entry: str
+
+class CombatResultRequest(BaseModel):
+    attacker_id: str
+    defender_id: str
+    result: str  # "defender_win" or "attacker_win"
+    damage_dealt: int = 0
+    combat_log: List[str] = []
+
+@api_router.post("/game/{session_id}/combat_log")
+async def send_combat_log(session_id: str, request: CombatLogUpdate):
+    """Send a combat log entry to the attacker (orc) in real-time"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    attacker_id = request.attacker_id
+    
+    # Send log entry to the attacker via WebSocket
+    if session_id in active_connections and attacker_id in active_connections[session_id]:
+        try:
+            await active_connections[session_id][attacker_id].send_json({
+                "type": "combat_log_update",
+                "log_entry": request.log_entry,
+                "attacker_id": request.attacker_id,
+                "defender_id": request.defender_id
+            })
+        except Exception as e:
+            logger.error(f"Failed to send combat log to attacker: {e}")
+    
+    return {"status": "success"}
+
+@api_router.post("/game/{session_id}/resolve_combat")
+async def resolve_combat(session_id: str, request: CombatResultRequest):
+    """Resolve a combat between an orc and a survivor"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    attacker_id = request.attacker_id
+    defender_id = request.defender_id
+    result = request.result
+    
+    logger.info(f"⚔️ Résolution combat: attacker={attacker_id}, defender={defender_id}, result={result}, damage_dealt={request.damage_dealt}")
+    
+    # Get player info
+    attacker = game["players"].get(attacker_id)
+    defender = game["players"].get(defender_id)
+    
+    if not attacker or not defender:
+        raise HTTPException(status_code=404, detail="Player not found")
+ 
+     # Mettre à jour les PV du survivant (défenseur) - les dégâts subis pendant le combat
+    if defender.get("hp") is not None and request.damage_dealt > 0:
+        defender["hp"] = max(0, defender["hp"] - request.damage_dealt)
+        logger.info(f"❤️ PV de {defender['name']} mis à jour: {defender['hp']} (dégâts subis: {request.damage_dealt})")
+   
+    # Handle combat result
+    if result == "attacker_win":
+        # Orc wins - survivor is eliminated (PV à 0)
+        defender["eliminated"] = True
+        defender["hp"] = 0  # Assurer que les PV sont à 0
+        defender["gold"] = 0
+        defender_room = defender.get("current_room")
+        if defender_room and defender_room in game["rooms"]:
+            game["rooms"][defender_room]["eliminated_players"].append(defender_id)
+        
+        # Log event
+        event_msg = f"💀 {defender['name']} a été vaincu par {attacker['name']} !"
+        game["events"].append({"message": event_msg, "type": "combat_elimination"})
+        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    else:
+        # Survivor wins - on vérifie si ses PV sont à 0 (il devrait être éliminé)
+        if defender.get("hp") is not None and defender["hp"] <= 0:
+            defender["eliminated"] = True
+            defender["gold"] = 0
+            defender_room = defender.get("current_room")
+            if defender_room and defender_room in game["rooms"]:
+                game["rooms"][defender_room]["eliminated_players"].append(defender_id)
+
+            event_msg = f"💀 {defender['name']} a succombé à ses blessures après le combat !"
+            game["events"].append({"message": event_msg, "type": "combat_elimination"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+
+            
+        else:
+            # Survivor wins and still has HP       
+            event_msg = f"⚔️ {defender['name']} a repoussé l'attaque de {attacker['name']} !"
+            game["events"].append({"message": event_msg, "type": "combat_survived"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Send combat result to the attacker (orc) so they can close the modal
+    if session_id in active_connections and attacker_id in active_connections[session_id]:
+        try:
+            await active_connections[session_id][attacker_id].send_json({
+                "type": "combat_result",
+                "result": result,
+                "winner": "attacker" if result == "attacker_win" else "defender",
+                "attacker_name": attacker["name"],
+                "defender_name": defender["name"],
+                "combat_log": request.combat_log,
+                "attacker_id": attacker_id,
+                "defender_id": defender_id
+            })
+        except Exception as e:
+            logger.error(f"Failed to send combat result to attacker: {e}")
+    
+    # Clear pending events for both players
+    if defender_id in game.get("pending_events", {}):
+        del game["pending_events"][defender_id]
+    if attacker_id in game.get("pending_events", {}):
+        del game["pending_events"][attacker_id]
+    
+    # Broadcast updated state
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    # Check victory conditions after combat
+    alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    if len(alive_survivors) == 0:
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        survivor_msg = "💀 DÉFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "🎉 VICTOIRE ! Tous les survivants ont été éliminés !"
+        
+        game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
+        game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
+        
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
+        await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
+    
+    return {"status": "success", "result": result}
 
 # WebSocket endpoint
 @app.websocket("/api/ws/{session_id}/{player_id}")
