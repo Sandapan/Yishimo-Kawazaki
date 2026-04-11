@@ -567,6 +567,628 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   );
 };
 
+// ========== SPRITE SHEET ANIMATOR COMPONENT ==========
+const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows, totalFrames, frameDuration = 100, loop = true, onAnimationEnd }) => {
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const canvasRef = useRef(null);
+  const imageRef = useRef(null);
+  const animationRef = useRef(null);
+
+  useEffect(() => {
+    const image = new Image();
+    image.src = spriteSheet;
+    image.onload = () => {
+      imageRef.current = image;
+    };
+  }, [spriteSheet]);
+
+  useEffect(() => {
+    if (!imageRef.current || !canvasRef.current) return;
+    
+    // Attendre que l'image soit complètement chargée
+    if (!imageRef.current.complete) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    
+    // Calculer la position de la frame dans la sprite sheet
+    const col = currentFrame % cols;
+    const row = Math.floor(currentFrame / cols);
+    
+    // Effacer le canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Dessiner la frame actuelle
+    try {
+      ctx.drawImage(
+        imageRef.current,
+        col * frameWidth,      // source X
+        row * frameHeight,     // source Y
+        frameWidth,            // source largeur
+        frameHeight,           // source hauteur
+        0,                     // destination X
+        0,                     // destination Y
+        canvas.width,          // destination largeur
+        canvas.height          // destination hauteur
+      );
+    } catch (error) {
+      console.error('Erreur lors du dessin de la frame:', error);
+    }
+  }, [currentFrame, frameWidth, frameHeight, cols, rows]);
+
+  useEffect(() => {
+    const animate = () => {
+      setCurrentFrame(prev => {
+        const nextFrame = prev + 1;
+        if (nextFrame >= totalFrames) {
+          if (loop) {
+            return 0;
+          } else {
+            if (onAnimationEnd) onAnimationEnd();
+            return prev; // Rester sur la dernière frame
+          }
+        }
+        return nextFrame;
+      });
+    };
+
+    animationRef.current = setInterval(animate, frameDuration);
+
+    return () => {
+      if (animationRef.current) {
+        clearInterval(animationRef.current);
+      }
+    };
+  }, [totalFrames, frameDuration, loop, onAnimationEnd]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={200}  // Taille d'affichage à l'écran
+      height={115} // Ratio 800:462 ≈ 200:115
+      style={{ imageRendering: 'pixelated' }}
+    />
+  );
+};
+
+// Fonction de hash simple pour générer des nombres déterministes
+const hashCode = (str) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+};
+
+// ========== MULTIPLAYER COMBAT COMPONENT ==========
+const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
+  const isAttacker = event.attacker_id === playerId;
+  const isSurvivor = event.survivors.some(s => s.id === playerId);
+  
+  // NOUVEAU : Tous les clients simulent le combat localement (déterministe)
+  // Seul le PREMIER survivant envoie les résultats au serveur
+  const isSimulator = isSurvivor && event.survivors[0].id === playerId;
+  const shouldSimulate = true; // Tous les clients simulent
+  
+  // État du combat
+  const [combatants, setCombatants] = useState([]);
+  const [currentTurnIndex, setCurrentTurnIndex] = useState(0);
+  const [combatLog, setCombatLog] = useState([]);
+  const [combatOver, setCombatOver] = useState(false);
+  const [canClose, setCanClose] = useState(false);
+  const [animatingEntity, setAnimatingEntity] = useState(null); // {id, type: 'attack' | 'hurt'}
+  const [damageIndicators, setDamageIndicators] = useState({}); // {entityId: {damage: number, timestamp: number}}
+
+  // Initialiser les combattants avec initiative
+  useEffect(() => {
+    const fighters = [];
+    
+    // Ajouter les survivants
+    event.survivors.forEach((survivor, idx) => {
+      fighters.push({
+        id: survivor.id,
+        name: survivor.name,
+        class: survivor.class,
+        type: 'survivor',
+        hp: survivor.hp,
+        maxHp: survivor.hp,
+        initiative: Math.floor((hashCode(survivor.id + event.attacker_id) % 20) + 1),
+        position: idx, // Position 0-3
+        alive: true,
+        currentAnimation: 'idle'
+      });
+    });
+    
+    // Ajouter les gobelins
+    for (let i = 0; i < event.num_goblins; i++) {
+      fighters.push({
+        id: `goblin_${i}`,
+        name: `Gobelin ${i + 1}`,
+        class: 'Goblin',
+        type: 'goblin',
+        hp: event.goblin_hp,
+        maxHp: event.goblin_hp,
+        initiative: Math.floor((hashCode(`goblin_${i}` + event.attacker_id) % 20) + 1),
+        position: i, // Position 0-3
+        alive: true,
+        currentAnimation: 'idle'
+      });
+    }
+    
+    // Trier par initiative (du plus haut au plus bas)
+    fighters.sort((a, b) => b.initiative - a.initiative);
+    
+    setCombatants(fighters);
+    
+    const initLog = [`⚔️ Combat commencé ! Ordre d'initiative :`];
+    fighters.forEach(f => {
+      initLog.push(`${f.name} (${f.initiative})`);
+    });
+    setCombatLog(initLog);
+  }, [event]);
+
+  // Écouter les événements de combat via WebSocket (TOUS les clients)
+  useEffect(() => {
+    if (!wsRef || !wsRef.current) return;
+
+    const handleCombatUpdate = (data) => {
+      if (data.type === 'combat_update') {
+        // Mettre à jour les combattants
+        setCombatants(data.combatants);
+        
+        // Mettre à jour l'animation
+        if (data.animatingEntity) {
+          setAnimatingEntity(data.animatingEntity);
+          
+          // Retour à idle après l'animation
+          setTimeout(() => {
+            setAnimatingEntity(null);
+          }, data.animatingEntity.type === 'attack' ? 1000 : 600);
+        }
+        
+        // Ajouter au log
+        if (data.logEntry) {
+          setCombatLog(prev => [...prev, data.logEntry]);
+        }
+      } else if (data.type === 'combat_over') {
+        setCombatOver(true);
+        setTimeout(() => {
+          setCanClose(true);
+        }, 2000);
+      }
+    };
+
+    wsRef.current.addEventListener('message', (event) => {
+      const data = JSON.parse(event.data);
+      handleCombatUpdate(data);
+    });
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.removeEventListener('message', handleCombatUpdate);
+      }
+    };
+  }, [wsRef]);
+
+  // Simuler le combat (TOUS les clients, de manière déterministe)
+  useEffect(() => {
+    if (!shouldSimulate || combatants.length === 0) return;
+
+    let mounted = true;
+    let turnIndex = 0;
+    let fighters = [...combatants];
+
+    const runCombat = async () => {
+      while (mounted) {
+        // Vérifier les conditions de victoire
+        const aliveSurvivors = fighters.filter(f => f.type === 'survivor' && f.alive);
+        const aliveGoblins = fighters.filter(f => f.type === 'goblin' && f.alive);
+        
+        if (aliveSurvivors.length === 0 || aliveGoblins.length === 0) {
+          // Combat terminé
+          setCombatOver(true);
+          
+          // Broadcaster la fin du combat à tous les clients
+          
+          // Préparer les résultats
+          const survivorsResults = event.survivors.map(survivor => {
+            const fighter = fighters.find(f => f.id === survivor.id);
+            const damageDealt = survivor.hp - (fighter?.hp || 0);
+            return {
+              id: survivor.id,
+              damage_dealt: Math.max(0, damageDealt),
+              eliminated: !fighter || !fighter.alive
+            };
+          });
+          
+          const goblinsDefeated = event.num_goblins - aliveGoblins.length;
+          
+          // Seul le simulateur envoie les résultats au serveur
+          if (isSimulator) {
+            try {
+              await axios.post(`${API}/game/${sessionId}/resolve_multiplayer_combat`, {
+                attacker_id: event.attacker_id,
+                survivors_results: survivorsResults,
+                goblins_defeated: goblinsDefeated,
+                combat_log: combatLog
+              });
+            } catch (error) {
+              console.error("Erreur lors de la résolution du combat:", error);
+            }
+          }
+          
+          // TOUS les clients peuvent fermer après 2 secondes
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          setCanClose(true);
+          break;
+        }
+        
+        // Tour du combattant actuel
+        const attacker = fighters[turnIndex % fighters.length];
+        
+        // Passer si le combattant est mort
+        if (!attacker.alive) {
+          turnIndex++;
+          continue;
+        }
+        
+        // Trouver une cible aléatoire dans le camp opposé
+        const targets = fighters.filter(f => 
+          f.type !== attacker.type && f.alive
+        );
+        
+        if (targets.length === 0) {
+          turnIndex++;
+          continue;
+        }
+        
+        const target = targets[Math.floor(Math.random() * targets.length)];
+        
+        // Animation d'attaque - Broadcaster à tous les clients
+        const attackAnim = { id: attacker.id, type: 'attack' };
+        setAnimatingEntity(attackAnim);
+
+        
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Augmenté à 1 seconde
+        
+        // Calculer les dégâts
+        const damage = Math.floor(Math.random() * 6) + 1;
+        target.hp = Math.max(0, target.hp - damage);
+        
+        if (target.hp <= 0) {
+          target.alive = false;
+        }
+        
+        // Afficher l'indicateur de dégâts
+        setDamageIndicators(prev => ({
+          ...prev,
+          [target.id]: { damage: damage, timestamp: Date.now() }
+        }));
+        
+        // Faire disparaître l'indicateur après 1.5 secondes
+        setTimeout(() => {
+          setDamageIndicators(prev => {
+            const newIndicators = { ...prev };
+            delete newIndicators[target.id];
+            return newIndicators;
+          });
+        }, 1500);
+        
+        // Animation de blessure sur la cible - Broadcaster à tous les clients
+        const hurtAnim = { id: target.id, type: 'hurt' };
+        setAnimatingEntity(hurtAnim);
+
+        
+        await new Promise(resolve => setTimeout(resolve, 800)); // Augmenté
+        
+        // Retour à idle
+        setAnimatingEntity(null);
+        
+        // Log de l'action
+        const logEntry = `${attacker.name} attaque ${target.name} : ${damage} dégâts ! (${target.hp}/${target.maxHp} HP)`;
+        setCombatLog(prev => [...prev, logEntry]);
+        
+        // Broadcaster le log et les HP mis à jour
+
+        
+        // Mettre à jour l'état
+        setCombatants([...fighters]);
+        
+        // Attendre avant le prochain tour (augmenté pour mieux voir les animations)
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Augmenté à 1.5 secondes
+        
+        turnIndex++;
+      }
+    };
+
+    runCombat();
+
+    return () => {
+      mounted = false;
+    };
+  }, [isSimulator, combatants.length, sessionId, event, wsRef]);
+
+  // Fonction pour obtenir le sprite sheet approprié
+  const getSpriteSheet = (combatant, animationType) => {
+    if (combatant.type === 'goblin') {
+      return `/fight/Goblin_${animationType}.png`;
+    } else {
+      return `/fight/${combatant.class}_${animationType}.png`;
+    }
+  };
+
+  // Fonction pour obtenir les paramètres de sprite sheet
+  const getSpriteParams = (combatant, animationType) => {
+    if (combatant.type === 'goblin') {
+      switch (animationType) {
+        case 'idle': return { cols: 5, rows: 4, totalFrames: 20 };
+        case 'attack': return { cols: 5, rows: 2, totalFrames: 10 };
+        case 'hurt': return { cols: 5, rows: 4, totalFrames: 20 };
+        default: return { cols: 5, rows: 4, totalFrames: 20 };
+      }
+    } else {
+      switch (animationType) {
+        case 'idle': return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'attack': return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'hurt': return { cols: 5, rows: 2, totalFrames: 10 };
+        default: return { cols: 5, rows: 6, totalFrames: 30 };
+      }
+    }
+  };
+
+  // Calculer les positions des combattants
+  const getPosition = (combatant) => {
+    const positions = [
+      { bottom: '15%', top: 'auto' },
+      { bottom: '35%', top: 'auto' },
+      { bottom: '55%', top: 'auto' },
+      { bottom: '75%', top: 'auto' }
+    ];
+    return positions[combatant.position] || positions[0];
+  };
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{ zIndex: 3000, cursor: (canClose || combatOver) ? "pointer" : "default" }}
+      onClick={() => (canClose || combatOver) && onClose && onClose()}
+      data-testid="multiplayer-combat"
+    >
+      <div style={{
+        position: 'relative',
+        width: '90%',
+        maxWidth: '1200px',
+        height: '80vh',
+        backgroundImage: 'url(/fight/Ground.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        borderRadius: '12px',
+        border: '4px solid #d4af37',
+        overflow: 'hidden'
+      }}>
+        {/* Survivants (à gauche) */}
+        {combatants.filter(c => c.type === 'survivor').map((combatant, idx) => {
+          const animationType = animatingEntity?.id === combatant.id 
+            ? animatingEntity.type 
+            : 'idle';
+          const spriteParams = getSpriteParams(combatant, animationType);
+          
+          return (
+            <div
+              key={combatant.id}
+              style={{
+                position: 'absolute',
+                left: animatingEntity?.id === combatant.id && animatingEntity.type === 'attack' ? '30%' : '10%',
+                ...getPosition(combatant),
+                opacity: combatant.alive ? 1 : 0.3,
+                transition: 'all 0.4s ease-out'
+              }}
+            >
+              <SpriteSheetAnimator
+                spriteSheet={getSpriteSheet(combatant, animationType)}
+                frameWidth={800}
+                frameHeight={462}
+                cols={spriteParams.cols}
+                rows={spriteParams.rows}
+                totalFrames={spriteParams.totalFrames}
+                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : 100}
+                loop={animationType === 'idle'}
+              />
+              
+              {/* Indicateur de dégâts */}
+              {damageIndicators[combatant.id] && (
+                <div style={{
+                  position: 'absolute',
+                  top: '-30px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  fontSize: '28px',
+                  fontWeight: 'bold',
+                  color: '#ff0000',
+                  textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
+                  animation: 'floatUp 1.5s ease-out',
+                  pointerEvents: 'none',
+                  zIndex: 1000
+                }}>
+                  -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              
+              {/* Barre de vie */}
+              <div style={{
+                width: '200px',
+                height: '12px',
+                backgroundColor: '#333',
+                borderRadius: '6px',
+                overflow: 'hidden',
+                marginTop: '5px',
+                border: '2px solid #d4af37'
+              }}>
+                <div style={{
+                  width: `${(combatant.hp / combatant.maxHp) * 100}%`,
+                  height: '100%',
+                  backgroundColor: combatant.hp > combatant.maxHp * 0.3 ? '#10b981' : '#ef4444',
+                  transition: 'width 0.3s'
+                }} />
+              </div>
+              <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+                {combatant.name} ({combatant.hp}/{combatant.maxHp})
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Gobelins (à droite) */}
+        {combatants.filter(c => c.type === 'goblin').map((combatant, idx) => {
+          const animationType = animatingEntity?.id === combatant.id 
+            ? animatingEntity.type 
+            : 'idle';
+          const spriteParams = getSpriteParams(combatant, animationType);
+          
+          return (
+            <div
+              key={combatant.id}
+              style={{
+                position: 'absolute',
+                right: animatingEntity?.id === combatant.id && animatingEntity.type === 'attack' ? '30%' : '10%',
+                ...getPosition(combatant),
+                opacity: combatant.alive ? 1 : 0.3,
+                transition: 'all 0.4s ease-out',
+                transform: 'scaleX(-1)' // Miroir pour faire face aux survivants
+              }}
+            >
+              <SpriteSheetAnimator
+                spriteSheet={getSpriteSheet(combatant, animationType)}
+                frameWidth={800}
+                frameHeight={462}
+                cols={spriteParams.cols}
+                rows={spriteParams.rows}
+                totalFrames={spriteParams.totalFrames}
+                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : 100}
+                loop={animationType === 'idle'}
+              />
+              
+              {/* Indicateur de dégâts */}
+              {damageIndicators[combatant.id] && (
+                <div style={{
+                  position: 'absolute',
+                  top: '-30px',
+                  left: '50%',
+                  transform: 'translateX(-50%) scaleX(-1)', // Re-miroir pour le texte
+                  fontSize: '28px',
+                  fontWeight: 'bold',
+                  color: '#ff0000',
+                  textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
+                  animation: 'floatUp 1.5s ease-out',
+                  pointerEvents: 'none',
+                  zIndex: 1000
+                }}>
+                  -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              
+              {/* Barre de vie */}
+              <div style={{
+                width: '200px',
+                height: '12px',
+                backgroundColor: '#333',
+                borderRadius: '6px',
+                overflow: 'hidden',
+                marginTop: '5px',
+                border: '2px solid #d4af37',
+                transform: 'scaleX(-1)' // Re-miroir pour la barre de vie
+              }}>
+                <div style={{
+                  width: `${(combatant.hp / combatant.maxHp) * 100}%`,
+                  height: '100%',
+                  backgroundColor: combatant.hp > combatant.maxHp * 0.3 ? '#ef4444' : '#991b1b',
+                  transition: 'width 0.3s'
+                }} />
+              </div>
+              <div style={{ 
+                color: '#fff', 
+                textAlign: 'center', 
+                fontSize: '14px', 
+                fontWeight: 'bold', 
+                textShadow: '2px 2px 4px #000',
+                transform: 'scaleX(-1)' // Re-miroir pour le texte
+              }}>
+                {combatant.name} ({combatant.hp}/{combatant.maxHp})
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Combat Log */}
+        <div style={{
+          position: 'absolute',
+          bottom: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: '80%',
+          maxHeight: '150px',
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          borderRadius: '8px',
+          padding: '10px',
+          overflowY: 'auto',
+          border: '2px solid #d4af37'
+        }}>
+          {combatLog.map((entry, idx) => (
+            <div key={idx} style={{ color: '#e8dcc4', fontSize: '12px', marginBottom: '3px' }}>
+              {entry}
+            </div>
+          ))}
+        </div>
+
+        {/* Message de fin */}
+        {combatOver && (
+          <div style={{
+            position: 'absolute',
+            top: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: 'rgba(0, 0, 0, 0.9)',
+            padding: '20px 40px',
+            borderRadius: '12px',
+            border: '3px solid #d4af37'
+          }}>
+            <div style={{ color: '#d4af37', fontSize: '24px', fontWeight: 'bold', textAlign: 'center' }}>
+              ⚔️ COMBAT TERMINÉ !
+            </div>
+          </div>
+        )}
+
+        {(canClose || combatOver) && (
+          <div style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            color: '#d4af37',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            textAlign: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            padding: '15px 30px',
+            borderRadius: '8px',
+            border: '2px solid #d4af37',
+            cursor: 'pointer'
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onClose) onClose();
+          }}
+          >
+            {canClose ? 'Cliquez pour fermer' : 'Combat terminé - Cliquez pour fermer'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const Home = () => {
   // Step: "menu" = create/join choice, "configure" = player setup
   const [step, setStep] = useState("menu");
@@ -1733,6 +2355,8 @@ const Game = () => {
   // NEW: Goblin combat popup states
   const [showGoblinCombat, setShowGoblinCombat] = useState(false);
   const [goblinCombatEvent, setGoblinCombatEvent] = useState(null);
+  const [showMultiplayerCombat, setShowMultiplayerCombat] = useState(false);
+  const [multiplayerCombatEvent, setMultiplayerCombatEvent] = useState(null);
 
   // NEW: Flashing rooms when teammates select
 const [flashingRooms, setFlashingRooms] = useState(new Set());
@@ -1891,12 +2515,16 @@ const prevPendingActionsRef = useRef('{}');
         if (data.type === "state_update" && data.game) {
           const pendingEvents = data.game.pending_events || {};
 
-          if (
-            pendingEvents[storedPlayerId] &&
-            pendingEvents[storedPlayerId].type === "goblin_combat"
-          ) {
-            setGoblinCombatEvent(pendingEvents[storedPlayerId]);
-            setShowGoblinCombat(true);
+          if (pendingEvents[storedPlayerId]) {
+            const event = pendingEvents[storedPlayerId];
+            
+            if (event.type === "goblin_combat") {
+              setGoblinCombatEvent(event);
+              setShowGoblinCombat(true);
+            } else if (event.type === "multiplayer_combat") {
+              setMultiplayerCombatEvent(event);
+              setShowMultiplayerCombat(true);
+            }
           }
         }
         
@@ -2477,6 +3105,20 @@ const selectRoom = (roomName) => {
           onClose={() => {
             setShowGoblinCombat(false);
             setGoblinCombatEvent(null);
+          }}
+        />
+      )}
+
+            {/* Multiplayer Combat Popup */}
+      {showMultiplayerCombat && multiplayerCombatEvent && (
+        <MultiPlayerCombat
+          event={multiplayerCombatEvent}
+          playerId={playerId}
+          sessionId={sessionId}
+          wsRef={ws}
+          onClose={() => {
+            setShowMultiplayerCombat(false);
+            setMultiplayerCombatEvent(null);
           }}
         />
       )}

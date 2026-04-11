@@ -2963,3 +2963,19 @@ body {
 .combat-enemy-attack {
   animation: attackShake 0.3s ease;
 }
+
+/* Animation pour l'indicateur de dégâts */
+@keyframes floatUp {
+  0% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-40px);
+  }
+}

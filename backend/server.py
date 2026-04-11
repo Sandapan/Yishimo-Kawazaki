@@ -1030,23 +1030,47 @@ async def process_turn(session_id: str):
             survivor_room = survivor_action.get("room")
 
             if survivor_room == killer_room and not survivor["eliminated"]:
-                # ✅ NOUVEAU : Déclencher un combat au lieu d'éliminer directement
-                combat_event = {
-                    "type": "goblin_combat",
-                    "attacker_id": killer_id,
-                    "defender_id": survivor_id,
-                    "attacker_class": killer.get("character_class", "Orc"),
-                    "defender_class": survivor.get("character_class", "Survivor"),
-                    "attacker_name": killer.get("name", "Orc"),
-                    "defender_name": survivor.get("name", "Aventurier"),
-                    "defender_hp": survivor.get("hp", 36)  # PV actuels du survivant
-                }
+                # ✅ NOUVEAU : Déclencher un combat de groupe (plusieurs survivants vs gobelins)
+                # Trouver TOUS les survivants dans cette pièce
+                survivors_in_room = []
+                for surv_id, surv_action in game["pending_actions"].items():
+                    if surv_id in game["players"]:
+                        surv_player = game["players"][surv_id]
+                        if (surv_player["role"] == "survivor" and 
+                            not surv_player["eliminated"] and
+                            surv_action.get("room") == killer_room):
+                            survivors_in_room.append({
+                                "id": surv_id,
+                                "name": surv_player["name"],
+                                "class": surv_player.get("character_class", "Survivor"),
+                                "hp": surv_player.get("hp", 36),
+                                "avatar": surv_player.get("avatar", "")
+                            })
 
-                # Ajouter l'event aux deux joueurs
-                game["pending_events"][survivor_id] = combat_event
-                game["pending_events"][killer_id] = combat_event
+                if survivors_in_room:
+                    # Créer un événement de combat multi-joueurs
+                    # Pour l'instant : N survivants vs 1 gobelin (hardcodé)
+                    num_goblins = 1  # TODO: rendre ce paramètre variable plus tard
+                    
+                    combat_event = {
+                        "type": "multiplayer_combat",
+                        "attacker_id": killer_id,
+                        "attacker_class": killer.get("character_class", "Orc"),
+                        "attacker_name": killer.get("name", "Orc"),
+                        "survivors": survivors_in_room,  # Liste des survivants
+                        "num_goblins": num_goblins,
+                        "goblin_hp": 6  # HP par gobelin
+                    }
 
-                logger.info(f"⚔️ Combat déclenché : {killer['name']} VS {survivor['name']} dans {killer_room} (PV survivant: {survivor.get('hp', 36)})")
+                    # Ajouter l'event au killer ET à tous les survivants
+                    game["pending_events"][killer_id] = combat_event
+                    for survivor in survivors_in_room:
+                        game["pending_events"][survivor["id"]] = combat_event
+
+                    survivor_names = ", ".join([s["name"] for s in survivors_in_room])
+                    logger.info(f"⚔️ Combat multi-joueurs déclenché : {survivor_names} VS {num_goblins} Gobelin(s) dans {killer_room}")
+                    
+                    found_survivor = True
 # Check if this killer has rage power and found a survivor
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
@@ -2073,6 +2097,13 @@ async def send_combat_log(session_id: str, request: CombatLogUpdate):
     
     return {"status": "success"}
 
+# Modèle pour la résolution de combat multi-joueurs
+class MultiPlayerCombatResultRequest(BaseModel):
+    attacker_id: str  # Le killer
+    survivors_results: List[dict]  # [{id, damage_dealt, eliminated}, ...]
+    goblins_defeated: int  # Nombre de gobelins vaincus
+    combat_log: List[str] = []
+
 @api_router.post("/game/{session_id}/resolve_combat")
 async def resolve_combat(session_id: str, request: CombatResultRequest):
     """Resolve a combat between an orc and a survivor"""
@@ -2177,6 +2208,95 @@ async def resolve_combat(session_id: str, request: CombatResultRequest):
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
     
     return {"status": "success", "result": result}
+
+@api_router.post("/game/{session_id}/resolve_multiplayer_combat")
+async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombatResultRequest):
+    """Resolve a multiplayer combat between multiple survivors and goblins"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    attacker_id = request.attacker_id
+    
+    logger.info(f"⚔️ Résolution combat multi-joueurs: attacker={attacker_id}, survivors={len(request.survivors_results)}, goblins_defeated={request.goblins_defeated}")
+    
+    # Mettre à jour chaque survivant
+    eliminated_survivors = []
+    for survivor_result in request.survivors_results:
+        survivor_id = survivor_result["id"]
+        damage_dealt = survivor_result["damage_dealt"]
+        is_eliminated = survivor_result["eliminated"]
+        
+        if survivor_id in game["players"]:
+            survivor = game["players"][survivor_id]
+            
+            # Mettre à jour les PV
+            if survivor.get("hp") is not None and damage_dealt > 0:
+                survivor["hp"] = max(0, survivor["hp"] - damage_dealt)
+                logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {damage_dealt})")
+            
+            # Gérer l'élimination
+            if is_eliminated or (survivor.get("hp") is not None and survivor["hp"] <= 0):
+                survivor["eliminated"] = True
+                survivor["hp"] = 0
+                survivor["gold"] = 0
+                survivor_room = survivor.get("current_room")
+                if survivor_room and survivor_room in game["rooms"]:
+                    game["rooms"][survivor_room]["eliminated_players"].append(survivor_id)
+                
+                eliminated_survivors.append(survivor["name"])
+                event_msg = f"💀 {survivor['name']} a été vaincu dans le combat !"
+                game["events"].append({"message": event_msg, "type": "combat_elimination"})
+    
+    # Broadcast les éliminations
+    for name in eliminated_survivors:
+        await broadcast_to_session(session_id, {"type": "event", "message": f"💀 {name} a été éliminé !"})
+    
+    # Message récapitulatif du combat
+    if request.goblins_defeated > 0:
+        event_msg = f"⚔️ Combat terminé ! {request.goblins_defeated} Gobelin(s) vaincu(s) !"
+        if eliminated_survivors:
+            event_msg += f" Survivants perdus : {', '.join(eliminated_survivors)}"
+        game["events"].append({"message": event_msg, "type": "combat_completed"})
+        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Clear pending events pour le killer et tous les survivants
+    if attacker_id in game.get("pending_events", {}):
+        del game["pending_events"][attacker_id]
+    for survivor_result in request.survivors_results:
+        survivor_id = survivor_result["id"]
+        if survivor_id in game.get("pending_events", {}):
+            del game["pending_events"][survivor_id]
+    
+    # Broadcast updated state
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    # Check victory conditions
+    alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    if len(alive_survivors) == 0:
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        survivor_msg = "💀 DÉFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "🎉 VICTOIRE ! Tous les aventuriers ont été exterminés !"
+        
+        await broadcast_to_role(session_id, "survivor", {
+            "type": "game_over",
+            "winner": "killers",
+            "message": survivor_msg
+        })
+        
+        await broadcast_to_role(session_id, "killer", {
+            "type": "game_over",
+            "winner": "killers",
+            "message": killer_msg
+        })
+    
+    return {"status": "success"}
 
 # WebSocket endpoint
 @app.websocket("/api/ws/{session_id}/{player_id}")
