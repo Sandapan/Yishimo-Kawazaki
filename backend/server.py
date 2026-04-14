@@ -1059,7 +1059,9 @@ async def process_turn(session_id: str):
                         "attacker_name": killer.get("name", "Orc"),
                         "survivors": survivors_in_room,  # Liste des survivants
                         "num_goblins": num_goblins,
-                        "goblin_hp": 6  # HP par gobelin
+                        "goblin_hp": 6,  # HP par gobelin
+                        "turn": game["turn"],  # NOUVEAU : numéro du tour pour seed unique
+                        "combat_id": f"{killer_id}_{killer_room}_{game['turn']}"  # NOUVEAU : ID unique du combat
                     }
 
                     # Ajouter l'event au killer ET à tous les survivants

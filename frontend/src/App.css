@@ -2979,3 +2979,18 @@ body {
     transform: translateX(-50%) translateY(-40px);
   }
 }
+
+@keyframes floatUpMirrored {
+  0% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scaleX(-1);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-20px) scaleX(-1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-40px) scaleX(-1);
+  }
+}

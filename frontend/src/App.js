@@ -580,6 +580,8 @@ const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows,
     image.onload = () => {
       imageRef.current = image;
     };
+    // Réinitialiser la frame à 0 quand on change de sprite sheet (idle → attack → hurt)
+    setCurrentFrame(0);
   }, [spriteSheet]);
 
   useEffect(() => {
@@ -662,6 +664,22 @@ const hashCode = (str) => {
   return Math.abs(hash);
 };
 
+// Générateur de nombres pseudo-aléatoires déterministe (PRNG)
+class SeededRandom {
+  constructor(seed) {
+    this.seed = seed;
+  }
+  
+  next() {
+    this.seed = (this.seed * 9301 + 49297) % 233280;
+    return this.seed / 233280;
+  }
+  
+  nextInt(min, max) {
+    return Math.floor(this.next() * (max - min + 1)) + min;
+  }
+}
+
 // ========== MULTIPLAYER COMBAT COMPONENT ==========
 const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const isAttacker = event.attacker_id === playerId;
@@ -694,7 +712,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         type: 'survivor',
         hp: survivor.hp,
         maxHp: survivor.hp,
-        initiative: Math.floor((hashCode(survivor.id + event.attacker_id) % 20) + 1),
+        initiative: Math.floor((hashCode(survivor.id + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
         position: idx, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -710,7 +728,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         type: 'goblin',
         hp: event.goblin_hp,
         maxHp: event.goblin_hp,
-        initiative: Math.floor((hashCode(`goblin_${i}` + event.attacker_id) % 20) + 1),
+        initiative: Math.floor((hashCode(`goblin_${i}` + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
         position: i, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -779,6 +797,15 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     let mounted = true;
     let turnIndex = 0;
     let fighters = [...combatants];
+    
+    // Créer un générateur déterministe basé sur combat_id (inclut le tour)
+    const combatSeed = hashCode(event.combat_id || (event.attacker_id + event.survivors.map(s => s.id).join('') + event.turn));
+    const rng = new SeededRandom(combatSeed);
+    
+    // Chauffer le générateur pour éviter les patterns initiaux
+    for (let i = 0; i < 10; i++) {
+      rng.next();
+    }
 
     const runCombat = async () => {
       while (mounted) {
@@ -844,17 +871,17 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           continue;
         }
         
-        const target = targets[Math.floor(Math.random() * targets.length)];
+        const target = targets[Math.floor(rng.next() * targets.length)];
         
         // Animation d'attaque - Broadcaster à tous les clients
         const attackAnim = { id: attacker.id, type: 'attack' };
         setAnimatingEntity(attackAnim);
 
         
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Augmenté à 1 seconde
+        await new Promise(resolve => setTimeout(resolve, 1700)); // 30 frames × 50ms + 200ms buffer
         
         // Calculer les dégâts
-        const damage = Math.floor(Math.random() * 6) + 1;
+        const damage = rng.nextInt(1, 6);
         target.hp = Math.max(0, target.hp - damage);
         
         if (target.hp <= 0) {
@@ -881,7 +908,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         setAnimatingEntity(hurtAnim);
 
         
-        await new Promise(resolve => setTimeout(resolve, 800)); // Augmenté
+await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 200ms buffer
         
         // Retour à idle
         setAnimatingEntity(null);
@@ -919,22 +946,18 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     }
   };
 
-  // Fonction pour obtenir les paramètres de sprite sheet
+  // Fonction pour obtenir les paramètres de sprite sheet (UNIFORMISÉS)
   const getSpriteParams = (combatant, animationType) => {
-    if (combatant.type === 'goblin') {
-      switch (animationType) {
-        case 'idle': return { cols: 5, rows: 4, totalFrames: 20 };
-        case 'attack': return { cols: 5, rows: 2, totalFrames: 10 };
-        case 'hurt': return { cols: 5, rows: 4, totalFrames: 20 };
-        default: return { cols: 5, rows: 4, totalFrames: 20 };
-      }
-    } else {
-      switch (animationType) {
-        case 'idle': return { cols: 5, rows: 6, totalFrames: 30 };
-        case 'attack': return { cols: 5, rows: 6, totalFrames: 30 };
-        case 'hurt': return { cols: 5, rows: 2, totalFrames: 10 };
-        default: return { cols: 5, rows: 6, totalFrames: 30 };
-      }
+    // Paramètres uniformisés pour tous les personnages (gobelins et survivants)
+    switch (animationType) {
+      case 'idle':
+        return { cols: 5, rows: 6, totalFrames: 30 };
+      case 'attack':
+        return { cols: 5, rows: 6, totalFrames: 30 };
+      case 'hurt':
+        return { cols: 5, rows: 2, totalFrames: 10 };
+      default:
+        return { cols: 5, rows: 6, totalFrames: 30 };
     }
   };
 
@@ -1003,7 +1026,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   position: 'absolute',
                   top: '-30px',
                   left: '50%',
-                  transform: 'translateX(-50%)',
+                  transform: 'translateX(-50%) scaleX(-1)',
                   fontSize: '28px',
                   fontWeight: 'bold',
                   color: '#ff0000',
@@ -1076,12 +1099,12 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   position: 'absolute',
                   top: '-30px',
                   left: '50%',
-                  transform: 'translateX(-50%) scaleX(-1)', // Re-miroir pour le texte
+                  transform: 'translateX(-50%) scaleX(-1)',
                   fontSize: '28px',
                   fontWeight: 'bold',
                   color: '#ff0000',
                   textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
-                  animation: 'floatUp 1.5s ease-out',
+                  animation: 'floatUpMirrored 1.5s ease-out',
                   pointerEvents: 'none',
                   zIndex: 1000
                 }}>
