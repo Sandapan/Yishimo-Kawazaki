@@ -647,7 +647,7 @@ const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows,
     <canvas
       ref={canvasRef}
       width={200}  // Taille d'affichage à l'écran
-      height={115} // Ratio 800:462 ≈ 200:115
+      height={138} // Ratio 1000:690 ≈ 200:138
       style={{ imageRendering: 'pixelated' }}
     />
   );
@@ -940,9 +940,9 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
   // Fonction pour obtenir le sprite sheet approprié
   const getSpriteSheet = (combatant, animationType) => {
     if (combatant.type === 'goblin') {
-      return `/fight/Goblin_${animationType}.png`;
+      return `/fight/Goblin_${animationType}.webp`;
     } else {
-      return `/fight/${combatant.class}_${animationType}.png`;
+      return `/fight/${combatant.class}_${animationType}.webp`;
     }
   };
 
@@ -956,6 +956,8 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         return { cols: 5, rows: 6, totalFrames: 30 };
       case 'hurt':
         return { cols: 5, rows: 2, totalFrames: 10 };
+      case 'fainted':
+        return { cols: 5, rows: 4, totalFrames: 20 };
       default:
         return { cols: 5, rows: 6, totalFrames: 30 };
     }
@@ -993,9 +995,9 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
       }}>
         {/* Survivants (à gauche) */}
         {combatants.filter(c => c.type === 'survivor').map((combatant, idx) => {
-          const animationType = animatingEntity?.id === combatant.id 
-            ? animatingEntity.type 
-            : 'idle';
+          const animationType = !combatant.alive 
+            ? 'fainted' 
+            : (animatingEntity?.id === combatant.id ? animatingEntity.type : 'idle');
           const spriteParams = getSpriteParams(combatant, animationType);
           
           return (
@@ -1011,12 +1013,12 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
             >
               <SpriteSheetAnimator
                 spriteSheet={getSpriteSheet(combatant, animationType)}
-                frameWidth={800}
-                frameHeight={462}
+                frameWidth={200}
+                frameHeight={115}
                 cols={spriteParams.cols}
                 rows={spriteParams.rows}
                 totalFrames={spriteParams.totalFrames}
-                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : 100}
+                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
               
@@ -1065,9 +1067,9 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 
         {/* Gobelins (à droite) */}
         {combatants.filter(c => c.type === 'goblin').map((combatant, idx) => {
-          const animationType = animatingEntity?.id === combatant.id 
-            ? animatingEntity.type 
-            : 'idle';
+          const animationType = !combatant.alive 
+            ? 'fainted' 
+            : (animatingEntity?.id === combatant.id ? animatingEntity.type : 'idle');
           const spriteParams = getSpriteParams(combatant, animationType);
           
           return (
@@ -1084,12 +1086,12 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
             >
               <SpriteSheetAnimator
                 spriteSheet={getSpriteSheet(combatant, animationType)}
-                frameWidth={800}
-                frameHeight={462}
+                frameWidth={200}
+                frameHeight={115}
                 cols={spriteParams.cols}
                 rows={spriteParams.rows}
                 totalFrames={spriteParams.totalFrames}
-                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : 100}
+                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
               
