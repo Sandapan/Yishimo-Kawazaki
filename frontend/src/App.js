@@ -2267,6 +2267,18 @@ const PowerSelectionOverlay = ({
                             const isLocked = roomData.locked;
                             const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
                             
+                            // PATROUILLE: Highlight selected room in red, other rooms on same floor in orange
+                            let highlightStyle = {};
+                            if (actionType === "select_room" && selectedPower === "patrouille" && tempRoomSelections.length > 0) {
+                              if (tempRoomSelections[0] === roomName) {
+                                // Selected room: red border
+                                highlightStyle = { border: '3px solid #ef4444', boxShadow: '0 0 15px rgba(239, 68, 68, 0.8)' };
+                              } else if (roomData.floor === gameState.rooms[tempRoomSelections[0]]?.floor) {
+                                // Same floor: orange border
+                                highlightStyle = { border: '3px solid #f97316', boxShadow: '0 0 15px rgba(249, 115, 22, 0.6)' };
+                              }
+                            }
+                            
                             return (
                               <button
                                 key={roomName}
@@ -2274,6 +2286,7 @@ const PowerSelectionOverlay = ({
                                 className={`room-mini-btn ${isSelected ? 'selected' : ''} ${isLocked ? 'locked' : ''}`}
                                 onClick={() => !isLocked && handleRoomSelection(roomName)}
                                 disabled={isLocked}
+                                style={highlightStyle}
                               >
                                 {roomName}
                                 {isSelected && " ✓"}
@@ -2482,6 +2495,11 @@ const prevPendingActionsRef = useRef('{}');
   const [eboulementMessage, setEboulementMessage] = useState("");
   const [eboulementVideoPath, setEboulementVideoPath] = useState("");
 
+  // NEW: Patrouille popup state
+  const [showPatrouillePopup, setShowPatrouillePopup] = useState(false);
+  const [patrouilleMessage, setPatrouilleMessage] = useState("");
+  const [patrouilleVideoPath, setPatrouilleVideoPath] = useState("");
+
   // NEW: Active traps section state
   const [expandedTrap, setExpandedTrap] = useState(null);
 
@@ -2658,6 +2676,15 @@ const prevPendingActionsRef = useRef('{}');
         setTimeout(() => {
           setShowEboulementPopup(false);
         }, 8000);
+      } else if (data.type === "patrol_detected" || data.type === "patrol_found") {
+        // Show Patrouille detection popup with video (for survivors)
+        setPatrouilleMessage(data.message);
+        setPatrouilleVideoPath(data.video_path);
+        setShowPatrouillePopup(true);
+        // Auto-hide after 6 seconds
+        setTimeout(() => {
+          setShowPatrouillePopup(false);
+        }, 6000);
       } else if (data.type === "goliath_death_popup") {
         // Show Goliath death popup with video
         setGoliathDeathMessage(data.message);
@@ -3932,6 +3959,44 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* NEW: Patrouille Detection Popup */}
+      {showPatrouillePopup && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowPatrouillePopup(false)}
+          data-testid="patrouille-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#2a1a1a', borderColor: '#ef4444' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#ef4444' }}>
+                🔍
+                <span>Gobelin de Patrouille !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {patrouilleVideoPath && (
+                <video 
+                  autoPlay 
+                  muted 
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                  onEnded={() => setTimeout(() => setShowPatrouillePopup(false), 1000)}
+                >
+                  <source src={patrouilleVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {patrouilleMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Goliath Death Popup */}
       {showGoliathDeathPopup && (
         <div 
@@ -4179,6 +4244,7 @@ const selectRoom = (roomName) => {
                   const hasMimic = room.has_mimic && currentPlayerRole === "killer";
                   const hasTeleportationTrap = room.teleportation_trap && currentPlayerRole === "killer";
                   const hasTeleportationExit = room.teleportation_exit && currentPlayerRole === "killer";
+                  const hasPatrol = room.has_patrol && currentPlayerRole === "killer";
 
                   // Check if this room is pre-selected (for confirmation step)
                   const isPreSelected = preSelectedRoom === room.name;
@@ -4209,6 +4275,11 @@ const selectRoom = (roomName) => {
                           {room.merchant_discovered && (
                              <span className="room-player-avatar" title="Marchand">
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                             </span>
+                          )}
+                          {hasPatrol && (
+                             <span className="room-player-avatar" title="Gobelin de Patrouille">
+                                 <img src="/avatars/Patrouille.png" alt="Patrouille" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
                           )}                        
                           {playersSelectingThisRoom.length > 0 && (

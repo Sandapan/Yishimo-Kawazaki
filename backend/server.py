@@ -130,6 +130,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "teleportation_target_room": None,  # NEW: destination room for teleportation
             "has_merchant": False,  # NEW: for merchant system
             "merchant_discovered": False,  # NOUVEAU: pour afficher l'avatar du marchand aux survivants
+            "has_patrol": False,  # NEW: for patrouille power - goblin patrol indicator
         }
 
     # Get character class from avatar
@@ -183,6 +184,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "goliath_killed_this_turn": False,  # NEW: whether Goliath has killed a survivor this turn (only one kill per turn)
         "eboulement_active": False,  # NEW: whether Eboulement is active (blocks floor changes for 1 turn)
         "eboulement_locked_floors": {},  # NEW: stores which floor each survivor is locked to during eboulement {player_id: floor}
+        "patrouille_patrol": None,  # NEW: {room: str, floor: str, active: bool} - gobelin de patrouille
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -434,9 +436,15 @@ POWERS = {
         "description": "Bloquez les escaliers et forcez les joueurs à rester dans leur étage durant 1 tour",
         "icon": "Eboulement.mp4",
         "requires_action": False
+    },
+    "patrouille": {
+        "name": "🔍 Patrouille",
+        "description": "Placez un gobelin de patrouille dans une pièce. Tant qu'il n'est pas trouvé, il révèle la position des aventuriers présent dans son étage.",
+        "icon": "Patrouille.mp4",
+        "requires_action": True,
+        "action_type": "select_room"  # select one room
     }
 }
-
 def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> list:
     """Get 3 random unique powers, excluding goliath if already active"""
     excluded = list(exclude_powers)
@@ -775,6 +783,28 @@ async def apply_powers(session_id: str):
                 "message": "Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci.",
                 "video_path": "/powers/Eboulement.mp4"
             }, role_filter="survivor")
+        
+        elif power_name == "patrouille":
+            # Place patrol goblin in selected room
+            action_data = selection.get("action_data", {})
+            patrol_room = action_data.get("room")
+            
+            if patrol_room and patrol_room in game["rooms"]:
+                patrol_floor = game["rooms"][patrol_room]["floor"]
+                game["patrouille_patrol"] = {
+                    "room": patrol_room,
+                    "floor": patrol_floor,
+                    "active": True
+                }
+                
+                # Mark room with patrol for killers only
+                game["rooms"][patrol_room]["has_patrol"] = True
+            
+            game["active_powers"][power_name]["data"]["patrol_room"] = patrol_room
+            
+            event_msg = f"🔍 {player['name']} utilise Patrouille !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
 def filter_game_state(game_state: dict, player_role: str, player_id: Optional[str] = None) -> dict:
     """
@@ -798,16 +828,6 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
     filtered_state["rooms"] = {}
     for room_name, room_data in game_state["rooms"].items():
         room_copy = room_data.copy()
-        
-        if player_role == "survivor":
-            # Survivors see trap_triggered but not highlighted or just trapped
-            room_copy["highlighted"] = False
-            if not room_copy.get("trap_triggered", False):
-                room_copy["trapped"] = False
-        elif player_role == "killer":
-            # Killers see trapped and highlighted, but not trap_triggered
-            room_copy.pop("trap_triggered", None)
-            room_copy["merchant_discovered"] = False  # NOUVEAU: Masquer le marchand découvert aux Orcs
         
         # BLIZZARD EFFECT: If current player is immobilized, lock all rooms except their current room
         if current_player and current_player.get("immobilized_next_turn", False):
@@ -2561,7 +2581,39 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     original_room_name = room_name
                     logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}'")
 
+                    # PATROUILLE CHECK: Reveal survivors on same floor
+                    if player["role"] == "survivor" and game.get("patrouille_patrol") and game["patrouille_patrol"].get("active"):
+                        patrol_data = game["patrouille_patrol"]
+                        selected_floor = game["rooms"][room_name]["floor"]
+                        
+                        # If survivor is on the same floor as the patrol
+                        if selected_floor == patrol_data["floor"]:
+                            # If survivor found the exact room with patrol, deactivate it
+                            if room_name == patrol_data["room"]:
+                                game["patrouille_patrol"]["active"] = False
+                                if patrol_data["room"] in game["rooms"]:
+                                    game["rooms"][patrol_data["room"]]["has_patrol"] = False
+                                
+                                # Notify survivor they found the patrol
+                                await websocket.send_json({
+                                    "type": "patrol_found",
+                                    "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
+                                    "video_path": "/powers/Patrouille.mp4"
+                                })
+                                
+                                logger.info(f"🔍 {player['name']} a trouvé le gobelin de patrouille dans {room_name}")
+                            else:
+                                # Survivor is on same floor but not in patrol room - just reveal position
+                                await websocket.send_json({
+                                    "type": "patrol_detected",
+                                    "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
+                                    "video_path": "/powers/Patrouille.mp4"
+                                })
+                                
+                                logger.info(f"🔍 {player['name']} a été détecté par le gobelin de patrouille")
+
                     # PRIORITY CHECK: Teleportation trap
+
                     if player["role"] == "survivor" and game["rooms"][room_name].get("teleportation_trap", False):
                         target_room = game["rooms"][room_name].get("teleportation_target_room")
                         
