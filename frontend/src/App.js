@@ -2685,6 +2685,11 @@ const prevPendingActionsRef = useRef('{}');
         setTimeout(() => {
           setShowPatrouillePopup(false);
         }, 6000);
+      } else if (data.type === "patrol_reveal") {
+        // Killers get notified that a survivor has been revealed by the patrol goblin
+        toast.info(`🔍 ${data.player_name} a été repéré par le gobelin de Patrouille dans ${data.room} !`, {
+          duration: 5000
+        });
       } else if (data.type === "goliath_death_popup") {
         // Show Goliath death popup with video
         setGoliathDeathMessage(data.message);
@@ -4231,7 +4236,19 @@ const selectRoom = (roomName) => {
                         });
                     }
 
-                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition];
+                    // 3. Pour les tueurs (orcs) : afficher les survivants révélés par le gobelin de patrouille pour ce tour
+                    let patrolRevealedInRoom = [];
+                    if (currentPlayerRole === "killer" && gameState.patrol_revealed_survivors) {
+                      patrolRevealedInRoom = Object.entries(gameState.patrol_revealed_survivors)
+                        .filter(([pid, revealedRoom]) => {
+                          if (revealedRoom !== room.name) return false;
+                          const player = gameState.players[pid];
+                          return player && !player.eliminated && player.role === "survivor";
+                        })
+                        .map(([pid]) => gameState.players[pid]);
+                    }
+
+                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition, ...patrolRevealedInRoom];
                   }
 
                   const eliminatedInRoom = room.eliminated_players || [];

@@ -185,6 +185,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "eboulement_active": False,  # NEW: whether Eboulement is active (blocks floor changes for 1 turn)
         "eboulement_locked_floors": {},  # NEW: stores which floor each survivor is locked to during eboulement {player_id: floor}
         "patrouille_patrol": None,  # NEW: {room: str, floor: str, active: bool} - gobelin de patrouille
+        "patrol_revealed_survivors": {},  # NEW: {player_id: room_name} - survivants revealed by patrol goblin during this turn
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -1305,6 +1306,9 @@ async def process_turn(session_id: str):
     # GOLIATH: Reset kill flag for new turn
     game["goliath_killed_this_turn"] = False
     
+    # PATROUILLE: Reset revealed survivors - reveal is only valid for the turn when detected
+    game["patrol_revealed_survivors"] = {}
+    
     # GOLIATH: Decrement turns remaining and check for expiration
     if game.get("goliath_active", False):
         game["goliath_turns_remaining"] -= 1
@@ -1550,6 +1554,9 @@ async def process_rage_second_selections(session_id: str):
     
     # GOLIATH: Reset kill flag for new turn
     game["goliath_killed_this_turn"] = False
+    
+    # PATROUILLE: Reset revealed survivors - reveal is only valid for the turn when detected
+    game["patrol_revealed_survivors"] = {}
     
     # GOLIATH: Decrement turns remaining and check for expiration
     if game.get("goliath_active", False):
@@ -1885,6 +1892,8 @@ async def reset_game(session_id: str):
     game["goliath_killed_this_turn"] = False
     game["eboulement_active"] = False
     game["eboulement_locked_floors"] = {}
+    game["patrouille_patrol"] = None
+    game["patrol_revealed_survivors"] = {}
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -2588,6 +2597,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         
                         # If survivor is on the same floor as the patrol
                         if selected_floor == patrol_data["floor"]:
+                            # Track revealed survivor so killers see their avatar for this turn
+                            if "patrol_revealed_survivors" not in game:
+                                game["patrol_revealed_survivors"] = {}
+                            game["patrol_revealed_survivors"][player_id] = room_name
+
                             # If survivor found the exact room with patrol, deactivate it
                             if room_name == patrol_data["room"]:
                                 game["patrouille_patrol"]["active"] = False
@@ -2611,6 +2625,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 })
                                 
                                 logger.info(f"🔍 {player['name']} a été détecté par le gobelin de patrouille")
+
+                            # Notify killers that a survivor has been revealed (show avatar in the room)
+                            await broadcast_to_session(session_id, {
+                                "type": "patrol_reveal",
+                                "player_id": player_id,
+                                "player_name": player["name"],
+                                "room": room_name,
+                                "floor": selected_floor
+                            }, role_filter="killer")
+                            # Push full state so killer UI re-renders with patrol_revealed_survivors
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game_sessions[session_id]
+                            }, role_filter="killer")
 
                     # PRIORITY CHECK: Teleportation trap
 
