@@ -154,7 +154,10 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
                 "gold": 0,  # NEW: gold accumulated by survivors
                 "has_antidote": False,  # NEW: for merchant system - antidote item
-                "hp": 36 if host_role == "survivor" else None  # PV pour les aventuriers (36 au départ)
+                "hp": 36 if host_role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
+                "max_hp": 36 if host_role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
+                "initiative_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus d'initiative individuel
+                "damage_bonus": 0 if host_role == "survivor" else 0  # NEW: bonus de dégâts individuel
             }
         },
         "rooms": rooms_state,
@@ -366,19 +369,19 @@ def generate_gold_reward() -> tuple[int, str]:
 POWERS = {
     "vision": {
         "name": "👁️ Vision",
-        "description": "Révèle en surbrillance les pièces que les survivants n'ont pas encore fouillé depuis l'obtention de la précédente clef",
+        "description": "Révèle en surbrillance les pièces que les aventuriers n'ont pas encore fouillé depuis l'obtention de la précédente clef",
         "icon": "Vision.mp4",
         "requires_action": False
     },
     "secousse": {
         "name": "↩️ Secousse",
-        "description": "Si la clef n'est pas trouvée après le tour des tueurs, alors sa localisation change de pièce",
+        "description": "Si la clef n'est pas trouvée après le tour des orcs, alors sa localisation change de pièce",
         "icon": "secousse.mp4",
         "requires_action": False
     },
     "piege": {
         "name": "🥶 Blizzard",
-        "description": "Déployez un blizzard dans une pièce par étage, immobilisant pour un tour le joueur survivant qui choisit prochainement cette pièce",
+        "description": "Déployez un blizzard dans une pièce par étage, immobilisant pour un tour l'aventurier qui choisit prochainement cette pièce",
         "icon": "blizzard.mp4",
         "requires_action": True,
         "action_type": "select_rooms_per_floor"  # select one room per floor
@@ -392,7 +395,7 @@ POWERS = {
     },
     "traque": {
         "name": "🔊 Traque",
-        "description": "Choisissez un niveau (sous-sol, rez-de-chaussée ou étage) et découvrez si des survivants s'y cachent",
+        "description": "Choisissez un niveau (sous-sol, rez-de-chaussée ou étage) et découvrez si des aventuriers s'y cachent",
         "icon": "Traque.mp4",
         "requires_action": True,
         "action_type": "select_floor"  # select one floor
@@ -407,7 +410,7 @@ POWERS = {
     },
     "rage": {
         "name": "😡 Rage",
-        "description": "Si vous trouvez un survivant en fouillant une pièce, vous pouvez fouiller une seconde pièce ce tour-ci",
+        "description": "Si vous trouvez un aventurier en fouillant une pièce, vous pouvez fouiller une seconde pièce ce tour-ci",
         "icon": "rage.mp4",
         "requires_action": False
     },
@@ -428,7 +431,7 @@ POWERS = {
     },
     "goliath": {
         "name": "🕷️ La Goliath",
-        "description": "Invoquez la Goliath pour plusieurs tours. Cette araignée géante traque les survivants qui revisitent une pièce fouillée au tour précédent.",
+        "description": "Invoquez la Goliath pour plusieurs tours. Cette araignée géante traque les aventuriers qui revisitent une pièce fouillée au tour précédent.",
         "icon": "La goliath.mp4",
         "requires_action": False
     },
@@ -464,25 +467,25 @@ def validate_game_start(game: dict) -> tuple[bool, Optional[str]]:
     """
     players = game["players"]
     
-    # Count players by role
+    # Compter les joueurs par rôle
     survivors = [p for p in players.values() if p["role"] == "survivor"]
     killers = [p for p in players.values() if p["role"] == "killer"]
     
-    # Check 1: At least 1 survivor
+    # Vérif 1 : au moins 1 aventurier
     if len(survivors) < 1:
-        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 survivant."
+        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 aventurier."
     
-    # Check 2: At least 1 killer
+    # Vérif 2 : au moins 1 orc
     if len(killers) < 1:
-        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 tueur."
+        return False, "❌ La partie ne peut pas démarrer : il faut au moins 1 orc."
     
-    # Check 3: No duplicate classes among survivors
+    # Vérif 3 : pas de doublons de classe chez les aventuriers
     survivor_classes = []
     for survivor in survivors:
         char_class = survivor.get("character_class")
         if char_class:
             if char_class in survivor_classes:
-                return False, f"❌ La partie ne peut pas démarrer : il existe un doublon de classe chez les survivants ({char_class}). Chaque survivant doit avoir une classe unique."
+                return False, f"❌ La partie ne peut pas démarrer : il existe un doublon de classe chez les aventuriers ({char_class}). Chaque aventurier doit avoir une classe unique."
             survivor_classes.append(char_class)
     
     # All checks passed
@@ -661,12 +664,12 @@ async def apply_powers(session_id: str):
                 # Check if any survivors are on the selected floor
                 if selected_floor in floor_hints:
                     floor_name_fr = floor_names.get(selected_floor, selected_floor)
-                    sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}... Des survivants sont présents !"
+                    sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}... Des aventuriers sont présents !"
                     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
                     await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
                 else:
                     floor_name_fr = floor_names.get(selected_floor, selected_floor)
-                    sound_event_msg = f"🤫 Aucun bruit {floor_name_fr}... Aucun survivant détecté."
+                    sound_event_msg = f"🤫 Aucun bruit {floor_name_fr}... Aucun aventurier détecté."
                     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
                     await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
             
@@ -1065,6 +1068,9 @@ async def process_turn(session_id: str):
                                 "name": surv_player["name"],
                                 "class": surv_player.get("character_class", "Survivor"),
                                 "hp": surv_player.get("hp", 36),
+                                "max_hp": surv_player.get("max_hp", 36),  # NEW: pour la barre de vie
+                                "initiative_bonus": surv_player.get("initiative_bonus", 0),  # NEW: bonus initiative
+                                "damage_bonus": surv_player.get("damage_bonus", 0),  # NEW: bonus dégâts
                                 "avatar": surv_player.get("avatar", "")
                             })
 
@@ -1134,7 +1140,7 @@ async def process_turn(session_id: str):
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "rage_second_selection",
-            "message": "😡 Tueurs en rage - Sélectionnez une seconde pièce !",
+            "message": "😡 Orcs en rage - Sélectionnez une seconde pièce !",
         "game": game
     })
         return  # Exit early, will continue after second room selections
@@ -1194,14 +1200,14 @@ async def process_turn(session_id: str):
         # Victory messages already sent when crystal was destroyed
         return  # Exit early, game is over
 
-    # Victory for killers: all survivors eliminated
+    # Victoire pour les orcs : tous les aventuriers éliminés
     if len(alive_survivors) == 0:
         game["phase"] = "game_over"
         game["winner"] = "killers"
 
         # Send different messages based on role
-        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
 
         game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
         game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -1283,8 +1289,8 @@ async def process_turn(session_id: str):
         game["winner"] = "killers"
         
         # Send different messages based on role
-        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
         
         game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
         game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -1336,7 +1342,7 @@ async def process_turn(session_id: str):
         "type": "new_turn",
         "turn": game["turn"],
         "phase": "survivor_selection",
-        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce",
+        "message": f"🔄 Tour {game['turn']} - Les aventuriers sélectionnent leur pièce",
         "game": game
     })
 
@@ -1443,14 +1449,14 @@ async def process_rage_second_selections(session_id: str):
         # Victory messages already sent when crystal was destroyed
         return  # Exit early, game is over
     
-    # Victory for killers: all survivors eliminated
+    # Victoire pour les orcs : tous les aventuriers éliminés
     if len(alive_survivors) == 0:
         game["phase"] = "game_over"
         game["winner"] = "killers"
         
         # Send different messages based on role
-        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
         
         game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
         game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -1532,8 +1538,8 @@ async def process_rage_second_selections(session_id: str):
         game["winner"] = "killers"
         
         # Send different messages based on role
-        survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-        killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+        survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
+        killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
         
         game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
         game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -1582,7 +1588,7 @@ async def process_rage_second_selections(session_id: str):
         "type": "new_turn",
         "turn": game["turn"],
         "phase": "survivor_selection",
-        "message": f"🔄 Tour {game['turn']} - Les survivants sélectionnent leur pièce",
+        "message": f"🔄 Tour {game['turn']} - Les aventuriers sélectionnent leur pièce",
         "game": game
     })
 
@@ -1650,7 +1656,10 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
         "gold": 0,  # NEW: gold accumulated by survivors
         "has_antidote": False,  # NEW: for merchant system - antidote item
-        "hp": 36 if request.role == "survivor" else None  # PV pour les aventuriers (36 au départ)
+        "hp": 36 if request.role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
+        "max_hp": 36 if request.role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
+        "initiative_bonus": 0,  # NEW: bonus d'initiative individuel
+        "damage_bonus": 0  # NEW: bonus de dégâts individuel
     }
 
     # Broadcast new player joined
@@ -1722,10 +1731,10 @@ async def start_game(session_id: str):
         # Assign roles AND unique classes
         for i, player_id in enumerate(player_ids):
             if i < distribution["survivors"]:
-                # Assign survivor role
+                # Assigner le rôle aventurier
                 game["players"][player_id]["role"] = "survivor"
                 
-                # Assign unique survivor avatar and class
+                # Assigner un avatar aventurier unique
                 if survivor_index < len(available_survivor_avatars):
                     avatar_data = available_survivor_avatars[survivor_index]
                     survivor_index += 1
@@ -1735,19 +1744,25 @@ async def start_game(session_id: str):
                 game["players"][player_id]["avatar"] = avatar_data["path"]
                 game["players"][player_id]["character_class"] = avatar_data["class"]
                 game["players"][player_id]["hp"] = 36  # PV pour les aventuriers
+                game["players"][player_id]["max_hp"] = 36  # NEW: PV max
+                game["players"][player_id]["initiative_bonus"] = 0  # NEW: reset bonus initiative
+                game["players"][player_id]["damage_bonus"] = 0  # NEW: reset bonus dégâts
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
-                # Assign killer role
+                # Assigner le rôle orc
                 game["players"][player_id]["role"] = "killer"
                 
-                # Assign killer avatar (can be duplicate)
+                # Assigner un avatar orc (doublons possibles)
                 avatar_data = random.choice(available_killer_avatars)
                 game["players"][player_id]["avatar"] = avatar_data["path"]
                 game["players"][player_id]["character_class"] = avatar_data["class"]
                 game["players"][player_id]["hp"] = None  # Les orcs n'ont pas de PV
+                game["players"][player_id]["max_hp"] = None  # NEW
+                game["players"][player_id]["initiative_bonus"] = 0  # NEW
+                game["players"][player_id]["damage_bonus"] = 0  # NEW
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
-        logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} survivors and {distribution['killers']} killers with unique survivor classes")
+        logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} aventuriers et orcs avec classes aventurier uniques")
 
     # Validate game can start (after role assignment in conspiracy mode)
     is_valid, error_message = validate_game_start(game)
@@ -1796,7 +1811,7 @@ async def start_game(session_id: str):
         "type": "game_started",
         "keys_needed": game["keys_needed"],
         "phase": "survivor_selection",
-        "message": "🎮 Le jeu commence ! Les survivants doivent chacun compléter leur quête pour gagner. Tour 1 - Les survivants sélectionnent leur pièce."
+        "message": "🎮 Le jeu commence ! Les aventuriers doivent chacun compléter leur quête pour gagner. Tour 1 - Les aventuriers sélectionnent leur pièce."
     })
 
     return {"status": "started"}
@@ -1843,6 +1858,9 @@ async def reset_game(session_id: str):
         player["has_antidote"] = False
         # Réinitialiser les PV des survivants à 36
         player["hp"] = 36 if player.get("role") == "survivor" else None
+        player["max_hp"] = 36 if player.get("role") == "survivor" else None  # NEW: reset max_hp
+        player["initiative_bonus"] = 0  # NEW: reset bonus initiative
+        player["damage_bonus"] = 0  # NEW: reset bonus dégâts
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
@@ -1989,6 +2007,9 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["is_host"] = is_host  # Preserve host status
      # Mettre à jour les PV selon le rôle (36 pour survivants, None pour orcs)
     game["players"][player_id]["hp"] = 36 if request.role == "survivor" else None
+    game["players"][player_id]["max_hp"] = 36 if request.role == "survivor" else None  # NEW
+    game["players"][player_id]["initiative_bonus"] = 0  # NEW
+    game["players"][player_id]["damage_bonus"] = 0  # NEW
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
@@ -2229,8 +2250,8 @@ async def resolve_combat(session_id: str, request: CombatResultRequest):
         game["phase"] = "game_over"
         game["winner"] = "killers"
         
-        survivor_msg = "💀 DÉFAITE ! Tous les survivants ont été éliminés..."
-        killer_msg = "🎉 VICTOIRE ! Tous les survivants ont été éliminés !"
+        survivor_msg = "💀 DÉFAITE ! Tous les aventuriers ont été éliminés..."
+        killer_msg = "🎉 VICTOIRE ! Tous les aventuriers ont été éliminés !"
         
         game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
         game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -2287,7 +2308,7 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
     if request.goblins_defeated > 0:
         event_msg = f"⚔️ Combat terminé ! {request.goblins_defeated} Gobelin(s) vaincu(s) !"
         if eliminated_survivors:
-            event_msg += f" Survivants perdus : {', '.join(eliminated_survivors)}"
+            event_msg += f" Aventuriers perdus : {', '.join(eliminated_survivors)}"
         game["events"].append({"message": event_msg, "type": "combat_completed"})
         await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
     
@@ -2312,7 +2333,7 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
         game["phase"] = "game_over"
         game["winner"] = "killers"
         
-        survivor_msg = "💀 DÉFAITE ! Tous les survivants ont été éliminés..."
+        survivor_msg = "💀 DÉFAITE ! Tous les aventuriers ont été éliminés..."
         killer_msg = "🎉 VICTOIRE ! Tous les aventuriers ont été exterminés !"
         
         await broadcast_to_role(session_id, "survivor", {
@@ -2521,7 +2542,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+                                "message": "🎴 Les orcs choisissent leur pouvoir",
         "game": game
     })
                     
@@ -2728,8 +2749,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 game["phase"] = "game_over"
                                 game["winner"] = "killers"
                                 
-                                survivor_msg = "🎉 DEFAITE ! Tous les survivants ont été éliminés..."
-                                killer_msg = "💀 VICTOIRE ! Tous les survivants ont été éliminés ..."
+                                survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
+                                killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
                                 
                                 game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
                                 game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
@@ -2976,7 +2997,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+                                "message": "🎴 Les orcs choisissent leur pouvoir",
         "game": game
     })
 
@@ -3164,7 +3185,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             await broadcast_to_session(session_id, {
                                 "type": "phase_change",
                                 "phase": "killer_power_selection",
-                                "message": "🎴 Les tueurs choisissent leur pouvoir",
+                                "message": "🎴 Les orcs choisissent leur pouvoir",
                                 "game": game
                             })
 

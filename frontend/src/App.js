@@ -122,7 +122,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const isDefender = event.defender_id === playerId;
   const isAttacker = event.attacker_id === playerId;
   
-  // Seul le DÉFENSEUR (survivant) simule le combat et envoie le résultat
+  // Seul le DÉFENSEUR (aventurier) simule le combat et envoie le résultat
   const isSimulator = isDefender;
   
   // PV initiaux selon le rôle dans le combat
@@ -198,13 +198,13 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     };
   }, [isAttacker, isDefender, wsRef, event]);
   useEffect(() => {
-    // Seul le défenseur (survivant) simule le combat
+    // Seul le défenseur (aventurier) simule le combat
     if (!isSimulator) return;
 
     let mounted = true;
 
     const runCombat = async () => {
-      // Utiliser les PV actuels du survivant depuis le serveur
+      // Utiliser les PV actuels de l'aventurier depuis le serveur
       let currentSurvivorHP = initialSurvivorHP;
       let currentOrcHP = 6;
       let currentTurn = "survivor";
@@ -219,7 +219,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         let logEntry = "";
 
         if (currentTurn === "survivor") {
-          // Le survivant attaque l'orc
+          // L'aventurier attaque l'orc
           setSurvivorAttacking(true);
           setTimeout(() => setSurvivorAttacking(false), 300);
 
@@ -231,7 +231,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
 
           currentTurn = "orc";
         } else {
-          // L'orc attaque le survivant
+          // L'orc attaque l'aventurier
           setOrcAttacking(true);
           setTimeout(() => setOrcAttacking(false), 300);
 
@@ -265,7 +265,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       // Combat terminé
       setCombatOver(true);
       
-      // Résultat : si l'orc est à 0 PV, le survivant gagne
+      // Résultat : si l'orc est à 0 PV, l'aventurier gagne
       const result = currentOrcHP <= 0 ? "defender_win" : "attacker_win";
       setCombatResult(result);
 
@@ -361,7 +361,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
               {/* VS */}
               <div style={{ fontSize: "3rem", fontWeight: "bold", color: "#d4af37", margin: "0 2rem" }}>VS</div>
 
-              {/* Survivant */}
+              {/* Aventurier */}
               <div style={{ textAlign: "center", flex: 1 }}>
                 <div style={{ position: "relative", marginBottom: "1rem" }}>
                   <img
@@ -435,7 +435,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     );
   }
 
-  // Vue pour le défenseur (survivant) - combat complet
+  // Vue pour le défenseur (aventurier) - combat complet
   return (
     <div
       className="game-over-overlay"
@@ -458,7 +458,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         </CardHeader>
         <CardContent>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
-            {/* Survivant (vous) */}
+            {/* Aventurier (vous) */}
             <div style={{ textAlign: "center", flex: 1 }}>
               <div style={{ position: "relative", marginBottom: "1rem" }}>
                 <img
@@ -686,7 +686,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const isSurvivor = event.survivors.some(s => s.id === playerId);
   
   // NOUVEAU : Tous les clients simulent le combat localement (déterministe)
-  // Seul le PREMIER survivant envoie les résultats au serveur
+  // Seul le PREMIER aventurier envoie les résultats au serveur
   const isSimulator = isSurvivor && event.survivors[0].id === playerId;
   const shouldSimulate = true; // Tous les clients simulent
   
@@ -703,16 +703,22 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   useEffect(() => {
     const fighters = [];
     
-    // Ajouter les survivants
+    // Ajouter les aventuriers
     event.survivors.forEach((survivor, idx) => {
+      // NEW: récupérer les bonus individuels de cet aventurier
+      const initiativeBonus = survivor.initiative_bonus || 0;
+      const damageBonus = survivor.damage_bonus || 0;
+      const baseInitiative = Math.floor((hashCode(survivor.id + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1);
+
       fighters.push({
         id: survivor.id,
         name: survivor.name,
         class: survivor.class,
         type: 'survivor',
         hp: survivor.hp,
-        maxHp: survivor.hp,
-        initiative: Math.floor((hashCode(survivor.id + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
+        maxHp: survivor.max_hp || survivor.hp, // NEW: utilise max_hp pour la barre de vie
+        initiative: baseInitiative + initiativeBonus, // NEW: + bonus d'initiative individuel
+        damageBonus: damageBonus, // NEW: stocké sur le combattant pour le calcul des dégâts
         position: idx, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -881,7 +887,10 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         await new Promise(resolve => setTimeout(resolve, 1700)); // 30 frames × 50ms + 200ms buffer
         
         // Calculer les dégâts
-        const damage = rng.nextInt(1, 6);
+        const baseDamage = rng.nextInt(1, 6);
+        // NEW: si l'attaquant est un aventurier, on ajoute son bonus de dégâts individuel
+        const bonusDamage = (attacker.type === 'survivor' && attacker.damageBonus) ? attacker.damageBonus : 0;
+        const damage = baseDamage + bonusDamage;
         target.hp = Math.max(0, target.hp - damage);
         
         if (target.hp <= 0) {
@@ -948,7 +957,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 
   // Fonction pour obtenir les paramètres de sprite sheet (UNIFORMISÉS)
   const getSpriteParams = (combatant, animationType) => {
-    // Paramètres uniformisés pour tous les personnages (gobelins et survivants)
+    // Paramètres uniformisés pour tous les personnages (gobelins et aventuriers)
     switch (animationType) {
       case 'idle':
         return { cols: 5, rows: 6, totalFrames: 30 };
@@ -993,7 +1002,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         border: '4px solid #d4af37',
         overflow: 'hidden'
       }}>
-        {/* Survivants (à gauche) */}
+        {/* Aventuriers (à gauche) */}
         {combatants.filter(c => c.type === 'survivor').map((combatant, idx) => {
           const animationType = !combatant.alive 
             ? 'fainted' 
@@ -1081,7 +1090,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                 ...getPosition(combatant),
                 opacity: combatant.alive ? 1 : 0.3,
                 transition: 'all 0.4s ease-out',
-                transform: 'scaleX(-1)' // Miroir pour faire face aux survivants
+                transform: 'scaleX(-1)' // Miroir pour faire face aux aventuriers
               }}
             >
               <SpriteSheetAnimator
@@ -1620,7 +1629,7 @@ const Home = () => {
                 >
                   <img 
                     src="/illustrations/Survivant.png" 
-                    alt="Survivant" 
+                    alt="Aventurier" 
                     style={{ 
                       width: '100%', height: '100%', objectFit: 'cover',
                       position: 'absolute', top: 0, left: 0,
@@ -1652,7 +1661,7 @@ const Home = () => {
                 >
                   <img 
                     src="/illustrations/Tueur.png" 
-                    alt="Tueur" 
+                    alt="Orc" 
                     style={{ 
                       width: '100%', height: '100%', objectFit: 'cover',
                       position: 'absolute', top: 0, left: 0,
@@ -2931,7 +2940,7 @@ const selectRoom = (roomName) => {
       if (currentPlayer.role === "survivor" && (gameState.phase === "killer_selection" || gameState.phase === "rage_second_selection")) {
         toast.error("C'est le tour des Orcs !");
       } else if (currentPlayer.role === "killer" && gameState.phase === "survivor_selection") {
-        toast.error("C'est le tour des survivants !");
+        toast.error("C'est le tour des aventuriers !");
       }
       return;
     }
@@ -3142,7 +3151,7 @@ const selectRoom = (roomName) => {
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center' }}>
                 {assignedRole === "survivor" 
                   ? "Vous êtes un aventurier, trouvez le cristal et échappez-vous d'ici !" 
-                  : "Vous êtes un Orc, trouvez les survivants et débarrassez-vous d'eux !"}
+                  : "Vous êtes un Orc, trouvez les aventuriers et débarrassez-vous d'eux !"}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#888', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -4081,7 +4090,7 @@ const selectRoom = (roomName) => {
         <div className="game-info">
           {gameState.phase === "survivor_selection" && (
             <div className="phase-indicator survivor-phase" data-testid="phase-indicator">
-              🛡️ Tour des survivants
+              🛡️ Tour des aventuriers
             </div>
           )}
 {gameState.phase === "killer_power_selection" && (
@@ -4160,7 +4169,7 @@ const selectRoom = (roomName) => {
               <p className="game-over-message">
                 {gameState.winner === "survivors"
                   ? "Les aventuriers ont collecté toutes les clefs !"
-                  : "Les Orcs ont éliminé tous les survivants..."}
+                  : "Les Orcs ont éliminé tous les aventuriers..."}
               </p>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
 <Button
@@ -4227,7 +4236,7 @@ const selectRoom = (roomName) => {
                     if (currentPlayerRole === "survivor") {
                       playersAtCurrentPosition = Object.values(gameState.players)
                         .filter(player => {
-                          // Joueur survivant, non éliminé, avec cette pièce comme position actuelle
+                          // Aventurier, non éliminé, avec cette pièce comme position actuelle
                           if (player.role !== "survivor" || player.eliminated) return false;
                           if (player.current_room !== room.name) return false;
                           // Ne pas afficher si le joueur a déjà une pending_action (il sera affiché via playersWithPendingAction)
@@ -4236,7 +4245,7 @@ const selectRoom = (roomName) => {
                         });
                     }
 
-                    // 3. Pour les tueurs (orcs) : afficher les survivants révélés par le gobelin de patrouille pour ce tour
+                    // 3. Pour les orcs : afficher les aventuriers révélés par le gobelin de patrouille pour ce tour
                     let patrolRevealedInRoom = [];
                     if (currentPlayerRole === "killer" && gameState.patrol_revealed_survivors) {
                       patrolRevealedInRoom = Object.entries(gameState.patrol_revealed_survivors)
