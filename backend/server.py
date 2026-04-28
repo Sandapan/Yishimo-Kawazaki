@@ -92,6 +92,36 @@ class ResolveCombatRequest(BaseModel):
 
 
 # Helper functions
+
+# Inventory helpers
+def has_item(player: dict, item_type: str) -> bool:
+    """Check if player has an item of the specified type in their inventory"""
+    inventory = player.get("inventory") or []
+    return any(slot is not None and slot.get("type") == item_type for slot in inventory)
+
+def remove_item(player: dict, item_type: str) -> bool:
+    """Remove the first occurrence of item_type from inventory. Returns True if removed."""
+    inventory = player.get("inventory") or []
+    for i, slot in enumerate(inventory):
+        if slot is not None and slot.get("type") == item_type:
+            inventory[i] = None
+            return True
+    return False
+
+def add_item(player: dict, item_type: str) -> bool:
+    """Add item to the first empty slot. Returns False if inventory is full."""
+    inventory = player.get("inventory") or []
+    for i, slot in enumerate(inventory):
+        if slot is None:
+            inventory[i] = {"type": item_type}
+            return True
+    return False
+
+def is_inventory_full(player: dict) -> bool:
+    """Check if all inventory slots are occupied"""
+    inventory = player.get("inventory") or []
+    return all(slot is not None for slot in inventory)
+
 def generate_short_code() -> str:
     """Generate a short 4-character alphanumeric code"""
     characters = string.ascii_uppercase + string.digits
@@ -148,16 +178,15 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "is_host": True,
                 "eliminated": False,
                 "current_room": None,
-                "has_medikit": False,
                 "role": host_role,  # "survivor" or "killer"
                 "immobilized_next_turn": False,  # NEW: for piege power
                 "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
                 "gold": 0,  # NEW: gold accumulated by survivors
-                "has_antidote": False,  # NEW: for merchant system - antidote item
                 "hp": 36 if host_role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
                 "max_hp": 36 if host_role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
                 "initiative_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus d'initiative individuel
-                "damage_bonus": 0 if host_role == "survivor" else 0  # NEW: bonus de dégâts individuel
+                "damage_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus de dégâts individuel
+                "inventory": [None] * 9 if host_role == "survivor" else None
             }
         },
         "rooms": rooms_state,
@@ -169,6 +198,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "events": [],
         "pending_actions": {},
         "pending_events": {},  # NEW: Track players with active event popups
+        "survivors_ended_turn": [],  # NEW: list of player_ids that have clicked "Terminer mon tour"
         "should_place_next_key": False,
         "conspiracy_mode": False,  # NEW: conspiracy mode flag
         "active_powers": {},  # NEW: {power_name: {used_by: [player_ids], data: {...}}}
@@ -857,20 +887,26 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
         if player_role == "survivor":
             # Survivors see all survivors' positions and eliminated players
             if player_data["role"] == "survivor" or player_data["eliminated"]:
+                # Filter inventory: only show own inventory
+                if pid != player_id:
+                    player_copy["inventory"] = None
                 filtered_state["players"][pid] = player_copy
             else:
                 # Hide killer position (but keep player in list without current_room)
                 player_copy["current_room"] = None
+                player_copy["inventory"] = None
                 filtered_state["players"][pid] = player_copy
 
         elif player_role == "killer":
             # Killers see other killers' positions and eliminated players
             if player_data["role"] == "killer" or player_data["eliminated"]:
+                player_copy["inventory"] = None  # Killers don't have inventory
                 filtered_state["players"][pid] = player_copy
             else:
                 # Hide survivor position (but keep player in list without current_room)
                 player_copy["current_room"] = None
                 player_copy["gold"] = 0  # Hide gold from killers
+                player_copy["inventory"] = None  # Hide inventory from killers
                 filtered_state["players"][pid] = player_copy
 
     # Filter pending_actions: only show actions from same role
@@ -929,6 +965,110 @@ async def broadcast_to_session(session_id: str, message: dict, role_filter: Opti
     # Clean up disconnected players
     for player_id in disconnected:
         del active_connections[session_id][player_id]
+
+async def try_advance_to_killer_phase(session_id: str) -> bool:
+    """
+    Check if the survivor phase should end and transition to the killer phase.
+    Conditions:
+      - All alive survivors have selected a room
+      - All alive survivors have clicked "Terminer mon tour" (end_turn)
+      - No pending events (rune popups, trap, mimic, merchant, etc.)
+    Returns True if the transition happened, False otherwise.
+    """
+    game = game_sessions.get(session_id)
+    if not game:
+        return False
+
+    if game["phase"] != "survivor_selection":
+        return False
+
+    alive_survivors = [
+        p for p in game["players"].values()
+        if p["role"] == "survivor" and not p["eliminated"]
+    ]
+    survivors_selected = [
+        pid for pid in game["pending_actions"].keys()
+        if game["players"][pid]["role"] == "survivor"
+        and not game["players"][pid]["eliminated"]
+    ]
+    survivors_ended_turn = [
+        pid for pid in game.get("survivors_ended_turn", [])
+        if pid in game["players"]
+        and game["players"][pid]["role"] == "survivor"
+        and not game["players"][pid]["eliminated"]
+    ]
+    pending_events = game.get("pending_events", {})
+
+    all_selected = len(survivors_selected) == len(alive_survivors)
+    all_ended = len(survivors_ended_turn) == len(alive_survivors)
+    no_pending = len(pending_events) == 0
+
+    if not (all_selected and all_ended and no_pending):
+        return False
+
+    logger.info("All survivors ended their turn - transitioning to killer phase")
+
+    # Broadcast latest state before phase change
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    await asyncio.sleep(2)
+
+    # Clear traps and mimics from previous turn
+    for room_data in game["rooms"].values():
+        room_data["trapped"] = False
+        room_data.pop("trap_triggered", None)
+        room_data["has_mimic"] = False
+        room_data["teleportation_trap"] = False
+        room_data["teleportation_exit"] = False
+        room_data["teleportation_target_room"] = None
+
+    # GOLIATH: track previous turn rooms
+    if game.get("goliath_active", False):
+        current_turn_rooms = []
+        for pid, action in game["pending_actions"].items():
+            if game["players"][pid]["role"] == "survivor":
+                room_selected = action.get("room")
+                if room_selected and room_selected not in current_turn_rooms:
+                    current_turn_rooms.append(room_selected)
+        game["goliath_previous_turn_rooms"] = current_turn_rooms
+
+    # Move to killer power selection
+    game["phase"] = "killer_power_selection"
+    game["pending_power_selections"] = {}
+
+    # EBOULEMENT: clear after survivor phase
+    if game.get("eboulement_active", False):
+        game["eboulement_active"] = False
+        game["eboulement_locked_floors"] = {}
+        eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
+        game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
+        await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
+
+    # Assign random powers to alive killers
+    alive_killers = [
+        p for p in game["players"].values()
+        if p["role"] == "killer" and not p["eliminated"]
+    ]
+    for killer in alive_killers:
+        killer_id = killer["id"]
+        power_options = get_random_powers(game_state=game)
+        game["pending_power_selections"][killer_id] = {
+            "options": power_options,
+            "selected_power": None,
+            "action_data": None,
+            "action_complete": False
+        }
+
+    await broadcast_to_session(session_id, {
+        "type": "phase_change",
+        "phase": "killer_power_selection",
+        "message": "🎴 Les orcs choisissent leur pouvoir",
+        "game": game
+    })
+
+    return True
 
 async def process_turn(session_id: str):
     """Process a complete turn - survivors and killers have already selected their rooms"""
@@ -995,13 +1135,13 @@ async def process_turn(session_id: str):
         # Check for medikit
         if room["has_medikit"]:
             room["has_medikit"] = False
-            player["has_medikit"] = True
+            add_item(player, "medikit")
             event_msg = f"⚗️ {player['name']} a trouvé la potion de résurrection et en est désormais le porteur."
             game["events"].append({"message": event_msg, "type": "medikit_found"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
 
         # Auto-revive: If survivor has medikit and enters room with eliminated player
-        if player["has_medikit"] and room["eliminated_players"]:
+        if has_item(player, "medikit") and room["eliminated_players"]:
             # Revive the first eliminated player in this room
             target_player_id = room["eliminated_players"][0]
             if target_player_id in game["players"] and game["players"][target_player_id]["eliminated"]:
@@ -1009,7 +1149,7 @@ async def process_turn(session_id: str):
                 game["players"][target_player_id]["eliminated"] = False
                 # Reset poison status when revived
                 game["players"][target_player_id]["poisoned_countdown"] = 0
-                player["has_medikit"] = False
+                remove_item(player, "medikit")
                 room["eliminated_players"].remove(target_player_id)
 
                 event_msg = f"💚 {player['name']} a ranimé {game['players'][target_player_id]['name']} !"
@@ -1305,6 +1445,8 @@ async def process_turn(session_id: str):
     game["turn"] += 1
     game["phase"] = "survivor_selection"
     game["pending_actions"] = {}
+    game["pending_events"] = {}
+    game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
@@ -1395,8 +1537,8 @@ async def process_rage_second_selections(session_id: str):
                 })
                 
                 # If survivor had medikit, destroy it and respawn a new one
-                if survivor["has_medikit"]:
-                    survivor["has_medikit"] = False
+                if has_item(survivor, "medikit"):
+                    remove_item(survivor, "medikit")
                     new_medikit_room = respawn_medikit(game)
                     if new_medikit_room:
                         respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
@@ -1554,6 +1696,8 @@ async def process_rage_second_selections(session_id: str):
     game["turn"] += 1
     game["phase"] = "survivor_selection"
     game["pending_actions"] = {}
+    game["pending_events"] = {}
+    game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
@@ -1650,16 +1794,15 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "is_host": False,
         "eliminated": False,
         "current_room": None,
-        "has_medikit": False,
         "role": request.role,  # "survivor" or "killer"
         "immobilized_next_turn": False,  # NEW: for piege power
         "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
         "gold": 0,  # NEW: gold accumulated by survivors
-        "has_antidote": False,  # NEW: for merchant system - antidote item
         "hp": 36 if request.role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
         "max_hp": 36 if request.role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
         "initiative_bonus": 0,  # NEW: bonus d'initiative individuel
-        "damage_bonus": 0  # NEW: bonus de dégâts individuel
+        "damage_bonus": 0,  # NEW: bonus de dégâts individuel
+        "inventory": [None] * 9 if request.role == "survivor" else None
     }
 
     # Broadcast new player joined
@@ -1747,6 +1890,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = 36  # NEW: PV max
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW: reset bonus initiative
                 game["players"][player_id]["damage_bonus"] = 0  # NEW: reset bonus dégâts
+                game["players"][player_id]["inventory"] = [None] * 9
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
                 # Assigner le rôle orc
@@ -1760,6 +1904,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = None  # NEW
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW
                 game["players"][player_id]["damage_bonus"] = 0  # NEW
+                game["players"][player_id]["inventory"] = None
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} aventuriers et orcs avec classes aventurier uniques")
@@ -1776,6 +1921,7 @@ async def start_game(session_id: str):
     game["game_started"] = True
     game["phase"] = "survivor_selection"  # Start with survivors
     game["turn"] = 1
+    game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
     
     # GOLIATH: Initialize kill flag for the game
     game["goliath_killed_this_turn"] = False
@@ -1851,16 +1997,15 @@ async def reset_game(session_id: str):
         
         player["eliminated"] = False
         player["current_room"] = None
-        player["has_medikit"] = False
         player["immobilized_next_turn"] = False
         player["poisoned_countdown"] = 0
         player["gold"] = 0
-        player["has_antidote"] = False
         # Réinitialiser les PV des survivants à 36
         player["hp"] = 36 if player.get("role") == "survivor" else None
         player["max_hp"] = 36 if player.get("role") == "survivor" else None  # NEW: reset max_hp
         player["initiative_bonus"] = 0  # NEW: reset bonus initiative
         player["damage_bonus"] = 0  # NEW: reset bonus dégâts
+        player["inventory"] = [None] * 9 if player.get("role") == "survivor" else None
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
@@ -2010,6 +2155,7 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["max_hp"] = 36 if request.role == "survivor" else None  # NEW
     game["players"][player_id]["initiative_bonus"] = 0  # NEW
     game["players"][player_id]["damage_bonus"] = 0  # NEW
+    game["players"][player_id]["inventory"] = [None] * 9 if request.role == "survivor" else None
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
@@ -2050,12 +2196,12 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     items = {
         "resurrection_potion": {
             "price": 1000,
-            "field": "has_medikit",
+            "item_type": "medikit",
             "name": "Potion de résurrection"
         },
         "antidote": {
             "price": 300,
-            "field": "has_antidote",
+            "item_type": "antidote",
             "name": "Antidote"
         }
     }
@@ -2066,12 +2212,16 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     item = items[item_name]
     
     # Check if player already has this item
-    if player.get(item["field"], False):
+    if has_item(player, item["item_type"]):
         raise HTTPException(status_code=400, detail=f"Vous possédez déjà {item['name']}")
     
     # Check if player has enough gold
     if player.get("gold", 0) < item["price"]:
         raise HTTPException(status_code=400, detail="Pas assez d'or")
+    
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
     
     # Deduct gold
     player["gold"] -= item["price"]
@@ -2098,11 +2248,11 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
             return {"status": "success", "message": f"{item['name']} acheté et utilisé immédiatement !"}
         else:
             # Player is not poisoned - give antidote for future use
-            player[item["field"]] = True
+            add_item(player, item["item_type"])
             logger.info(f"Player {player_id} bought antidote for future use")
     else:
         # For other items (resurrection potion), just add to inventory
-        player[item["field"]] = True
+        add_item(player, item["item_type"])
         logger.info(f"Player {player_id} bought {item_name}")
     
     # Broadcast state update
@@ -2112,6 +2262,161 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     })
     
     return {"status": "success", "message": f"{item['name']} acheté !"}
+
+# Inventory system endpoints
+class PickupRuneRequest(BaseModel):
+    player_id: str
+    rune_type: str
+
+class DismissRuneRequest(BaseModel):
+    player_id: str
+
+class UseItemRequest(BaseModel):
+    player_id: str
+    slot_index: int
+
+@api_router.post("/game/{session_id}/pickup_rune")
+async def pickup_rune(session_id: str, request: PickupRuneRequest):
+    """Add rune to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player = game["players"][request.player_id]
+    
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup runes")
+    
+    # Check if there's a pending rune event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="No rune to pickup")
+    
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "rune_found":
+        raise HTTPException(status_code=400, detail="No rune to pickup")
+    
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+    
+    # Add rune to inventory
+    if not add_item(player, request.rune_type):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter la rune")
+    
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+    
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    logger.info(f"Player {request.player_id} picked up rune: {request.rune_type}")
+    
+    return {"status": "success", "message": "Rune ramassée !"}
+
+@api_router.post("/game/{session_id}/dismiss_rune")
+async def dismiss_rune(session_id: str, request: DismissRuneRequest):
+    """Dismiss/ignore the found rune"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    # Remove pending event if exists
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+    
+    # Broadcast state update so the popup disappears
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    logger.info(f"Player {request.player_id} dismissed rune")
+    
+    return {"status": "success", "message": "Rune ignorée"}
+
+@api_router.post("/game/{session_id}/use_item")
+async def use_item(session_id: str, request: UseItemRequest):
+    """Use item from inventory slot (medikit/antidote)"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player = game["players"][request.player_id]
+    
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can use items")
+    
+    # Get inventory
+    inventory = player.get("inventory") or []
+    
+    if request.slot_index < 0 or request.slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+    
+    item = inventory[request.slot_index]
+    
+    if item is None:
+        raise HTTPException(status_code=400, detail="Slot is empty")
+    
+    item_type = item.get("type")
+    
+    # Handle medikit usage
+    if item_type == "medikit":
+        # TODO: For now, just consume the item. Revival logic should be handled separately
+        inventory[request.slot_index] = None
+        logger.info(f"Player {request.player_id} used medikit from slot {request.slot_index}")
+        
+        # Broadcast state update
+        await broadcast_to_session(session_id, {
+            "type": "state_update",
+            "game": game
+        })
+        
+        return {"status": "success", "message": "Médikit utilisé !"}
+    
+    # Handle antidote usage
+    elif item_type == "antidote":
+        if player.get("poisoned_countdown", 0) <= 0:
+            raise HTTPException(status_code=400, detail="Vous n'êtes pas empoisonné !")
+        
+        player["poisoned_countdown"] = 0
+        inventory[request.slot_index] = None
+        
+        event_msg = f"💊 {player['name']} utilise un antidote et est guéri du poison !"
+        game["events"].append({"message": event_msg, "type": "antidote_used"})
+        
+        # Broadcast event
+        await broadcast_to_session(session_id, {
+            "type": "antidote_used",
+            "message": event_msg
+        })
+        
+        # Broadcast state update
+        await broadcast_to_session(session_id, {
+            "type": "state_update",
+            "game": game
+        })
+        
+        logger.info(f"Player {request.player_id} used antidote from slot {request.slot_index}")
+        
+        return {"status": "success", "message": "Antidote utilisé !"}
+    
+    else:
+        raise HTTPException(status_code=400, detail="Cet item ne peut pas être utilisé directement")
 
 # Combat resolution models
 class CombatLogUpdate(BaseModel):
@@ -2467,84 +2772,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "message": f"✅ {game['players'][player_id]['name']} a fait son choix"
                     })
                     
-                   # Check if all survivors have selected
+                   # Check if all survivors have selected and ended their turn
                     if game["phase"] == "survivor_selection":
-                        alive_survivors = [p for p in game["players"].values()\
-                                         if p["role"] == "survivor" and not p["eliminated"]]
-                        # FIX: Only count non-eliminated survivors in selection check
-                        survivors_selected = [pid for pid in game["pending_actions"].keys()\
-                                            if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
-
-                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
-                            # Broadcast pour que les survivants voient le dernier choix
-                            await broadcast_to_session(session_id, {
-                                "type": "state_update",
-                                "game": game_sessions[session_id]
-                            })
-                            # Pause pour laisser le flash s'afficher
-                            await asyncio.sleep(2)
-                            
-                            # All survivors have selected, NOW clear traps and mimics from previous turn
-                            for room_name_clear, room_data in game["rooms"].items():
-                                room_data["trapped"] = False
-                                room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False
-                                room_data["teleportation_trap"] = False
-                                room_data["teleportation_exit"] = False
-                                room_data["teleportation_target_room"] = None
-
-                            # GOLIATH
-                            if game.get("goliath_active", False):
-                                current_turn_rooms = []
-                                for pid, action in game["pending_actions"].items():
-                                    if game["players"][pid]["role"] == "survivor":
-                                        room_selected = action.get("room")
-                                        if room_selected and room_selected not in current_turn_rooms:
-                                            current_turn_rooms.append(room_selected)
-
-                                game["goliath_previous_turn_rooms"] = current_turn_rooms
-
-                            # Move to killer power selection
-                            game["phase"] = "killer_power_selection"
-                            game["pending_power_selections"] = {}
-
-                            # EBOULEMENT reset
-                            if game.get("eboulement_active", False):
-                                game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}
-                                eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
-                                game["events"].append({
-                                    "message": eboulement_clear_msg,
-                                    "type": "eboulement_cleared"
-                                })
-                                await broadcast_to_session(session_id, {
-                                    "type": "event",
-                                    "message": eboulement_clear_msg
-                                })
-
-                            # Assign powers
-                            alive_killers = [
-                                p for p in game["players"].values()
-                                if p["role"] == "killer" and not p["eliminated"]
-                            ]
-
-                            for killer in alive_killers:
-                                killer_id = killer["id"]
-                                power_options = get_random_powers(game_state=game)
-
-                                game["pending_power_selections"][killer_id] = {
-                                    "options": power_options,
-                                    "selected_power": None,
-                                    "action_data": None,
-                                    "action_complete": False
-                                }
-
-                            await broadcast_to_session(session_id, {
-                                "type": "phase_change",
-                                "phase": "killer_power_selection",
-                                "message": "🎴 Les orcs choisissent leur pouvoir",
-        "game": game
-    })
+                        await try_advance_to_killer_phase(session_id)
                     
                     # Broadcast updated state
                     await broadcast_to_session(session_id, {
@@ -2729,8 +2959,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["events"].append({"message": lock_msg, "type": "room_locked"})
                             await broadcast_to_session(session_id, {"type": "event", "message": lock_msg})
                             
-                            if player.get("has_medikit", False):
-                                player["has_medikit"] = False
+                            if has_item(player, "medikit"):
+                                remove_item(player, "medikit")
                                 new_medikit_room = respawn_medikit(game)
                                 if new_medikit_room:
                                     respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
@@ -2902,6 +3132,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
                         except:
                             pass
+                        
+                        # RUNE DROP SYSTEM (after gold)
+                        roll = random.random()
+                        rune_type = None
+                        if roll < 0.05:
+                            rune_type = "rune_vitalite"
+                        elif roll < 0.15:
+                            rune_type = "rune_initiative"
+                        elif roll < 0.30:
+                            rune_type = "rune_dommage"
+                        
+                        if rune_type:
+                            game["pending_events"][player_id] = {
+                                "type": "rune_found",
+                                "rune_type": rune_type,
+                                "inventory_full": is_inventory_full(player)
+                            }
+                            logger.info(f"Player {player_id} found rune: {rune_type}")
                     
                     # Check for mimic
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
@@ -2943,63 +3191,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     # Check if all players of the current role have selected
                     if game["phase"] == "survivor_selection":
-                        alive_survivors = [p for p in game["players"].values()\
-                                         if p["role"] == "survivor" and not p["eliminated"]]
-                        survivors_selected = [pid for pid in game["pending_actions"].keys()\
-                                            if game["players"][pid]["role"] == "survivor" and not game["players"][pid]["eliminated"]]
-
-                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
-                            # Broadcast pour que les survivants voient le dernier choix
-                            await broadcast_to_session(session_id, {
-                                "type": "state_update",
-                                "game": game_sessions[session_id]
-                            })
-                            # Pause pour laisser le flash s'afficher
-                            await asyncio.sleep(2)
-                            for room_name_clear, room_data in game["rooms"].items():
-                                room_data["trapped"] = False
-                                room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False
-                                room_data["teleportation_trap"] = False
-                                room_data["teleportation_exit"] = False
-                                room_data["teleportation_target_room"] = None
-                            
-                            if game.get("goliath_active", False):
-                                current_turn_rooms = []
-                                for pid, action in game["pending_actions"].items():
-                                    if game["players"][pid]["role"] == "survivor":
-                                        room_selected = action.get("room")
-                                        if room_selected and room_selected not in current_turn_rooms:
-                                            current_turn_rooms.append(room_selected)
-                                game["goliath_previous_turn_rooms"] = current_turn_rooms
-                            
-                            game["phase"] = "killer_power_selection"
-                            game["pending_power_selections"] = {}
-                            
-                            if game.get("eboulement_active", False):
-                                game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}
-                                eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
-                                game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
-                                await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
-                            
-                            alive_killers = [p for p in game["players"].values() if p["role"] == "killer" and not p["eliminated"]]
-                            for killer in alive_killers:
-                                killer_id = killer["id"]
-                                power_options = get_random_powers(game_state=game)
-                                game["pending_power_selections"][killer_id] = {
-                                    "options": power_options,
-                                    "selected_power": None,
-                                    "action_data": None,
-                                    "action_complete": False
-                                }
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "phase_change",
-                                "phase": "killer_power_selection",
-                                "message": "🎴 Les orcs choisissent leur pouvoir",
-        "game": game
-    })
+                        await try_advance_to_killer_phase(session_id)
 
                     elif game["phase"] == "killer_selection":
                         alive_killers = [p for p in game["players"].values()\
@@ -3071,7 +3263,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if game["players"][player_id]["role"] != "survivor":
                     continue
 
-                if not game["players"][player_id]["has_medikit"]:
+                if not has_item(game["players"][player_id], "medikit"):
                     continue
 
                 target_player_id = data["target_player_id"]
@@ -3082,7 +3274,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if target_room == current_room:
                         game["players"][target_player_id]["eliminated"] = False
                         game["players"][target_player_id]["poisoned_countdown"] = 0
-                        game["players"][player_id]["has_medikit"] = False
+                        remove_item(game["players"][player_id], "medikit")
 
                         if target_player_id in game["rooms"][target_room]["eliminated_players"]:
                             game["rooms"][target_room]["eliminated_players"].remove(target_player_id)
@@ -3101,7 +3293,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if game["players"][player_id]["role"] != "survivor":
                     continue
 
-                if not game["players"][player_id].get("has_antidote", False):
+                if not has_item(game["players"][player_id], "antidote"):
                     continue
 
                 if game["players"][player_id].get("poisoned_countdown", 0) <= 0:
@@ -3112,7 +3304,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     continue
 
                 game["players"][player_id]["poisoned_countdown"] = 0
-                game["players"][player_id]["has_antidote"] = False
+                remove_item(game["players"][player_id], "antidote")
 
                 event_msg = f"💊 {game['players'][player_id]['name']} utilise un antidote et est guéri du poison !"
                 game["events"].append({"message": event_msg, "type": "antidote_used"})
@@ -3126,68 +3318,40 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if player_id in game.get("pending_events", {}):
                     del game["pending_events"][player_id]
                     logger.info(f"Player {player_id} completed their event")
-                    
-                    # Check if we can now transition to killer phase
-                    if game["phase"] == "survivor_selection":
-                        alive_survivors = [p for p in game["players"].values()
-                                         if p["role"] == "survivor" and not p["eliminated"]]
-                        survivors_selected = [pid for pid in game["pending_actions"].keys()
-                                            if game["players"][pid]["role"] == "survivor" 
-                                            and not game["players"][pid]["eliminated"]]
-                        
-                        # All survivors selected AND no pending events
-                        if len(survivors_selected) == len(alive_survivors) and len(game.get("pending_events", {})) == 0:
-                            logger.info("All survivors ready - transitioning to killer phase")
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "state_update",
-                                "game": game_sessions[session_id]
-                            })
-                            await asyncio.sleep(2)
-                            
-                            # Clear traps
-                            for room_name_clear, room_data in game["rooms"].items():
-                                room_data["trapped"] = False
-                                room_data.pop("trap_triggered", None)
-                                room_data["has_mimic"] = False
-                                room_data["teleportation_trap"] = False
-                                room_data["teleportation_exit"] = False
-                                room_data["teleportation_target_room"] = None
-                            
-                            if game.get("goliath_active", False):
-                                current_turn_rooms = []
-                                for pid, action in game["pending_actions"].items():
-                                    if game["players"][pid]["role"] == "survivor":
-                                        room_selected = action.get("room")
-                                        if room_selected and room_selected not in current_turn_rooms:
-                                            current_turn_rooms.append(room_selected)
-                                game["goliath_previous_turn_rooms"] = current_turn_rooms
-                            
-                            game["phase"] = "killer_power_selection"
-                            game["pending_power_selections"] = {}
-                            
-                            if game.get("eboulement_active", False):
-                                game["eboulement_active"] = False
-                                game["eboulement_locked_floors"] = {}
-                            
-                            alive_killers = [p for p in game["players"].values()
-                                           if p["role"] == "killer" and not p["eliminated"]]
-                            for killer in alive_killers:
-                                killer_id = killer["id"]
-                                power_options = get_random_powers(game_state=game)
-                                game["pending_power_selections"][killer_id] = {
-                                    "options": power_options,
-                                    "selected_power": None,
-                                    "action_data": None,
-                                    "action_complete": False
-                                }
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "phase_change",
-                                "phase": "killer_power_selection",
-                                "message": "🎴 Les orcs choisissent leur pouvoir",
-                                "game": game
-                            })
+                
+                # Check if we can now transition to killer phase
+                if game["phase"] == "survivor_selection":
+                    await try_advance_to_killer_phase(session_id)
+
+            # NEW: Handle "Terminer mon tour" button click from survivors
+            elif data["type"] == "end_turn":
+                if player["role"] != "survivor":
+                    continue
+                if game["phase"] != "survivor_selection":
+                    continue
+                if player.get("eliminated", False):
+                    continue
+                # The player must have already selected a room and have no pending event
+                if player_id not in game.get("pending_actions", {}):
+                    continue
+                if player_id in game.get("pending_events", {}):
+                    continue
+
+                if "survivors_ended_turn" not in game:
+                    game["survivors_ended_turn"] = []
+                if player_id not in game["survivors_ended_turn"]:
+                    game["survivors_ended_turn"].append(player_id)
+                    logger.info(f"Player {player_id} ({player['name']}) ended their turn")
+
+                    await broadcast_to_session(session_id, {
+                        "type": "player_action",
+                        "player_id": player_id,
+                        "player_name": player["name"],
+                        "message": f"⏭️ {player['name']} a terminé son tour"
+                    })
+
+                # Check if we can transition to killer phase
+                await try_advance_to_killer_phase(session_id)
 
 
             # Broadcast updated state (filtered per player)

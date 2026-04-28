@@ -86,6 +86,41 @@ const FLOOR_NAMES = {
   "upper_floor": "🕯️ Étage"
 };
 
+// Inventory system constants
+// Slot positions are measured from grid_background.png (1440x1440, ~5% wood border).
+// Cells are centered at 28%, 52%, 76% (horizontal) and 27%, 51%, 75% (vertical).
+// With slot size 21% x 21%, top-left = center - 10.5%.
+const SLOT_POSITIONS = [
+  { left: '17.5%', top: '16.5%' }, // slot 0 (haut-gauche)
+  { left: '41.5%', top: '16.5%' }, // slot 1
+  { left: '65.5%', top: '16.5%' }, // slot 2
+  { left: '17.5%', top: '40.5%' }, // slot 3
+  { left: '41.5%', top: '40.5%' }, // slot 4 (centre)
+  { left: '65.5%', top: '40.5%' }, // slot 5
+  { left: '17.5%', top: '64.5%' }, // slot 6
+  { left: '41.5%', top: '64.5%' }, // slot 7
+  { left: '65.5%', top: '64.5%' }, // slot 8 (bas-droite)
+];
+
+// Slot dimensions (kept here so InventoryModal can stay declarative).
+const SLOT_SIZE_PCT = 21; // % of inventory container - matches the stone cell interior
+
+const ITEM_SPRITES = {
+  rune_dommage: '/inventory/rune_dommage.png',
+  rune_initiative: '/inventory/rune_initiative.png',
+  rune_vitalite: '/inventory/rune_vitalite.png',
+  medikit: '/inventory/medikit.png',
+  antidote: '/inventory/antidote.png',
+};
+
+const ITEM_NAMES = {
+  rune_dommage: 'Rune de Dommage',
+  rune_initiative: 'Rune d\'Initiative',
+  rune_vitalite: 'Rune de Vitalité',
+  medikit: 'Médikit',
+  antidote: 'Antidote',
+};
+
 // MODIFIED: Helper function to copy text with fallback
 const copyToClipboard = (text) => {
   // Method 1: Try modern Clipboard API first
@@ -1219,6 +1254,302 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+// ========== INVENTORY HUD COMPONENT ==========
+const InventoryHUD = ({ player, onClick }) => {
+  if (!player || player.role !== "survivor") return null;
+  
+  const inventory = player.inventory || [];
+  const filledSlots = inventory.filter(slot => slot !== null).length;
+  
+  return (
+    <button
+      onClick={onClick}
+      data-testid="inventory-hud-button"
+      style={{
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        backgroundColor: 'rgba(42, 31, 23, 0.95)',
+        border: '2px solid #d4af37',
+        borderRadius: '8px',
+        padding: '12px 20px',
+        color: '#d4af37',
+        fontSize: '18px',
+        fontWeight: 'bold',
+        cursor: 'pointer',
+        zIndex: 100,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        transition: 'all 0.2s ease',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)'
+      }}
+      onMouseEnter={(e) => {
+        e.target.style.backgroundColor = 'rgba(52, 41, 33, 0.95)';
+        e.target.style.transform = 'scale(1.05)';
+      }}
+      onMouseLeave={(e) => {
+        e.target.style.backgroundColor = 'rgba(42, 31, 23, 0.95)';
+        e.target.style.transform = 'scale(1)';
+      }}
+    >
+      🎒 {filledSlots}/9
+    </button>
+  );
+};
+
+// ========== INVENTORY MODAL COMPONENT ==========
+const InventoryModal = ({ player, onClose, sessionId }) => {
+  if (!player || player.role !== "survivor") return null;
+  
+  const inventory = player.inventory || [];
+  
+  const handleSlotClick = async (index, item) => {
+    if (!item) return;
+    
+    const itemType = item.type;
+    
+    // Only medikit and antidote can be used directly
+    if (itemType === 'medikit' || itemType === 'antidote') {
+      try {
+        const response = await axios.post(`${API}/game/${sessionId}/use_item`, {
+          player_id: player.id,
+          slot_index: index
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success(response.data.message);
+        }
+      } catch (error) {
+        const errorMsg = error.response?.data?.detail || "Erreur lors de l'utilisation de l'item";
+        toast.error(errorMsg);
+      }
+    }
+  };
+  
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 2000,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'relative',
+          width: 'min(90vw, 90vh, 600px)',
+          aspectRatio: '1 / 1',
+          backgroundImage: 'url(/inventory/grid_background.png)',
+          backgroundSize: 'contain',
+          backgroundRepeat: 'no-repeat',
+          backgroundPosition: 'center',
+        }}
+      >
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          style={{
+            position: 'absolute',
+            top: '-50px',
+            right: '0',
+            backgroundColor: '#d4af37',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '10px 20px',
+            color: '#2a1f17',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+          }}
+        >
+          ✕ Fermer
+        </button>
+
+        {/* Inventory slots */}
+        {SLOT_POSITIONS.map((position, index) => {
+          const item = inventory[index];
+          return (
+            <div
+              key={index}
+              className="inventory-slot"
+              onClick={() => handleSlotClick(index, item)}
+              style={{
+                position: 'absolute',
+                left: position.left,
+                top: position.top,
+                width: `${SLOT_SIZE_PCT}%`,
+                height: `${SLOT_SIZE_PCT}%`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: item ? 'pointer' : 'default',
+              }}
+              title={item ? ITEM_NAMES[item.type] || item.type : ''}
+            >
+              {item && (
+                <img
+                  src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'}
+                  alt={ITEM_NAMES[item.type] || item.type}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5))',
+                    pointerEvents: 'none',
+                  }}
+                />              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ========== RUNE PICKUP MODAL COMPONENT ==========
+const RunePickupModal = ({ event, playerId, sessionId }) => {
+  if (!event || event.type !== 'rune_found') return null;
+  
+  const runeType = event.rune_type;
+  const inventoryFull = event.inventory_full;
+  
+  const handlePickup = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/pickup_rune`, {
+        player_id: playerId,
+        rune_type: runeType
+      });
+      
+      if (response.data.status === 'success') {
+        toast.success(`✨ ${ITEM_NAMES[runeType]} ajoutée à l'inventaire !`);
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || "Erreur lors du ramassage";
+      if (errorMsg === "Inventaire plein") {
+        toast.error("❌ Inventaire plein !");
+      } else {
+        toast.error(errorMsg);
+      }
+    }
+  };
+  
+  const handleDismiss = async () => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/dismiss_rune`, {
+        player_id: playerId
+      });
+    } catch (error) {
+      console.error("Error dismissing rune:", error);
+    }
+  };
+  
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+    >
+      <Card
+        style={{
+          maxWidth: '500px',
+          backgroundColor: '#2a1f17',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            ✨ Vous avez trouvé une rune !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <img
+              src={ITEM_SPRITES[runeType]}
+              alt={ITEM_NAMES[runeType]}
+              style={{
+                width: '150px',
+                height: '150px',
+                objectFit: 'contain',
+                margin: '0 auto',
+                filter: 'drop-shadow(0 4px 8px rgba(212, 175, 55, 0.5))',
+              }}
+            />
+            <h3 style={{ color: '#e8dcc4', marginTop: '16px', fontSize: '1.4rem' }}>
+              {ITEM_NAMES[runeType]}
+            </h3>
+          </div>
+          
+          {inventoryFull && (
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              color: '#ef4444',
+              textAlign: 'center',
+              fontWeight: 'bold'
+            }}>
+              ⚠️ Inventaire plein !
+            </div>
+          )}
+          
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <Button
+              onClick={handlePickup}
+              disabled={inventoryFull}
+              style={{
+                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+              }}
+            >
+              🎒 Ramasser
+            </Button>
+            <Button
+              onClick={handleDismiss}
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+              }}
+            >
+              ❌ Ignorer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
@@ -2519,6 +2850,9 @@ const prevPendingActionsRef = useRef('{}');
   // NEW: Room selection with confirmation - preSelectedRoom is the room clicked once, selectedRoom is confirmed
   const [preSelectedRoom, setPreSelectedRoom] = useState(null);
 
+  // NEW: Inventory system states
+  const [showInventory, setShowInventory] = useState(false);
+
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false);
@@ -2996,6 +3330,17 @@ const selectRoom = (roomName) => {
 
     // Clear pre-selection
     setPreSelectedRoom(null);
+  };
+
+  // NEW: End turn button - notifies server the player is ready to advance to killer phase
+  const endTurn = () => {
+    if (!gameState) return;
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "end_turn",
+        player_id: playerId
+      }));
+    }
   };
 
   const useMedikit = (targetPlayerId) => {
@@ -3800,9 +4145,9 @@ const selectRoom = (roomName) => {
                         toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
                       }
                     }}
-                    disabled={gameState.players[playerId]?.gold < 1000 || gameState.players[playerId]?.has_medikit}
+                    disabled={gameState.players[playerId]?.gold < 1000 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'medikit')}
                     style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !gameState.players[playerId]?.has_medikit) ? '#10b981' : '#555',
+                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'medikit')) ? '#10b981' : '#555',
                       minWidth: '100px'
                     }}
                   >
@@ -3837,9 +4182,9 @@ const selectRoom = (roomName) => {
                         toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
                       }
                     }}
-                    disabled={gameState.players[playerId]?.gold < 300 || gameState.players[playerId]?.has_antidote}
+                    disabled={gameState.players[playerId]?.gold < 300 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'antidote')}
                     style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 300 && !gameState.players[playerId]?.has_antidote) ? '#10b981' : '#555',
+                      backgroundColor: (gameState.players[playerId]?.gold >= 300 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'antidote')) ? '#10b981' : '#555',
                       minWidth: '100px'
                     }}
                   >
@@ -4340,6 +4685,73 @@ const selectRoom = (roomName) => {
           ))}
         </div>
 
+        {/* End Turn Button - visible to survivors after they have selected a room
+            and have no pending event popup. They must click to confirm end of turn. */}
+        {(() => {
+          if (!gameState) return null;
+          if (gameState.phase !== "survivor_selection") return null;
+          if (currentPlayerRole !== "survivor") return null;
+          const me = gameState.players[playerId];
+          if (!me || me.eliminated) return null;
+
+          const hasSelected = !!gameState.pending_actions?.[playerId];
+          const hasPendingEvent = !!gameState.pending_events?.[playerId];
+          const hasEndedTurn = (gameState.survivors_ended_turn || []).includes(playerId);
+
+          if (!hasSelected) return null;
+
+          // Count alive survivors and how many have ended their turn (for UI feedback)
+          const aliveSurvivors = Object.values(gameState.players).filter(
+            (p) => p.role === "survivor" && !p.eliminated
+          );
+          const endedCount = (gameState.survivors_ended_turn || []).filter(
+            (pid) => gameState.players[pid] && !gameState.players[pid].eliminated
+          ).length;
+
+          return (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px',
+                margin: '16px 0',
+              }}
+            >
+              <button
+                data-testid="end-turn-btn"
+                onClick={endTurn}
+                disabled={hasPendingEvent || hasEndedTurn}
+                style={{
+                  padding: '14px 32px',
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  borderRadius: '8px',
+                  border: '2px solid #d4af37',
+                  cursor: (hasPendingEvent || hasEndedTurn) ? 'not-allowed' : 'pointer',
+                  backgroundColor: hasEndedTurn ? '#4b5563' : (hasPendingEvent ? '#6b7280' : '#d4af37'),
+                  color: hasEndedTurn ? '#d1d5db' : '#1a1410',
+                  opacity: (hasPendingEvent || hasEndedTurn) ? 0.7 : 1,
+                  boxShadow: (hasPendingEvent || hasEndedTurn) ? 'none' : '0 4px 12px rgba(212,175,55,0.4)',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {hasEndedTurn
+                  ? '✅ Tour terminé - en attente des autres aventuriers...'
+                  : hasPendingEvent
+                  ? '⏳ Terminez la fouille avant de finir votre tour'
+                  : '⏭️ Terminer mon tour'}
+              </button>
+              <div
+                data-testid="end-turn-counter"
+                style={{ color: '#d4af37', fontSize: '13px', fontStyle: 'italic' }}
+              >
+                {endedCount} / {aliveSurvivors.length} aventurier(s) ont terminé leur tour
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Events Log Section */}
         <div className="events-section">
           <Card className="events-card">
@@ -4473,8 +4885,6 @@ const selectRoom = (roomName) => {
                         ❤️{player.hp}
                       </span>
                     )}
-                    {player.has_medikit && <span className="status-medikit">⚗️</span>}
-                    {player.has_antidote && <span className="status-antidote">💊</span>}
                     {player.eliminated && <span className="status-eliminated">💀</span>}
                     {player.poisoned_countdown > 0 && currentPlayerRole === "survivor" && player.role === "survivor" && (
                       <span className="status-poisoned">
@@ -4493,6 +4903,35 @@ const selectRoom = (roomName) => {
           </Card>
         </div>
       </div>
+
+      {/* Inventory HUD */}
+      {currentPlayer && (
+        <InventoryHUD 
+          player={currentPlayer}
+          onClick={() => setShowInventory(true)}
+        />
+      )}
+
+      {/* Inventory Modal */}
+      {showInventory && currentPlayer && (
+        <InventoryModal
+          player={currentPlayer}
+          onClose={() => setShowInventory(false)}
+          sessionId={sessionId}
+        />
+      )}
+
+      {/* Rune Pickup Modal */}
+      {gameState.pending_events && 
+       gameState.pending_events[playerId] && 
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'rune_found' && (
+        <RunePickupModal
+          event={gameState.pending_events[playerId]}
+          playerId={playerId}
+          sessionId={sessionId}
+        />
+      )}
     </div>
   );
 };
