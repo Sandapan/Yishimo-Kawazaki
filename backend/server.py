@@ -1240,7 +1240,8 @@ async def process_turn(session_id: str):
                     logger.info(f"⚔️ Combat multi-joueurs déclenché : {survivor_names} VS {num_goblins} Gobelin(s) dans {killer_room}")
                     
                     found_survivor = True
-# Check if this killer has rage power and found a survivor
+                    # IMPORTANT: Sortir de la boucle après avoir créé le combat
+                    break# Check if this killer has rage power and found a survivor
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
             if rage_data and not rage_data.get("used_second_chance", False):
@@ -1445,7 +1446,9 @@ async def process_turn(session_id: str):
     game["turn"] += 1
     game["phase"] = "survivor_selection"
     game["pending_actions"] = {}
-    game["pending_events"] = {}
+    # NE PAS vider pending_events ici : il contient les combat_events qui viennent
+    # juste d'être créés et qui doivent être livrés au frontend pour déclencher les
+    # modales de combat killer ↔ survivants.
     game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
     # Clear active powers
     game["active_powers"] = {}

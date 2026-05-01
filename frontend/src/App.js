@@ -1302,6 +1302,267 @@ const InventoryHUD = ({ player, onClick }) => {
   );
 };
 
+// ========== STATS HUD BUTTON COMPONENT ==========
+const StatsHUD = ({ player, onClick }) => {
+  if (!player || player.role !== "survivor") return null;
+  
+  return (
+    <button
+      onClick={onClick}
+      data-testid="stats-hud-button"
+      style={{
+        position: 'fixed',
+        top: '80px',  // En dessous de l'inventaire
+        right: '20px',
+        backgroundColor: 'rgba(42, 31, 23, 0.95)',
+        border: '2px solid #d4af37',
+        borderRadius: '8px',
+        padding: '12px 20px',
+        color: '#d4af37',
+        fontSize: '18px',
+        fontWeight: 'bold',
+        cursor: 'pointer',
+        zIndex: 100,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        transition: 'all 0.2s ease',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)'
+      }}
+      onMouseEnter={(e) => {
+        e.target.style.backgroundColor = 'rgba(52, 41, 33, 0.95)';
+        e.target.style.transform = 'scale(1.05)';
+      }}
+      onMouseLeave={(e) => {
+        e.target.style.backgroundColor = 'rgba(42, 31, 23, 0.95)';
+        e.target.style.transform = 'scale(1)';
+      }}
+    >
+      ⚔️ Stats
+    </button>
+  );
+};
+
+// ========== STATS MODAL COMPONENT ==========
+const StatsModal = ({ player, onClose }) => {
+  if (!player || player.role !== "survivor") return null;
+  
+  // Calculer les bonus des runes
+  const inventory = player.inventory || [];
+  let damageBonus = 0;
+  let healthBonus = 0;
+  let initiativeBonus = 0;
+  
+  inventory.forEach(item => {
+    if (item && item.type === 'rune_dommage') damageBonus += 2;
+    if (item && item.type === 'rune_vitalite') healthBonus += 8;
+    if (item && item.type === 'rune_initiative') initiativeBonus += 3;
+  });
+  
+  // Stats de base
+  const baseDamage = 3;  // 1d6 = moyenne 3.5 ≈ 3
+  const baseHealth = 36;
+  const baseInitiative = 10;  // 1d20 = moyenne 10.5 ≈ 10
+  
+  // Stats totales
+  const totalDamage = `1d6 ${damageBonus > 0 ? `+${damageBonus}` : ''}`;
+  const totalHealth = baseHealth + healthBonus;
+  const totalInitiative = `1d20 ${initiativeBonus > 0 ? `+${initiativeBonus}` : ''}`;
+  
+  // HP actuels
+  const currentHP = player.hp || baseHealth;
+  const maxHP = totalHealth;
+  
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+      onClick={onClose}
+      data-testid="stats-modal-overlay"
+    >
+      <Card
+        style={{
+          maxWidth: '500px',
+          width: '90%',
+          backgroundColor: '#2a1f17',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            ⚔️ Caractéristiques
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Nom et classe */}
+          <div style={{ 
+            textAlign: 'center', 
+            marginBottom: '24px',
+            paddingBottom: '16px',
+            borderBottom: '2px solid rgba(212, 175, 55, 0.3)'
+          }}>
+            <h3 style={{ color: '#e8dcc4', fontSize: '1.4rem', marginBottom: '8px' }}>
+              {player.name}
+            </h3>
+            <p style={{ color: '#b8956a', fontSize: '1.1rem' }}>
+              {player.character_class}
+            </p>
+          </div>
+          
+          {/* Stats */}
+          <div style={{ 
+            display: 'flex', 
+            flexDirection: 'column', 
+            gap: '16px',
+            marginBottom: '24px'
+          }}>
+            {/* Vitalité */}
+            <div style={{ 
+              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
+              padding: '16px', 
+              borderRadius: '8px',
+              border: '1px solid rgba(212, 175, 55, 0.2)'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                marginBottom: '8px'
+              }}>
+                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
+                  ❤️ Vitalité
+                </span>
+                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
+                  {currentHP}/{maxHP}
+                </span>
+              </div>
+              {healthBonus > 0 && (
+                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
+                  +{healthBonus} PV (Runes de vitalité)
+                </div>
+              )}
+            </div>
+            
+            {/* Dégâts */}
+            <div style={{ 
+              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
+              padding: '16px', 
+              borderRadius: '8px',
+              border: '1px solid rgba(212, 175, 55, 0.2)'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                marginBottom: '8px'
+              }}>
+                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
+                  ⚔️ Dégâts de base
+                </span>
+                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
+                  {totalDamage}
+                </span>
+              </div>
+              {damageBonus > 0 && (
+                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
+                  +{damageBonus} dégâts (Runes de dommage)
+                </div>
+              )}
+            </div>
+            
+            {/* Initiative */}
+            <div style={{ 
+              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
+              padding: '16px', 
+              borderRadius: '8px',
+              border: '1px solid rgba(212, 175, 55, 0.2)'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                marginBottom: '8px'
+              }}>
+                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
+                  ⚡ Initiative
+                </span>
+                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
+                  {totalInitiative}
+                </span>
+              </div>
+              {initiativeBonus > 0 && (
+                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
+                  +{initiativeBonus} initiative (Runes d'initiative)
+                </div>
+              )}
+            </div>
+            
+            {/* Or */}
+            <div style={{ 
+              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
+              padding: '16px', 
+              borderRadius: '8px',
+              border: '1px solid rgba(212, 175, 55, 0.2)'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center'
+              }}>
+                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
+                  💰 Or
+                </span>
+                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
+                  {player.gold || 0}
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Bouton fermer */}
+          <button
+            onClick={onClose}
+            data-testid="stats-modal-close"
+            style={{
+              width: '100%',
+              padding: '12px',
+              backgroundColor: '#d4af37',
+              border: 'none',
+              borderRadius: '8px',
+              color: '#1a1410',
+              fontSize: '16px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.backgroundColor = '#c9a033';
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.backgroundColor = '#d4af37';
+            }}
+          >
+            Fermer
+          </button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 // ========== INVENTORY MODAL COMPONENT ==========
 const InventoryModal = ({ player, onClose, sessionId }) => {
   const [deleteMode, setDeleteMode] = useState(false);
@@ -3018,6 +3279,9 @@ const prevPendingActionsRef = useRef('{}');
 
   // NEW: Inventory system states
   const [showInventory, setShowInventory] = useState(false);
+
+  // NEW: Character stats modal state
+  const [showStats, setShowStats] = useState(false);
 
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
@@ -5078,12 +5342,28 @@ const selectRoom = (roomName) => {
         />
       )}
 
+      {/* Stats HUD */}
+      {currentPlayer && (
+        <StatsHUD 
+          player={currentPlayer}
+          onClick={() => setShowStats(true)}
+        />
+      )}
+
       {/* Inventory Modal */}
       {showInventory && currentPlayer && (
         <InventoryModal
           player={currentPlayer}
           onClose={() => setShowInventory(false)}
           sessionId={sessionId}
+        />
+      )}
+
+      {/* Stats Modal */}
+      {showStats && currentPlayer && (
+        <StatsModal
+          player={currentPlayer}
+          onClose={() => setShowStats(false)}
         />
       )}
 
