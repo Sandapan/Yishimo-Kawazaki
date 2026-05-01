@@ -2275,6 +2275,10 @@ class UseItemRequest(BaseModel):
     player_id: str
     slot_index: int
 
+class DeleteItemRequest(BaseModel):
+    player_id: str
+    slot_index: int
+
 @api_router.post("/game/{session_id}/pickup_rune")
 async def pickup_rune(session_id: str, request: PickupRuneRequest):
     """Add rune to player's inventory, or refuse if full"""
@@ -2417,6 +2421,54 @@ async def use_item(session_id: str, request: UseItemRequest):
     
     else:
         raise HTTPException(status_code=400, detail="Cet item ne peut pas être utilisé directement")
+
+@api_router.post("/game/{session_id}/delete_item")
+async def delete_item(session_id: str, request: DeleteItemRequest):
+    """Delete an item from the player's inventory slot"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can manage inventory")
+
+    inventory = player.get("inventory") or []
+
+    if request.slot_index < 0 or request.slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+
+    item = inventory[request.slot_index]
+
+    if item is None:
+        raise HTTPException(status_code=400, detail="Slot is empty")
+
+    item_type = item.get("type")
+    item_name = {
+        "rune_dommage": "Rune de Dommage",
+        "rune_initiative": "Rune d'Initiative",
+        "rune_vitalite": "Rune de Vitalité",
+        "medikit": "Médikit",
+        "antidote": "Antidote",
+    }.get(item_type, item_type)
+
+    # Remove the item
+    inventory[request.slot_index] = None
+
+    logger.info(f"Player {request.player_id} deleted item {item_type} from slot {request.slot_index}")
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return {"status": "success", "message": f"{item_name} supprimé(e) de l'inventaire"}
 
 # Combat resolution models
 class CombatLogUpdate(BaseModel):
@@ -3136,11 +3188,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         # RUNE DROP SYSTEM (after gold)
                         roll = random.random()
                         rune_type = None
-                        if roll < 0.05:
+                        if roll < 0.15:
                             rune_type = "rune_vitalite"
-                        elif roll < 0.15:
-                            rune_type = "rune_initiative"
                         elif roll < 0.30:
+                            rune_type = "rune_initiative"
+                        elif roll < 0.45:
                             rune_type = "rune_dommage"
                         
                         if rune_type:

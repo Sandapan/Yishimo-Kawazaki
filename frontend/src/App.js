@@ -1304,15 +1304,34 @@ const InventoryHUD = ({ player, onClick }) => {
 
 // ========== INVENTORY MODAL COMPONENT ==========
 const InventoryModal = ({ player, onClose, sessionId }) => {
+  const [deleteMode, setDeleteMode] = useState(false);
+  const [pendingDeleteSlot, setPendingDeleteSlot] = useState(null); // {index, item}
+
   if (!player || player.role !== "survivor") return null;
-  
+
   const inventory = player.inventory || [];
-  
+
+  const resetDeleteState = () => {
+    setDeleteMode(false);
+    setPendingDeleteSlot(null);
+  };
+
+  const handleClose = () => {
+    resetDeleteState();
+    onClose();
+  };
+
   const handleSlotClick = async (index, item) => {
     if (!item) return;
-    
+
+    // If in delete mode, select this item for confirmation
+    if (deleteMode) {
+      setPendingDeleteSlot({ index, item });
+      return;
+    }
+
     const itemType = item.type;
-    
+
     // Only medikit and antidote can be used directly
     if (itemType === 'medikit' || itemType === 'antidote') {
       try {
@@ -1320,7 +1339,7 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           player_id: player.id,
           slot_index: index
         });
-        
+
         if (response.data.status === 'success') {
           toast.success(response.data.message);
         }
@@ -1330,7 +1349,41 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
       }
     }
   };
-  
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDeleteSlot) return;
+
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/delete_item`, {
+        player_id: player.id,
+        slot_index: pendingDeleteSlot.index
+      });
+
+      if (response.data.status === 'success') {
+        toast.success(response.data.message);
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || "Erreur lors de la suppression de l'item";
+      toast.error(errorMsg);
+    } finally {
+      resetDeleteState();
+    }
+  };
+
+  const handleCancelDelete = () => {
+    // Cancel only the current selection but stay in delete mode
+    setPendingDeleteSlot(null);
+  };
+
+  const handleToggleDeleteMode = () => {
+    if (deleteMode) {
+      resetDeleteState();
+    } else {
+      setDeleteMode(true);
+      setPendingDeleteSlot(null);
+    }
+  };
+
   return (
     <div
       className="game-over-overlay"
@@ -1346,7 +1399,7 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
         justifyContent: 'center',
         zIndex: 2000,
       }}
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1360,9 +1413,32 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           backgroundPosition: 'center',
         }}
       >
+        {/* Top action buttons */}
+        <button
+          onClick={handleToggleDeleteMode}
+          data-testid="inventory-delete-toggle-btn"
+          style={{
+            position: 'absolute',
+            top: '-50px',
+            right: '130px',
+            backgroundColor: deleteMode ? '#dc2626' : '#b91c1c',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '10px 20px',
+            color: '#fff',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            boxShadow: deleteMode ? '0 0 0 2px #fca5a5 inset' : 'none',
+          }}
+        >
+          {deleteMode ? '✖ Annuler' : '🗑 Supprimer'}
+        </button>
+
         {/* Close button */}
         <button
-          onClick={onClose}
+          onClick={handleClose}
+          data-testid="inventory-close-btn"
           style={{
             position: 'absolute',
             top: '-50px',
@@ -1383,10 +1459,13 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
         {/* Inventory slots */}
         {SLOT_POSITIONS.map((position, index) => {
           const item = inventory[index];
+          const isHighlighted = deleteMode && item;
+          const isSelectedForDeletion = pendingDeleteSlot && pendingDeleteSlot.index === index;
           return (
             <div
               key={index}
               className="inventory-slot"
+              data-testid={`inventory-slot-${index}`}
               onClick={() => handleSlotClick(index, item)}
               style={{
                 position: 'absolute',
@@ -1398,6 +1477,12 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: item ? 'pointer' : 'default',
+                outline: isSelectedForDeletion
+                  ? '3px solid #fbbf24'
+                  : (isHighlighted ? '2px dashed #fca5a5' : 'none'),
+                outlineOffset: '-2px',
+                borderRadius: '8px',
+                animation: isHighlighted && !isSelectedForDeletion ? 'pulse 1.2s ease-in-out infinite' : 'none',
               }}
               title={item ? ITEM_NAMES[item.type] || item.type : ''}
             >
@@ -1416,6 +1501,87 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
             </div>
           );
         })}
+
+        {/* Delete mode hint / confirmation panel under the inventory */}
+        {deleteMode && (
+          <div
+            data-testid="inventory-delete-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 16px)',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              minWidth: '320px',
+              maxWidth: '90vw',
+              backgroundColor: 'rgba(20, 14, 10, 0.95)',
+              border: '2px solid #d4af37',
+              borderRadius: '12px',
+              padding: '14px 20px',
+              color: '#f5e6c8',
+              textAlign: 'center',
+              boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
+            }}
+          >
+            {!pendingDeleteSlot ? (
+              <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                🗑 Cliquez sur l'objet à supprimer
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <img
+                    src={ITEM_SPRITES[pendingDeleteSlot.item.type] || '/inventory/placeholder.png'}
+                    alt={ITEM_NAMES[pendingDeleteSlot.item.type] || pendingDeleteSlot.item.type}
+                    style={{
+                      width: '48px',
+                      height: '48px',
+                      objectFit: 'contain',
+                      filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))',
+                    }}
+                  />
+                  <div style={{ fontSize: '18px', fontWeight: 'bold' }}>
+                    Supprimer {ITEM_NAMES[pendingDeleteSlot.item.type] || pendingDeleteSlot.item.type} ?
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+                  <button
+                    onClick={handleConfirmDelete}
+                    data-testid="inventory-delete-confirm-yes"
+                    style={{
+                      backgroundColor: '#dc2626',
+                      border: 'none',
+                      borderRadius: '8px',
+                      padding: '8px 22px',
+                      color: '#fff',
+                      fontSize: '16px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Oui
+                  </button>
+                  <button
+                    onClick={handleCancelDelete}
+                    data-testid="inventory-delete-confirm-no"
+                    style={{
+                      backgroundColor: '#374151',
+                      border: 'none',
+                      borderRadius: '8px',
+                      padding: '8px 22px',
+                      color: '#fff',
+                      fontSize: '16px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Non
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
