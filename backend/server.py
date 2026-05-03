@@ -161,6 +161,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_merchant": False,  # NEW: for merchant system
             "merchant_discovered": False,  # NOUVEAU: pour afficher l'avatar du marchand aux survivants
             "has_patrol": False,  # NEW: for patrouille power - goblin patrol indicator
+            "has_forge": False,  # NEW: for forge event
+            "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
         }
 
     # Get character class from avatar
@@ -186,6 +188,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "max_hp": 36 if host_role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
                 "initiative_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus d'initiative individuel
                 "damage_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus de dégâts individuel
+                "weapon_forge_attempts": 0 if host_role == "survivor" else 0,  # NEW: forge attempts on weapon
+                "weapon_bonuses": [] if host_role == "survivor" else None,  # NEW: list of {stat, value, rune_type, label}
+                "pending_forge_room": None,  # NEW: room name where a forge is waiting after a rune event
                 "inventory": [None] * 9 if host_role == "survivor" else None
             }
         },
@@ -211,6 +216,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_spawned": False,  # NEW: whether crystal has been spawned
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
+        "forge_placed": False,  # NEW: whether forge has been placed
         "goliath_active": False,  # NEW: whether Goliath is active
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
@@ -309,6 +315,46 @@ def place_merchant(game_state: dict) -> Optional[str]:
         return selected_room
 
     return None
+
+def place_forge(game_state: dict) -> Optional[str]:
+    """Place the forge in a random available room at game start (once per game)"""
+    available_rooms = []
+
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        # Available if: not locked, no quest, no merchant, no forge, not a killer's position
+        if (not room_data["locked"] and
+            not room_data.get("has_quest", False) and
+            not room_data.get("has_merchant", False) and
+            not room_data.get("has_forge", False) and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_forge"] = True
+        game_state["forge_placed"] = True
+        logger.info(f"Forge placed in room: {selected_room}")
+        return selected_room
+
+    return None
+
+# Forge: bonus values per rune type (identical to existing StatsModal preview)
+FORGE_RUNE_BONUSES = {
+    "rune_dommage": {"stat": "damage", "value": 2, "label": "+2 dégâts"},
+    "rune_vitalite": {"stat": "vitality", "value": 8, "label": "+8 vitalité"},
+    "rune_initiative": {"stat": "initiative", "value": 3, "label": "+3 initiative"},
+}
+
+# Forge: success rate per attempt index. 5+ attempts -> 30% (fixed)
+FORGE_SUCCESS_RATES = [1.0, 0.8, 0.6, 0.4, 0.3]
+
+def get_forge_success_rate(attempts: int) -> float:
+    """Return success probability for the given attempt number (attempts already done so far)."""
+    idx = min(attempts, len(FORGE_SUCCESS_RATES) - 1)
+    return FORGE_SUCCESS_RATES[idx]
 
 def place_next_key(game_state: dict) -> Optional[str]:
     """Place ONE key randomly in an available room (legacy function kept for compatibility)"""
@@ -1893,6 +1939,8 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = 36  # NEW: PV max
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW: reset bonus initiative
                 game["players"][player_id]["damage_bonus"] = 0  # NEW: reset bonus dégâts
+                game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW: reset forge attempts
+                game["players"][player_id]["weapon_bonuses"] = []  # NEW: reset weapon bonuses
                 game["players"][player_id]["inventory"] = [None] * 9
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
@@ -1907,6 +1955,9 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = None  # NEW
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW
                 game["players"][player_id]["damage_bonus"] = 0  # NEW
+                game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW
+                game["players"][player_id]["weapon_bonuses"] = None  # NEW
+                game["players"][player_id]["pending_forge_room"] = None  # NEW
                 game["players"][player_id]["inventory"] = None
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
@@ -1955,6 +2006,13 @@ async def start_game(session_id: str):
         logger.info(f"Merchant placed in: {merchant_room}")
     else:
         logger.warning("Could not place merchant - no available rooms")
+
+    # Place the forge at game start (once per game)
+    forge_room = place_forge(game)
+    if forge_room:
+        logger.info(f"Forge placed in: {forge_room}")
+    else:
+        logger.warning("Could not place forge - no available rooms")
 
     await broadcast_to_session(session_id, {
         "type": "game_started",
@@ -2008,6 +2066,9 @@ async def reset_game(session_id: str):
         player["max_hp"] = 36 if player.get("role") == "survivor" else None  # NEW: reset max_hp
         player["initiative_bonus"] = 0  # NEW: reset bonus initiative
         player["damage_bonus"] = 0  # NEW: reset bonus dégâts
+        player["weapon_forge_attempts"] = 0  # NEW: reset forge attempts
+        player["weapon_bonuses"] = [] if player.get("role") == "survivor" else None  # NEW: reset weapon bonuses
+        player["pending_forge_room"] = None  # NEW: reset pending forge
         player["inventory"] = [None] * 9 if player.get("role") == "survivor" else None
         
         # FIXED: Ensure is_host is preserved
@@ -2033,6 +2094,9 @@ async def reset_game(session_id: str):
         room_data["teleportation_exit"] = False
         room_data["teleportation_target_room"] = None
         room_data["has_merchant"] = False
+        room_data["has_forge"] = False
+        room_data["forge_discovered"] = False
+        room_data["merchant_discovered"] = False
     
     # Reset game state
     game["keys_collected"] = 0
@@ -2052,6 +2116,7 @@ async def reset_game(session_id: str):
     game["crystal_spawned"] = False
     game["crystal_destroyed"] = False
     game["merchant_placed"] = False
+    game["forge_placed"] = False
     game["goliath_active"] = False
     game["goliath_turns_remaining"] = 0
     game["goliath_previous_turn_rooms"] = []
@@ -2158,6 +2223,9 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["max_hp"] = 36 if request.role == "survivor" else None  # NEW
     game["players"][player_id]["initiative_bonus"] = 0  # NEW
     game["players"][player_id]["damage_bonus"] = 0  # NEW
+    game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW
+    game["players"][player_id]["weapon_bonuses"] = [] if request.role == "survivor" else None  # NEW
+    game["players"][player_id]["pending_forge_room"] = None  # NEW
     game["players"][player_id]["inventory"] = [None] * 9 if request.role == "survivor" else None
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
@@ -2282,6 +2350,32 @@ class DeleteItemRequest(BaseModel):
     player_id: str
     slot_index: int
 
+async def _trigger_pending_forge(session_id: str, player_id: str):
+    """If a forge was queued while another event was active, open it now."""
+    game = game_sessions.get(session_id)
+    if not game:
+        return
+    player = game["players"].get(player_id)
+    if not player or player.get("role") != "survivor":
+        return
+    room_name = player.get("pending_forge_room")
+    if not room_name:
+        return
+    if player_id in game.get("pending_events", {}):
+        return  # still has an event pending
+    player["pending_forge_room"] = None
+    game["pending_events"][player_id] = "forge"
+    ws = active_connections.get(session_id, {}).get(player_id)
+    if ws:
+        try:
+            await ws.send_json({
+                "type": "forge_encounter",
+                "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
+                "video_path": "/event/Forge.mp4"
+            })
+        except Exception:
+            pass
+
 @api_router.post("/game/{session_id}/pickup_rune")
 async def pickup_rune(session_id: str, request: PickupRuneRequest):
     """Add rune to player's inventory, or refuse if full"""
@@ -2324,7 +2418,10 @@ async def pickup_rune(session_id: str, request: PickupRuneRequest):
     })
     
     logger.info(f"Player {request.player_id} picked up rune: {request.rune_type}")
-    
+
+    # NEW: open queued forge if any
+    await _trigger_pending_forge(session_id, request.player_id)
+
     return {"status": "success", "message": "Rune ramassée !"}
 
 @api_router.post("/game/{session_id}/dismiss_rune")
@@ -2349,7 +2446,10 @@ async def dismiss_rune(session_id: str, request: DismissRuneRequest):
     })
     
     logger.info(f"Player {request.player_id} dismissed rune")
-    
+
+    # NEW: open queued forge if any
+    await _trigger_pending_forge(session_id, request.player_id)
+
     return {"status": "success", "message": "Rune ignorée"}
 
 @api_router.post("/game/{session_id}/use_item")
@@ -2472,6 +2572,143 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
     })
 
     return {"status": "success", "message": f"{item_name} supprimé(e) de l'inventaire"}
+
+# ========== FORGE ENDPOINTS ==========
+class ForgeUseRuneRequest(BaseModel):
+    player_id: str
+    slot_index: int
+
+class ForgeCloseRequest(BaseModel):
+    player_id: str
+
+@api_router.post("/game/{session_id}/forge_use_rune")
+async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
+    """Use a rune at the forge: consume the rune, roll for success, apply or wipe bonuses."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can use the forge")
+
+    if game.get("pending_events", {}).get(request.player_id) != "forge":
+        raise HTTPException(status_code=400, detail="No active forge event")
+
+    inventory = player.get("inventory") or []
+    if request.slot_index < 0 or request.slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+
+    item = inventory[request.slot_index]
+    if item is None:
+        raise HTTPException(status_code=400, detail="Slot is empty")
+
+    rune_type = item.get("type")
+    if rune_type not in FORGE_RUNE_BONUSES:
+        raise HTTPException(status_code=400, detail="Item is not a rune")
+
+    bonus_def = FORGE_RUNE_BONUSES[rune_type]
+
+    # Consume the rune regardless of outcome
+    inventory[request.slot_index] = None
+
+    # Determine success rate based on attempts already done
+    attempts_done = player.get("weapon_forge_attempts", 0)
+    success_rate = get_forge_success_rate(attempts_done)
+    roll = random.random()
+    success = roll < success_rate
+
+    # Always increment attempts counter (a rune was consumed)
+    player["weapon_forge_attempts"] = attempts_done + 1
+
+    if success:
+        if not isinstance(player.get("weapon_bonuses"), list):
+            player["weapon_bonuses"] = []
+        player["weapon_bonuses"].append({
+            "stat": bonus_def["stat"],
+            "value": bonus_def["value"],
+            "rune_type": rune_type,
+            "label": bonus_def["label"],
+        })
+
+        if bonus_def["stat"] == "damage":
+            player["damage_bonus"] = player.get("damage_bonus", 0) + bonus_def["value"]
+        elif bonus_def["stat"] == "initiative":
+            player["initiative_bonus"] = player.get("initiative_bonus", 0) + bonus_def["value"]
+        elif bonus_def["stat"] == "vitality":
+            player["max_hp"] = (player.get("max_hp") or 36) + bonus_def["value"]
+            player["hp"] = (player.get("hp") or 0) + bonus_def["value"]
+
+        logger.info(
+            f"🔨 Forge SUCCESS for {player['name']} with {rune_type} "
+            f"(attempt {attempts_done + 1}, rate {int(success_rate*100)}%)"
+        )
+    else:
+        # Failure: wipe ALL accumulated weapon bonuses
+        previous = list(player.get("weapon_bonuses") or [])
+        player["weapon_bonuses"] = []
+        player["damage_bonus"] = 0
+        player["initiative_bonus"] = 0
+        base_hp = 36
+        player["max_hp"] = base_hp
+        if (player.get("hp") or 0) > base_hp:
+            player["hp"] = base_hp
+        # Reset attempts so next forge starts at 100%
+        player["weapon_forge_attempts"] = 0
+        logger.info(
+            f"💥 Forge FAILED for {player['name']} with {rune_type} "
+            f"(attempt {attempts_done + 1}, rate {int(success_rate*100)}%) - wiped {len(previous)} bonuses"
+        )
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return {
+        "status": "success",
+        "result": "success" if success else "failure",
+        "rune_type": rune_type,
+        "rune_label": bonus_def["label"],
+        "attempt_number": attempts_done + 1,
+        "success_rate": success_rate,
+        "weapon_bonuses": player.get("weapon_bonuses") or [],
+        "next_success_rate": get_forge_success_rate(player["weapon_forge_attempts"]),
+        "damage_bonus": player.get("damage_bonus", 0),
+        "initiative_bonus": player.get("initiative_bonus", 0),
+        "max_hp": player.get("max_hp"),
+        "hp": player.get("hp"),
+    }
+
+@api_router.post("/game/{session_id}/forge_close")
+async def forge_close(session_id: str, request: ForgeCloseRequest):
+    """Close the forge interaction (treats it like an event_completed)."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if game.get("pending_events", {}).get(request.player_id) == "forge":
+        del game["pending_events"][request.player_id]
+        logger.info(f"Player {request.player_id} closed the forge")
+
+    if game["phase"] == "survivor_selection":
+        await try_advance_to_killer_phase(session_id)
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return {"status": "success"}
 
 # Combat resolution models
 class CombatLogUpdate(BaseModel):
@@ -3235,6 +3472,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "message": "🧙 Vous rencontrez le marchand !",
                                 "video_path": "/event/marchand.mp4"
                             })
+
+                    # NEW: Check for forge
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_forge", False):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            game["rooms"][room_name]["forge_discovered"] = True
+                            already_has_event = player_id in game.get("pending_events", {})
+
+                            if not already_has_event:
+                                # No other event pending -> open forge immediately
+                                game["pending_events"][player_id] = "forge"
+                                await websocket.send_json({
+                                    "type": "forge_encounter",
+                                    "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
+                                    "video_path": "/event/Forge.mp4"
+                                })
+                            else:
+                                # Another event is pending (rune_found, mimic, merchant...)
+                                # Queue the forge to be opened once the current event is resolved
+                                player["pending_forge_room"] = room_name
+                                logger.info(f"🔥 Forge queued for {player['name']} (room {room_name}) - waiting on current event")
 
                     # Notify all players
                     await broadcast_to_session(session_id, {

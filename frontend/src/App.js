@@ -1062,7 +1062,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                 cols={spriteParams.cols}
                 rows={spriteParams.rows}
                 totalFrames={spriteParams.totalFrames}
-                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
+                frameDuration={animationType === 'attack' ? 33 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
               
@@ -1358,6 +1358,11 @@ const StatsModal = ({ player, onClose }) => {
     if (item && item.type === 'rune_vitalite') healthBonus += 8;
     if (item && item.type === 'rune_initiative') initiativeBonus += 3;
   });
+
+  // NEW: include forged bonuses (persistent on the weapon)
+  damageBonus += player.damage_bonus || 0;
+  initiativeBonus += player.initiative_bonus || 0;
+  healthBonus += Math.max(0, (player.max_hp || 36) - 36);
   
   // Stats de base
   const baseDamage = 3;  // 1d6 = moyenne 3.5 ≈ 3
@@ -3242,6 +3247,15 @@ const prevPendingActionsRef = useRef('{}');
   
   // NEW: Shop dialog state
   const [showShopDialog, setShowShopDialog] = useState(false);
+
+  // NEW: Forge popup + interface state
+  const [showForgePopup, setShowForgePopup] = useState(false);
+  const [forgeVideoPath, setForgeVideoPath] = useState("");
+  const [showForgeInterface, setShowForgeInterface] = useState(false);
+  const [forgeAnimation, setForgeAnimation] = useState(null); // null | "forging" | "success" | "failure"
+  const [forgeBusy, setForgeBusy] = useState(false);
+  const [forgeFlashLabel, setForgeFlashLabel] = useState("");
+  const [forgePendingResult, setForgePendingResult] = useState(null); // response cached during "forging"
   
   // NEW: Antidote used popup state
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
@@ -3427,6 +3441,10 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Show merchant popup for survivor who encountered the merchant
         setMerchantVideoPath(data.video_path || "");
         setShowMerchantPopup(true);
+      } else if (data.type === "forge_encounter") {
+        // NEW: Show forge intro popup for survivor who found the forge
+        setForgeVideoPath(data.video_path || "/event/Forge.mp4");
+        setShowForgePopup(true);
       } else if (data.type === "antidote_used") {
         // NEW: Show antidote used notification
         setAntidoteMessage(data.message);
@@ -4645,6 +4663,295 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* NEW: Forge Intro Popup */}
+      {showForgePopup && (() => {
+        const closeForge = async () => {
+          setShowForgePopup(false);
+          try {
+            await axios.post(`${API}/game/${sessionId}/forge_close`, { player_id: playerId });
+          } catch (e) {}
+          notifyEventCompleted();
+        };
+        return (
+          <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="forge-popup">
+            <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1410', borderColor: '#ff7a18', border: '3px solid #ff7a18' }}>
+              <CardHeader>
+                <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#ffb35a' }}>
+                  🔥 <span>La Forge</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {forgeVideoPath && (
+                  <video src={forgeVideoPath} autoPlay loop muted style={{ width: '100%', maxHeight: '380px', borderRadius: '8px', marginBottom: '1rem' }} />
+                )}
+                <p style={{ fontSize: '1.15em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
+                  Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?
+                </p>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                  <Button data-testid="forge-yes-btn" onClick={() => { setShowForgePopup(false); setShowForgeInterface(true); }}
+                    style={{ backgroundColor: '#ff7a18', color: '#000', fontWeight: 'bold', padding: '1rem 2rem', fontSize: '1.1rem' }}>
+                    ✅ Oui
+                  </Button>
+                  <Button data-testid="forge-no-btn" onClick={closeForge}
+                    style={{ backgroundColor: '#555', color: '#fff', padding: '1rem 2rem', fontSize: '1.1rem' }}>
+                    ❌ Non
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
+
+      {/* NEW: Forge Interface */}
+      {showForgeInterface && (() => {
+        const player = gameState?.players?.[playerId] || {};
+        const inventory = player.inventory || [];
+        const weaponBonuses = player.weapon_bonuses || [];
+        const attempts = player.weapon_forge_attempts || 0;
+        const RATES = [1.0, 0.8, 0.6, 0.4, 0.3];
+        const currentRate = RATES[Math.min(attempts, RATES.length - 1)];
+
+        const CLASS_TO_WEAPON = {
+          Assassin: 'assassin', Barbare: 'barbare', Barde: 'barde',
+          Elfe: 'elfe', Guerrier: 'knight', Mage: 'mage'
+        };
+        const weaponSlug = CLASS_TO_WEAPON[player.character_class] || 'mage';
+        const weaponSrc = `/items/Weapon_${weaponSlug}.png`;
+
+        const RUNE_LABELS = {
+          rune_dommage: '+2 dégâts',
+          rune_vitalite: '+8 vitalité',
+          rune_initiative: '+3 initiative',
+        };
+
+        const runeSlots = inventory
+          .map((it, idx) => ({ item: it, idx }))
+          .filter(s => s.item && s.item.type && s.item.type.startsWith('rune_'));
+
+        const handleForge = async (slotIndex) => {
+          if (forgeBusy) return;
+          setForgeBusy(true);
+          setForgeAnimation('forging');          // NEW: suspense phase
+          setForgeFlashLabel('');
+          try {
+            const resPromise = axios.post(`${API}/game/${sessionId}/forge_use_rune`, {
+              player_id: playerId,
+              slot_index: slotIndex,
+            });
+            // Hold the suspense for ~2s regardless of network speed
+            const [res] = await Promise.all([
+              resPromise,
+              new Promise(r => setTimeout(r, 2000)),
+            ]);
+            const ok = res.data.result === 'success';
+            setForgeAnimation(ok ? 'success' : 'failure');
+            setForgeFlashLabel(ok ? `✨ ${res.data.rune_label}` : `💥 Tous les bonus perdus`);
+            if (ok) toast.success(`🔨 Forge réussie : ${res.data.rune_label}`);
+            else toast.error(`💥 Forge ratée — bonus réinitialisés`);
+            setTimeout(() => { setForgeAnimation(null); setForgeFlashLabel(""); }, 2200);
+          } catch (e) {
+            setForgeAnimation(null);
+            toast.error(e.response?.data?.detail || "Erreur de forge");
+          } finally {
+            setTimeout(() => setForgeBusy(false), 2600);
+          }
+        };
+
+        const closeInterface = async () => {
+          setShowForgeInterface(false);
+          try {
+            await axios.post(`${API}/game/${sessionId}/forge_close`, { player_id: playerId });
+          } catch (e) {}
+          notifyEventCompleted();
+        };
+
+        const weaponStyle = {
+          width: '180px',
+          height: '180px',
+          objectFit: 'contain',
+          transition: 'filter 0.5s ease, transform 0.4s ease',
+          filter:
+            forgeAnimation === 'forging'
+              ? 'drop-shadow(0 0 14px #ff6a00) drop-shadow(0 0 28px #ff2200) brightness(1.15) saturate(1.2)'
+              : forgeAnimation === 'success'
+              ? 'drop-shadow(0 0 30px #ffd166) drop-shadow(0 0 60px #ff9933) brightness(1.6) saturate(1.5)'
+              : forgeAnimation === 'failure'
+              ? 'grayscale(0.5) brightness(0.5) contrast(1.3)'
+              : 'drop-shadow(0 0 8px rgba(255,170,80,0.35))',
+          transform:
+            forgeAnimation === 'success' ? 'scale(1.15)' :
+            forgeAnimation === 'forging' ? 'scale(1.02)' : 'scale(1)',
+          animation:
+            forgeAnimation === 'failure' ? `forgeShake ${Math.min(0.6 + attempts * 0.1, 1.2)}s ease-in-out` :
+            forgeAnimation === 'forging' ? 'forgePulse 0.6s ease-in-out infinite alternate, forgeHeat 1.4s ease-in-out infinite' :
+            'none',
+        };
+
+        return (
+          <div className="game-over-overlay" style={{ zIndex: 2001 }} data-testid="forge-interface">
+            <style>{`
+              @keyframes forgeShake {
+                0%,100% { transform: translateX(0) scale(1); }
+                15% { transform: translateX(-8px); }
+                30% { transform: translateX(8px); }
+                45% { transform: translateX(-6px); }
+                60% { transform: translateX(6px); }
+                75% { transform: translateX(-3px); }
+              }
+              @keyframes forgePulse {
+                0%   { filter: drop-shadow(0 0 10px #ff6a00) brightness(1.0); }
+                100% { filter: drop-shadow(0 0 26px #ffb347) drop-shadow(0 0 40px #ff2200) brightness(1.4); }
+              }
+              @keyframes forgeHeat {
+                0%,100% { transform: translateY(0) scale(1.02); }
+                50%     { transform: translateY(-3px) scale(1.05); }
+              }
+              @keyframes forgeSparks {
+                0%   { opacity: 0.2; transform: translate(-50%,-50%) scale(0.6); }
+                50%  { opacity: 0.9; transform: translate(-50%,-50%) scale(1.15); }
+                100% { opacity: 0.2; transform: translate(-50%,-50%) scale(0.6); }
+              }
+              @keyframes forgeEmberRise {
+                0%   { transform: translateY(0) scale(1); opacity: 0; }
+                20%  { opacity: 1; }
+                100% { transform: translateY(-120px) scale(0.3); opacity: 0; }
+              }
+              .forge-flash { animation: forgeFlash 1.6s ease-out; }
+              @keyframes forgeFlash {
+                0% { opacity: 0; transform: translateY(10px) scale(0.9); }
+                30% { opacity: 1; transform: translateY(-4px) scale(1.1); }
+                100% { opacity: 0; transform: translateY(-30px) scale(1); }
+              }
+            `}</style>
+            <Card style={{ maxWidth: '880px', width: '95%', backgroundColor: '#1a1410', borderColor: '#ff7a18', border: '3px solid #ff7a18' }}>
+              <CardHeader>
+                <CardTitle style={{ color: '#ffb35a', textAlign: 'center', fontSize: '1.6rem' }}>
+                  🔥 La Forge — Tentative {attempts + 1}
+                </CardTitle>
+                <p style={{ textAlign: 'center', color: '#ffd9a8', margin: 0 }}>
+                  Chance de réussite actuelle : <strong style={{ color: '#fff' }}>{Math.round(currentRate * 100)}%</strong>
+                </p>
+              </CardHeader>
+              <CardContent>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', alignItems: 'flex-start' }}>
+                  <div style={{ position: 'relative', textAlign: 'center', padding: '1rem', backgroundColor: '#0d0a08', borderRadius: '12px', minHeight: '260px' }}>
+                    <img src={weaponSrc} alt="Arme" style={weaponStyle} data-testid="forge-weapon-sprite" />
+                    {forgeAnimation === 'forging' && (
+                      <>
+                        <div style={{
+                          position: 'absolute', top: '50%', left: '50%',
+                          width: '240px', height: '240px',
+                          borderRadius: '50%',
+                          background: 'radial-gradient(circle, rgba(255,140,40,0.45) 0%, rgba(255,60,0,0.25) 45%, rgba(0,0,0,0) 75%)',
+                          pointerEvents: 'none',
+                          animation: 'forgeSparks 0.9s ease-in-out infinite',
+                        }} />
+                        {[0, 1, 2, 3, 4].map(i => (
+                          <span key={i} style={{
+                            position: 'absolute',
+                            left: `${35 + i * 8}%`, bottom: '18%',
+                            width: '6px', height: '6px', borderRadius: '50%',
+                            background: i % 2 ? '#ffb347' : '#ff5a00',
+                            boxShadow: '0 0 8px #ff7a18',
+                            animation: `forgeEmberRise ${1 + (i % 3) * 0.25}s ease-out ${i * 0.15}s infinite`,
+                            pointerEvents: 'none',
+                          }} />
+                        ))}
+                        <div style={{
+                          position: 'absolute', top: '8%', left: 0, right: 0, textAlign: 'center',
+                          color: '#ffb35a', fontWeight: 'bold', fontSize: '1rem',
+                          letterSpacing: '0.2em', textTransform: 'uppercase',
+                          textShadow: '0 0 8px #ff6a00',
+                        }}>
+                          Forge en cours...
+                        </div>
+                      </>
+                    )}
+                    {forgeFlashLabel && (
+                      <div className="forge-flash" style={{ position: 'absolute', top: '40%', left: 0, right: 0, color: forgeAnimation === 'success' ? '#ffd166' : '#ff5252', fontWeight: 'bold', fontSize: '1.4rem', textShadow: '0 0 8px rgba(0,0,0,0.9)', pointerEvents: 'none' }}>
+                        {forgeFlashLabel}
+                      </div>
+                    )}
+                    <div style={{ marginTop: '0.8rem', color: '#ffd9a8', fontSize: '0.9rem' }}>
+                      {player.character_class || 'Aventurier'}
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#221813', borderRadius: '12px', padding: '1rem', border: '1px solid #4a3022' }}>
+                    <h4 style={{ color: '#ffb35a', marginTop: 0, marginBottom: '0.6rem' }}>Bonus actifs</h4>
+                    {weaponBonuses.length === 0 ? (
+                      <p style={{ color: '#9a8475', fontStyle: 'italic', margin: 0 }}>Aucun bonus pour l'instant</p>
+                    ) : (
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }} data-testid="forge-bonus-list">
+                        {weaponBonuses.map((b, i) => (
+                          <li key={i} style={{ color: '#fff', padding: '0.3rem 0.5rem', borderBottom: '1px solid #3a2820', fontSize: '0.95rem' }}>
+                            ▸ {b.label || `+${b.value} ${b.stat}`}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div style={{ marginTop: '0.8rem', color: '#ffd9a8', fontSize: '0.85rem', borderTop: '1px solid #4a3022', paddingTop: '0.6rem' }}>
+                      Total dégâts : <strong>+{player.damage_bonus || 0}</strong> &nbsp;|&nbsp;
+                      Initiative : <strong>+{player.initiative_bonus || 0}</strong> &nbsp;|&nbsp;
+                      PV max : <strong>{player.max_hp || 36}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1.4rem' }}>
+                  <h4 style={{ color: '#ffb35a', marginBottom: '0.6rem' }}>Runes disponibles</h4>
+                  {runeSlots.length === 0 ? (
+                    <p style={{ color: '#9a8475', fontStyle: 'italic' }}>
+                      Vous n'avez aucune rune dans votre inventaire.
+                    </p>
+                  ) : (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }} data-testid="forge-runes-list">
+                      {runeSlots.map(({ item, idx }) => (
+                        <button
+                          key={idx}
+                          data-testid={`forge-rune-${idx}`}
+                          disabled={forgeBusy}
+                          onClick={() => handleForge(idx)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.6rem',
+                            backgroundColor: '#2a1f17',
+                            border: '2px solid #ff7a18',
+                            borderRadius: '10px',
+                            padding: '0.6rem 0.9rem',
+                            color: '#fff',
+                            cursor: forgeBusy ? 'not-allowed' : 'pointer',
+                            opacity: forgeBusy ? 0.6 : 1,
+                            transition: 'transform 0.15s',
+                          }}
+                          onMouseEnter={(e) => { if (!forgeBusy) e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
+                        >
+                          <img src={ITEM_SPRITES[item.type]} alt="" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontWeight: 'bold' }}>{ITEM_NAMES[item.type]}</div>
+                            <div style={{ fontSize: '0.78rem', color: '#ffd9a8' }}>{RUNE_LABELS[item.type]} → FORGER</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: '1.4rem', textAlign: 'center' }}>
+                  <Button data-testid="forge-close-btn" onClick={closeInterface}
+                    style={{ backgroundColor: '#555', color: '#fff', padding: '0.7rem 1.6rem' }}>
+                    Quitter la forge
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
+
       {/* NEW: Antidote Used Popup */}
       {showAntidotePopup && (
         <div 
@@ -5077,6 +5384,9 @@ const selectRoom = (roomName) => {
                              <span className="room-player-avatar" title="Marchand">
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
+                          )}
+                          {room.forge_discovered && currentPlayerRole === "survivor" && (
+                             <span className="room-icon" title="Forge" style={{ fontSize: '1.1rem' }}>🔥</span>
                           )}
                           {hasPatrol && (
                              <span className="room-player-avatar" title="Gobelin de Patrouille">
