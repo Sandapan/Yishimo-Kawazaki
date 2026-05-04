@@ -3153,6 +3153,202 @@ const PowerSelectionOverlay = ({
 };
 
 // Game Page - Main gameplay
+// ========== FORGE BAR ANIMATION COMPONENT ==========
+const ForgeBar = ({ successRate, onAnimationComplete }) => {
+  const [cursorPos, setCursorPos] = useState(0);
+  const [animating, setAnimating] = useState(true);
+  const animationRef = useRef(null);
+  const startTimeRef = useRef(performance.now());
+  
+  useEffect(() => {
+    const ANIMATION_DURATION = 3500; // 3.5 secondes
+    const FAST_PHASE = 2000; // 2 sec rapide
+    const SLOW_PHASE = 1500; // 1.5 sec ralentissement
+    
+    const animate = (currentTime) => {
+      const elapsed = currentTime - startTimeRef.current;
+      
+      if (elapsed < FAST_PHASE) {
+        // Phase rapide: le curseur va de 0 à 100 plusieurs fois
+        const speed = 0.3; // vitesse en %/ms
+        const pos = (elapsed * speed) % 100;
+        setCursorPos(pos);
+        animationRef.current = requestAnimationFrame(animate);
+      } else if (elapsed < ANIMATION_DURATION) {
+        // Phase de ralentissement
+        const slowPhaseProgress = (elapsed - FAST_PHASE) / SLOW_PHASE;
+        const easeOut = 1 - Math.pow(1 - slowPhaseProgress, 3); // Cubic ease-out
+        
+        // Position finale basée sur le taux de succès avec un peu de variance
+        const targetPos = successRate - 5 + (Math.random() * 10); // ±5% de variance
+        const finalPos = Math.max(0, Math.min(100, targetPos));
+        
+        // Interpolation vers la position finale
+        const lastFastPos = ((FAST_PHASE * 0.3) % 100);
+        const pos = lastFastPos + (finalPos - lastFastPos) * easeOut;
+        
+        setCursorPos(pos);
+        animationRef.current = requestAnimationFrame(animate);
+      } else {
+        // Animation terminée
+        const finalPos = successRate - 3 + (Math.random() * 6);
+        setCursorPos(Math.max(0, Math.min(100, finalPos)));
+        setAnimating(false);
+        
+        // Attendre un peu avant de notifier
+        setTimeout(() => {
+          if (onAnimationComplete) {
+            onAnimationComplete();
+          }
+        }, 500);
+      }
+    };
+    
+    animationRef.current = requestAnimationFrame(animate);
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [successRate, onAnimationComplete]);
+  
+  return (
+    <div style={{
+      width: '100%',
+      marginTop: '30px',
+      marginBottom: '20px'
+    }}>
+      {/* Titre */}
+      <div style={{
+        textAlign: 'center',
+        color: '#d4af37',
+        fontSize: '18px',
+        fontWeight: 'bold',
+        marginBottom: '15px',
+        animation: animating ? 'pulse 1s infinite' : 'none'
+      }}>
+        {animating ? '⚒️ Forge en cours...' : '✨ Forge terminée !'}
+      </div>
+      
+      {/* Barre de progression */}
+      <div style={{
+        position: 'relative',
+        width: '100%',
+        height: '50px',
+        backgroundColor: '#1a1410',
+        border: '3px solid #d4af37',
+        borderRadius: '10px',
+        overflow: 'hidden',
+        boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.8)'
+      }}>
+        {/* Zone de succès (verte) */}
+        <div style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: `${successRate}%`,
+          height: '100%',
+          background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+          transition: 'width 0.3s ease'
+        }}>
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            textShadow: '1px 1px 3px rgba(0,0,0,0.8)'
+          }}>
+            ✓ SUCCÈS
+          </div>
+        </div>
+        
+        {/* Zone d'échec (rouge) */}
+        <div style={{
+          position: 'absolute',
+          left: `${successRate}%`,
+          top: 0,
+          width: `${100 - successRate}%`,
+          height: '100%',
+          background: 'linear-gradient(90deg, #dc2626 0%, #991b1b 100%)'
+        }}>
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            color: '#fff',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            textShadow: '1px 1px 3px rgba(0,0,0,0.8)',
+            whiteSpace: 'nowrap'
+          }}>
+            ✗ ÉCHEC
+          </div>
+        </div>
+        
+        {/* Curseur */}
+        <div style={{
+          position: 'absolute',
+          left: `${cursorPos}%`,
+          top: '-10px',
+          bottom: '-10px',
+          width: '4px',
+          backgroundColor: '#fff',
+          boxShadow: '0 0 20px rgba(255,255,255,0.8), 0 0 40px rgba(212,175,55,0.6)',
+          transform: 'translateX(-50%)',
+          transition: animating ? 'none' : 'left 0.3s ease',
+          zIndex: 10
+        }}>
+          {/* Flèche du curseur */}
+          <div style={{
+            position: 'absolute',
+            top: '-15px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 0,
+            height: 0,
+            borderLeft: '8px solid transparent',
+            borderRight: '8px solid transparent',
+            borderTop: '12px solid #fff',
+            filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))'
+          }} />
+          <div style={{
+            position: 'absolute',
+            bottom: '-15px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 0,
+            height: 0,
+            borderLeft: '8px solid transparent',
+            borderRight: '8px solid transparent',
+            borderBottom: '12px solid #fff',
+            filter: 'drop-shadow(0 -2px 4px rgba(0,0,0,0.5))'
+          }} />
+        </div>
+      </div>
+      
+      {/* Légende */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        marginTop: '10px',
+        fontSize: '12px',
+        color: '#b8956a'
+      }}>
+        <span>0%</span>
+        <span style={{ color: '#d4af37', fontWeight: 'bold' }}>
+          Chance de réussite : {successRate}%
+        </span>
+        <span>100%</span>
+      </div>
+    </div>
+  );
+};
+
 const Game = () => {
   const { sessionId } = useParams();
   const [gameState, setGameState] = useState(null);
@@ -3256,6 +3452,10 @@ const prevPendingActionsRef = useRef('{}');
   const [forgeBusy, setForgeBusy] = useState(false);
   const [forgeFlashLabel, setForgeFlashLabel] = useState("");
   const [forgePendingResult, setForgePendingResult] = useState(null); // response cached during "forging"
+  
+  // Animation de la barre de forge
+  const [forgeBarAnimation, setForgeBarAnimation] = useState(false);
+  const [forgeBarCursorPosition, setForgeBarCursorPosition] = useState(0);
   
   // NEW: Antidote used popup state
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
@@ -4732,6 +4932,7 @@ const selectRoom = (roomName) => {
         const handleForge = async (slotIndex) => {
           if (forgeBusy) return;
           setForgeBusy(true);
+          setForgeBarAnimation(true); // NOUVEAU : Démarrer l'animation de la barre
           setForgeAnimation('forging');          // NEW: suspense phase
           setForgeFlashLabel('');
           try {
@@ -4739,11 +4940,12 @@ const selectRoom = (roomName) => {
               player_id: playerId,
               slot_index: slotIndex,
             });
-            // Hold the suspense for ~2s regardless of network speed
+            // Attendre la fin de l'animation de la barre (4 sec)
             const [res] = await Promise.all([
               resPromise,
-              new Promise(r => setTimeout(r, 2000)),
+              new Promise(r => setTimeout(r, 4000)),
             ]);
+            setForgeBarAnimation(false); // NOUVEAU : Arrêter l'animation
             const ok = res.data.result === 'success';
             setForgeAnimation(ok ? 'success' : 'failure');
             setForgeFlashLabel(ok ? `✨ ${res.data.rune_label}` : `💥 Tous les bonus perdus`);
@@ -4752,6 +4954,7 @@ const selectRoom = (roomName) => {
             setTimeout(() => { setForgeAnimation(null); setForgeFlashLabel(""); }, 2200);
           } catch (e) {
             setForgeAnimation(null);
+            setForgeBarAnimation(false); // NOUVEAU : reset en cas d'erreur
             toast.error(e.response?.data?.detail || "Erreur de forge");
           } finally {
             setTimeout(() => setForgeBusy(false), 2600);
@@ -4837,6 +5040,23 @@ const selectRoom = (roomName) => {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', alignItems: 'flex-start' }}>
                   <div style={{ position: 'relative', textAlign: 'center', padding: '1rem', backgroundColor: '#0d0a08', borderRadius: '12px', minHeight: '260px' }}>
                     <img src={weaponSrc} alt="Arme" style={weaponStyle} data-testid="forge-weapon-sprite" />
+                    {/* NOUVEAU : Barre d'animation de forge */}
+                    {forgeBarAnimation && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '20px',
+                        left: '20px',
+                        right: '20px',
+                        zIndex: 100
+                      }}>
+                        <ForgeBar 
+                          successRate={Math.round(currentRate * 100)} 
+                          onAnimationComplete={() => {
+                            console.log("Animation de la barre terminée");
+                          }}
+                        />
+                      </div>
+                    )}
                     {forgeAnimation === 'forging' && (
                       <>
                         <div style={{
