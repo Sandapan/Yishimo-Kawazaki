@@ -837,6 +837,10 @@ body {
   background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Sanctuaire.png');
 }
 
+.room-card[data-room-name="undiscovered"] {
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/undiscovered.png');
+}
+
 .room-card:hover:not(:disabled):not(.locked) {
   transform: translateY(-3px);
   border-color: #d4af37;
@@ -845,8 +849,7 @@ body {
 
 .room-card.selected {
   border-color: #d4af37;
-  background: linear-gradient(145deg, rgba(139, 92, 46, 0.5), rgba(100, 70, 40, 0.5));
-  box-shadow: 0 0 20px rgba(212, 175, 55, 0.5);
+  box-shadow: 0 0 20px rgba(212, 175, 55, 0.5), inset 0 0 0 9999px rgba(212, 175, 55, 0.25);
 }
 
 .room-card.locked {
@@ -2992,5 +2995,96 @@ body {
   100% {
     opacity: 0;
     transform: translateX(-50%) translateY(-40px) scaleX(-1);
+  }
+}
+
+/* ========== ROOM DISCOVERY ANIMATION (FOG OF WAR) ========== */
+.room-discovery-animation {
+  animation: roomReveal 2s ease-out forwards;
+  position: relative;
+  overflow: visible !important;
+}
+
+.room-discovery-animation::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  right: -10px;
+  bottom: -10px;
+  background: radial-gradient(circle, 
+    rgba(212, 175, 55, 0.8) 0%, 
+    rgba(212, 175, 55, 0.4) 40%, 
+    transparent 70%
+  );
+  animation: discoveryPulse 2s ease-out;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.room-discovery-animation::after {
+  content: '✨';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 4rem;
+  animation: sparkleReveal 2s ease-out;
+  pointer-events: none;
+  z-index: 11;
+}
+
+@keyframes roomReveal {
+  0% {
+    filter: brightness(1.5) saturate(0.5);
+    transform: scale(1.05);
+  }
+  30% {
+    filter: brightness(2) saturate(1.2);
+  }
+  60% {
+    filter: brightness(1.3) saturate(1.1);
+  }
+  100% {
+    filter: brightness(1) saturate(1);
+    transform: scale(1);
+  }
+}
+
+@keyframes discoveryPulse {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  70% {
+    opacity: 0.6;
+    transform: scale(1.5);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+
+@keyframes sparkleReveal {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0) rotate(0deg);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.5) rotate(180deg);
+  }
+  70% {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(1.2) rotate(360deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5) rotate(540deg);
   }
 }

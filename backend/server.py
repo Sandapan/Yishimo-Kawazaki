@@ -133,10 +133,24 @@ def generate_short_code() -> str:
 
 def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role: str) -> dict:
     """Initialize a new game state"""
-    all_rooms = []
+    # NOUVEAU : Générer aléatoirement l'ordre des pièces
+    all_rooms_names = []
     for floor, rooms in ROOMS_CONFIG.items():
-        for room in rooms:
-            all_rooms.append({"name": room, "floor": floor})
+        all_rooms_names.extend(rooms)
+    
+    # Mélanger aléatoirement les noms des pièces
+    random.shuffle(all_rooms_names)
+    
+    # Répartir les pièces mélangées sur les 3 étages (4 par étage)
+    # IMPORTANT : Utiliser les clés internes (basement, ground_floor, upper_floor)
+    # et NON les noms d'affichage français, car le frontend et les autres
+    # fonctions backend utilisent ces clés internes.
+    floors = ["upper_floor", "ground_floor", "basement"]
+    all_rooms = []
+    for i, room_name in enumerate(all_rooms_names):
+        floor_index = i // 4  # 0-3 = upper_floor, 4-7 = ground_floor, 8-11 = basement
+        floor = floors[floor_index]
+        all_rooms.append({"name": room_name, "floor": floor})
 
     # Initialize rooms WITHOUT any keys or medikit
     rooms_state = {}
@@ -225,6 +239,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "eboulement_locked_floors": {},  # NEW: stores which floor each survivor is locked to during eboulement {player_id: floor}
         "patrouille_patrol": None,  # NEW: {room: str, floor: str, active: bool} - gobelin de patrouille
         "patrol_revealed_survivors": {},  # NEW: {player_id: room_name} - survivants revealed by patrol goblin during this turn
+        "discovered_rooms": [],  # NEW: List of room names discovered by survivors (fog of war)
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -2125,6 +2140,7 @@ async def reset_game(session_id: str):
     game["eboulement_locked_floors"] = {}
     game["patrouille_patrol"] = None
     game["patrol_revealed_survivors"] = {}
+    game["discovered_rooms"] = []  # NOUVEAU : reset des pièces découvertes
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -3291,6 +3307,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         if "rooms_searched_this_key" not in game:
                             game["rooms_searched_this_key"] = []
                         game["rooms_searched_this_key"].append(room_name)
+                    
+                    # NOUVEAU : Découvrir la pièce pour les survivants (fog of war)
+                    newly_discovered = False
+                    if player["role"] == "survivor" and room_name not in game.get("discovered_rooms", []):
+                        if "discovered_rooms" not in game:
+                            game["discovered_rooms"] = []
+                        game["discovered_rooms"].append(room_name)
+                        newly_discovered = True
+                        
+                        # Notifier TOUS les survivants de la découverte
+                        discovery_msg = f"✨ {player['name']} a découvert : {room_name} !"
+                        await broadcast_to_session(session_id, {
+                            "type": "room_discovered",
+                            "room_name": room_name,
+                            "discoverer": player['name'],
+                            "message": discovery_msg
+                        }, role_filter="survivor")
                     
                     # Check if survivor enters trapped room
                     if player["role"] == "survivor" and game["rooms"][room_name].get("trapped", False):

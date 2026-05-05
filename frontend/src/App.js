@@ -3367,6 +3367,9 @@ const Game = () => {
   // NEW: Flashing rooms when teammates select
 const [flashingRooms, setFlashingRooms] = useState(new Set());
 const prevPendingActionsRef = useRef('{}');
+
+  // NEW: Discovered rooms animation (fog of war)
+  const [discoveredRoomsAnimation, setDiscoveredRoomsAnimation] = useState(new Set());
   
   // NEW: Power selection states
   const [selectedPower, setSelectedPower] = useState(null);
@@ -3645,6 +3648,25 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Show forge intro popup for survivor who found the forge
         setForgeVideoPath(data.video_path || "/event/Forge.mp4");
         setShowForgePopup(true);
+      } else if (data.type === "room_discovered") {
+        // NEW: Show room discovery animation
+        const roomName = data.room_name;
+        toast.success(data.message, {
+          duration: 4000,
+          icon: '✨',
+        });
+        
+        // Ajouter l'animation de découverte
+        setDiscoveredRoomsAnimation(prev => new Set([...prev, roomName]));
+        
+        // Retirer l'animation après 2 secondes
+        setTimeout(() => {
+          setDiscoveredRoomsAnimation(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(roomName);
+            return newSet;
+          });
+        }, 2000);
       } else if (data.type === "antidote_used") {
         // NEW: Show antidote used notification
         setAntidoteMessage(data.message);
@@ -5577,20 +5599,25 @@ const selectRoom = (roomName) => {
                   // Check if this room is pre-selected (for confirmation step)
                   const isPreSelected = preSelectedRoom === room.name;
 
+                  // NOUVEAU : Fog of war pour les survivants
+                  const isDiscovered = currentPlayerRole === "killer" || (gameState.discovered_rooms && gameState.discovered_rooms.includes(room.name));
+                  const isAnimatingDiscovery = discoveredRoomsAnimation.has(room.name);
+                  const displayName = isDiscovered ? room.name : "?";
+
                   return (
                     <div key={room.name} className="room-card-wrapper" style={{ position: 'relative' }}>
                       <button
                         data-testid={`room-${room.name.replace(/\s+/g, '-').toLowerCase()}`}
-                        data-room-name={room.name}
+                        data-room-name={isDiscovered ? room.name : "undiscovered"}
                         className={`room-card ${
                           selectedRoom === room.name ? 'selected' :
                           isPreSelected ? 'pre-selected' :
                           room.locked ? 'locked' : ''
-                         } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''}`}
+                         } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''} ${isAnimatingDiscovery ? 'room-discovery-animation' : ''}`}
                         onClick={() => selectRoom(room.name)}
                         disabled={isEliminated || hasSelectedRoom || room.locked}
                       >
-                        <div className="room-name">{room.name}</div>
+                        <div className="room-name">{displayName}</div>
                         <div className="room-indicators">
                           {room.locked && <span className="room-icon locked-icon">❌</span>}
                           {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
