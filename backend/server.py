@@ -217,6 +217,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "events": [],
         "pending_actions": {},
         "pending_events": {},  # NEW: Track players with active event popups
+        "pending_events_queue": {},  # NEW: Per-player FIFO queue of events to display after the active one is closed
         "survivors_ended_turn": [],  # NEW: list of player_ids that have clicked "Terminer mon tour"
         "should_place_next_key": False,
         "conspiracy_mode": False,  # NEW: conspiracy mode flag
@@ -454,6 +455,84 @@ def generate_gold_reward() -> tuple[int, str]:
         image_path = "/gold/huge.png"
     
     return gold_amount, image_path
+
+
+async def enqueue_player_event(session_id: str, player_id: str, event_key, ws_message: Optional[dict]):
+    """
+    Sequentially enqueue a popup event for a player.
+
+    - If the player has NO currently active event (`pending_events[player_id]` empty),
+      sets this one as active and immediately sends `ws_message` (if any) over the
+      player's websocket.
+    - Otherwise, appends `{event_key, ws_message}` to `pending_events_queue[player_id]`
+      and waits for `event_completed` to dequeue and send it.
+
+    `event_key` may be either a simple string (e.g. "trap") or a dict (e.g. rune_found payload).
+    `ws_message` is the websocket payload to send for the popup; pass `None` for events that
+    don't need a direct WS popup (e.g. rune_found is read by the frontend from state_update).
+    """
+    game = game_sessions.get(session_id)
+    if not game:
+        return
+
+    pending_events = game.setdefault("pending_events", {})
+    pending_queue = game.setdefault("pending_events_queue", {})
+
+    if player_id not in pending_events:
+        # No active event yet -> set as active and dispatch the WS popup immediately
+        pending_events[player_id] = event_key
+        if ws_message is not None:
+            ws = active_connections.get(session_id, {}).get(player_id)
+            if ws is not None:
+                try:
+                    await ws.send_json(ws_message)
+                except Exception:
+                    pass
+    else:
+        # Already an active event -> queue this one for later
+        pending_queue.setdefault(player_id, []).append({
+            "event_key": event_key,
+            "ws_message": ws_message,
+        })
+        logger.info(
+            f"Queued popup event for player {player_id}: "
+            f"{event_key if isinstance(event_key, str) else event_key.get('type', event_key)} "
+            f"(queue size: {len(pending_queue[player_id])})"
+        )
+
+
+async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
+    """
+    Pop the next queued event for the player (if any), set it as active and dispatch the
+    associated WS popup message. Returns True if an event was dispatched, False otherwise.
+    Called after `event_completed` consumed the previous active event.
+    """
+    game = game_sessions.get(session_id)
+    if not game:
+        return False
+
+    queue = game.setdefault("pending_events_queue", {})
+    if player_id not in queue or not queue[player_id]:
+        # Nothing queued
+        if player_id in queue:
+            del queue[player_id]
+        return False
+
+    next_event = queue[player_id].pop(0)
+    if not queue[player_id]:
+        del queue[player_id]
+
+    game.setdefault("pending_events", {})[player_id] = next_event["event_key"]
+
+    ws_message = next_event.get("ws_message")
+    if ws_message is not None:
+        ws = active_connections.get(session_id, {}).get(player_id)
+        if ws is not None:
+            try:
+                await ws.send_json(ws_message)
+            except Exception:
+                pass
+    return True
 
 
 # Power definitions
@@ -1059,10 +1138,13 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
         and not game["players"][pid]["eliminated"]
     ]
     pending_events = game.get("pending_events", {})
+    pending_events_queue = game.get("pending_events_queue", {})
 
     all_selected = len(survivors_selected) == len(alive_survivors)
     all_ended = len(survivors_ended_turn) == len(alive_survivors)
-    no_pending = len(pending_events) == 0
+    no_pending = len(pending_events) == 0 and all(
+        len(q) == 0 for q in pending_events_queue.values()
+    )
 
     if not (all_selected and all_ended and no_pending):
         return False
@@ -1761,6 +1843,7 @@ async def process_rage_second_selections(session_id: str):
     game["phase"] = "survivor_selection"
     game["pending_actions"] = {}
     game["pending_events"] = {}
+    game["pending_events_queue"] = {}  # NEW: reset queued events as well
     game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
     # Clear active powers
     game["active_powers"] = {}
@@ -2426,17 +2509,21 @@ async def pickup_rune(session_id: str, request: PickupRuneRequest):
     
     # Remove pending event
     del game["pending_events"][request.player_id]
-    
-    # Broadcast state update
+
+    # Dépiler le prochain événement en attente (forge, marchand, etc.)
+    # Le dispatch doit avoir lieu AVANT le broadcast pour que le state_update
+    # envoyé au frontend contienne déjà le nouvel événement actif (s'il y en a un).
+    await dispatch_next_player_event(session_id, request.player_id)
+    # Compat legacy : ouvrir une forge qui aurait été mise en attente via l'ancien système
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update (après dispatch pour que pending_events soit à jour)
     await broadcast_to_session(session_id, {
         "type": "state_update",
         "game": game
     })
-    
-    logger.info(f"Player {request.player_id} picked up rune: {request.rune_type}")
 
-    # NEW: open queued forge if any
-    await _trigger_pending_forge(session_id, request.player_id)
+    logger.info(f"Player {request.player_id} picked up rune: {request.rune_type}")
 
     return {"status": "success", "message": "Rune ramassée !"}
 
@@ -2454,17 +2541,21 @@ async def dismiss_rune(session_id: str, request: DismissRuneRequest):
     # Remove pending event if exists
     if request.player_id in game["pending_events"]:
         del game["pending_events"][request.player_id]
-    
-    # Broadcast state update so the popup disappears
+
+    # Dépiler le prochain événement en attente (forge, marchand, etc.)
+    # Le dispatch doit avoir lieu AVANT le broadcast pour que le state_update
+    # envoyé au frontend contienne déjà le nouvel événement actif (s'il y en a un).
+    await dispatch_next_player_event(session_id, request.player_id)
+    # Compat legacy : ouvrir une forge qui aurait été mise en attente via l'ancien système
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update (après dispatch pour que pending_events soit à jour)
     await broadcast_to_session(session_id, {
         "type": "state_update",
         "game": game
     })
-    
-    logger.info(f"Player {request.player_id} dismissed rune")
 
-    # NEW: open queued forge if any
-    await _trigger_pending_forge(session_id, request.player_id)
+    logger.info(f"Player {request.player_id} dismissed rune")
 
     return {"status": "success", "message": "Rune ignorée"}
 
@@ -3166,23 +3257,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 game["patrouille_patrol"]["active"] = False
                                 if patrol_data["room"] in game["rooms"]:
                                     game["rooms"][patrol_data["room"]]["has_patrol"] = False
-                                
-                                # Notify survivor they found the patrol
-                                await websocket.send_json({
+
+                                # Notify survivor they found the patrol (queued popup)
+                                await enqueue_player_event(session_id, player_id, "patrol_found", {
                                     "type": "patrol_found",
                                     "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
                                     "video_path": "/powers/Patrouille.mp4"
                                 })
-                                
+
                                 logger.info(f"🔍 {player['name']} a trouvé le gobelin de patrouille dans {room_name}")
                             else:
-                                # Survivor is on same floor but not in patrol room - just reveal position
-                                await websocket.send_json({
+                                # Survivor is on same floor but not in patrol room - just reveal position (queued popup)
+                                await enqueue_player_event(session_id, player_id, "patrol_detected", {
                                     "type": "patrol_detected",
                                     "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
                                     "video_path": "/powers/Patrouille.mp4"
                                 })
-                                
+
                                 logger.info(f"🔍 {player['name']} a été détecté par le gobelin de patrouille")
 
                             # Notify killers that a survivor has been revealed (show avatar in the room)
@@ -3203,23 +3294,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     if player["role"] == "survivor" and game["rooms"][room_name].get("teleportation_trap", False):
                         target_room = game["rooms"][room_name].get("teleportation_target_room")
-                        
-                        if target_room and target_room in game["rooms"]:
 
-                            game["pending_events"][player_id] = "teleportation"
+                        if target_room and target_room in game["rooms"]:
                             player_class = player.get("character_class", "Mage")
                             video_path = f"/death/{player_class}_teleportation.mp4"
-                            
-                            await websocket.send_json({
+
+                            await enqueue_player_event(session_id, player_id, "teleportation", {
                                 "type": "teleportation_notification",
                                 "message": f"Vous déclenchez un piège de téléportation vers {target_room} !",
                                 "video_path": video_path,
                                 "target_room": target_room
                             })
-                            
+
                             game["pending_actions"][player_id]["room"] = target_room
                             room_name = target_room
-                            
+
                             logger.info(f"🌀 {player['name']} téléporté de {original_room_name} vers {target_room}")
                     
                     # GOLIATH CHECK
@@ -3330,12 +3419,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         player["immobilized_next_turn"] = True
                         game["rooms"][room_name]["trap_triggered"] = True
 
-                        game["pending_events"][player_id] = "trap"
-                        
                         player_class = player.get("character_class", "Mage").lower()
                         video_path = f"/death/Blizzard_{player_class}.mp4"
-                        
-                        await websocket.send_json({
+
+                        await enqueue_player_event(session_id, player_id, "trap", {
                             "type": "trapped_notification",
                             "message": "🥶 C'est un blizzard ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.",
                             "video_path": video_path
@@ -3346,12 +3433,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         if player.get("poisoned_countdown", 0) == 0:
                             player["poisoned_countdown"] = 10
 
-                            game["pending_events"][player_id] = "poison"
-                            
                             player_class = player.get("character_class", "Assassin")
                             video_path = f"/death/{player_class}_toxine.mp4"
-                            
-                            await websocket.send_json({
+
+                            await enqueue_player_event(session_id, player_id, "poison", {
                                 "type": "poisoned_notification",
                                 "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
                                 "countdown": 10,
@@ -3383,7 +3468,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     
                                     try:
                                         video_path = f"/event/{quest_class}.mp4"
-                                        await websocket.send_json({
+                                        await enqueue_player_event(session_id, player_id, "quest_completed", {
                                             "type": "quest_completed_popup",
                                             "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
                                             "video_path": video_path,
@@ -3391,12 +3476,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                         })
                                     except:
                                         pass
-                                    
+
                                     game["rooms_searched_this_key"] = []
                             else:
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"
-                                    await websocket.send_json({
+                                    await enqueue_player_event(session_id, player_id, "wrong_class", {
                                         "type": "wrong_class_popup",
                                         "message": f"Cette quête nécessite la classe {quest_class}.",
                                         "required_class": quest_class,
@@ -3446,9 +3531,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     # GOLD SYSTEM
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):
                         gold_amount, gold_image = generate_gold_reward()
-                        player["gold"] += gold_amount                        
+                        player["gold"] += gold_amount
                         try:
-                            await websocket.send_json({
+                            await enqueue_player_event(session_id, player_id, "gold_found", {
                                 "type": "gold_found",
                                 "message": f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !",
                                 "gold_amount": gold_amount,
@@ -3457,7 +3542,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
                         except:
                             pass
-                        
+
                         # RUNE DROP SYSTEM (after gold)
                         roll = random.random()
                         rune_type = None
@@ -3467,40 +3552,44 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             rune_type = "rune_initiative"
                         elif roll < 0.45:
                             rune_type = "rune_dommage"
-                        
+
                         if rune_type:
-                            game["pending_events"][player_id] = {
-                                "type": "rune_found",
-                                "rune_type": rune_type,
-                                "inventory_full": is_inventory_full(player)
-                            }
+                            # rune_found has no direct WS popup (frontend reads it from
+                            # state_update -> pending_events), so pass ws_message=None.
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {
+                                    "type": "rune_found",
+                                    "rune_type": rune_type,
+                                    "inventory_full": is_inventory_full(player)
+                                },
+                                None
+                            )
                             logger.info(f"Player {player_id} found rune: {rune_type}")
                     
                     # Check for mimic
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
                         gold_stolen = player.get("gold", 0)
                         player["gold"] = 0
-                        
+
                         game["rooms"][room_name]["has_mimic"] = False
 
-                        game["pending_events"][player_id] = "mimic"
-                        
-                        await websocket.send_json({
+                        await enqueue_player_event(session_id, player_id, "mimic", {
                             "type": "mimic_notification",
                             "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
                             "video_path": "/death/Mimic.mp4",
                             "gold_stolen": gold_stolen
                         })
-                    
+
                     # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
-                        
+
                         if not is_trapped:
                             game["rooms"][room_name]["merchant_discovered"] = True
 
-                            game["pending_events"][player_id] = "merchant"
-                            await websocket.send_json({
+                            await enqueue_player_event(session_id, player_id, "merchant", {
                                 "type": "merchant_encounter",
                                 "message": "🧙 Vous rencontrez le marchand !",
                                 "video_path": "/event/marchand.mp4"
@@ -3511,21 +3600,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         if not is_trapped:
                             game["rooms"][room_name]["forge_discovered"] = True
-                            already_has_event = player_id in game.get("pending_events", {})
 
-                            if not already_has_event:
-                                # No other event pending -> open forge immediately
-                                game["pending_events"][player_id] = "forge"
-                                await websocket.send_json({
-                                    "type": "forge_encounter",
-                                    "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
-                                    "video_path": "/event/Forge.mp4"
-                                })
-                            else:
-                                # Another event is pending (rune_found, mimic, merchant...)
-                                # Queue the forge to be opened once the current event is resolved
-                                player["pending_forge_room"] = room_name
-                                logger.info(f"🔥 Forge queued for {player['name']} (room {room_name}) - waiting on current event")
+                            # Just enqueue - the helper will dispatch immediately if no
+                            # other event is active, or put the forge at the end of the
+                            # queue otherwise (replaces legacy pending_forge_room logic).
+                            await enqueue_player_event(session_id, player_id, "forge", {
+                                "type": "forge_encounter",
+                                "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
+                                "video_path": "/event/Forge.mp4"
+                            })
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
@@ -3664,7 +3747,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if player_id in game.get("pending_events", {}):
                     del game["pending_events"][player_id]
                     logger.info(f"Player {player_id} completed their event")
-                
+
+                # Dispatch the next queued popup event for this player (if any)
+                dispatched = await dispatch_next_player_event(session_id, player_id)
+
+                # Backward-compat: legacy "pending_forge_room" queue (the forge feature still
+                # uses this for the rare case where it was queued before this refactor).
+                if not dispatched:
+                    pending_forge_room = player.get("pending_forge_room") if player else None
+                    if pending_forge_room and player_id not in game.get("pending_events", {}):
+                        player["pending_forge_room"] = None
+                        await enqueue_player_event(session_id, player_id, "forge", {
+                            "type": "forge_encounter",
+                            "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
+                            "video_path": "/event/Forge.mp4",
+                        })
+
                 # Check if we can now transition to killer phase
                 if game["phase"] == "survivor_selection":
                     await try_advance_to_killer_phase(session_id)

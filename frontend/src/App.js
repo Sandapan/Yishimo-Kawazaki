@@ -3599,11 +3599,7 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Show trap popup for survivor who entered trapped room with video
         setTrapVideoPath(data.video_path || "");
         setShowTrapPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowTrapPopup(false);
-  notifyEventCompleted();
-}, 5000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "poisoned_notification") {
         // NEW: Show poison video popup first, then image popup
         setPoisonMessage(data.message);
@@ -3613,33 +3609,21 @@ const prevPendingActionsRef = useRef('{}');
           // Show video popup first
           setShowPoisonVideoPopup(true);
         } else {
-          // If no video, show image popup directly
+          // If no video, show image popup directly — user must click to close
           setShowPoisonPopup(true);
-          setTimeout(() => {
-            setShowPoisonPopup(false);
-  notifyEventCompleted();
-}, 5000);
         }
       } else if (data.type === "mimic_notification") {
         // NEW: Show mimic popup for survivor who entered room with mimic
         setMimicVideoPath(data.video_path || "");
         setMimicMessage(data.message);
         setShowMimicPopup(true);
-        // Auto-hide after 7 seconds (video is longer)
-        setTimeout(() => {
-          setShowMimicPopup(false);
-  notifyEventCompleted();
-}, 7000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "teleportation_notification") {
         // NEW: Show teleportation popup for survivor who entered teleportation trap with video
         setTeleportationVideoPath(data.video_path || "");
         setTeleportationMessage(data.message);
         setShowTeleportationPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowTeleportationPopup(false);
-  notifyEventCompleted();
-}, 5000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "merchant_encounter") {
         // NEW: Show merchant popup for survivor who encountered the merchant
         setMerchantVideoPath(data.video_path || "");
@@ -3685,19 +3669,13 @@ const prevPendingActionsRef = useRef('{}');
         setEboulementMessage(data.message);
         setEboulementVideoPath(data.video_path);
         setShowEboulementPopup(true);
-        // Auto-hide after 8 seconds
-        setTimeout(() => {
-          setShowEboulementPopup(false);
-        }, 8000);
+        // NOTE: No auto-hide — user must click to close
       } else if (data.type === "patrol_detected" || data.type === "patrol_found") {
         // Show Patrouille detection popup with video (for survivors)
         setPatrouilleMessage(data.message);
         setPatrouilleVideoPath(data.video_path);
         setShowPatrouillePopup(true);
-        // Auto-hide after 6 seconds
-        setTimeout(() => {
-          setShowPatrouillePopup(false);
-        }, 6000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "patrol_reveal") {
         // Killers get notified that a survivor has been revealed by the patrol goblin
         toast.info(`🔍 ${data.player_name} a été repéré par le gobelin de Patrouille dans ${data.room} !`, {
@@ -3708,10 +3686,7 @@ const prevPendingActionsRef = useRef('{}');
         setGoliathDeathMessage(data.message);
         setGoliathDeathVideoPath(data.video_path);
         setShowGoliathDeathPopup(true);
-        // Auto-hide after 6 seconds
-        setTimeout(() => {
-          setShowGoliathDeathPopup(false);
-        }, 6000);
+        // NOTE: No auto-hide — user must click to close
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
@@ -3798,28 +3773,19 @@ const prevPendingActionsRef = useRef('{}');
         // Show popup for key found
         setKeyFoundMessage(data.message);
         setShowKeyFoundPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowKeyFoundPopup(false);
-        }, 5000);
+        // NOTE: No auto-hide — user must click to close
       } else if (data.type === "quest_completed_popup") {
         // Show popup with video for quest completed
         setQuestCompletedMessage(data.message);
         setQuestVideoPath(data.video_path);
         setShowQuestCompletedPopup(true);
-        // Auto-hide after video ends (assuming ~10 seconds)
-        setTimeout(() => {
-          setShowQuestCompletedPopup(false);
-        }, 10000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "toxin_death_popup") {
         // Show popup with video for toxin death
         setToxinDeathMessage(data.message);
         setToxinDeathVideoPath(data.video_path);
         setShowToxinDeathPopup(true);
-        // Auto-hide after video ends (5 seconds for toxin videos)
-        setTimeout(() => {
-          setShowToxinDeathPopup(false);
-        }, 5000);
+        // NOTE: No auto-hide — user must click to close
       } else if (data.type === "wrong_class_popup") {
         // Show popup with image for wrong class
         setWrongClassMessage(data.message);
@@ -3832,10 +3798,7 @@ const prevPendingActionsRef = useRef('{}');
         setGoldAmount(data.gold_amount);
         setGoldImage(data.gold_image);
         setShowGoldFoundPopup(true);
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          setShowGoldFoundPopup(false);
-        }, 5000);
+        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
       } else if (data.type === "crystal_spawned") {
         // Show popup with video for crystal spawned
         setCrystalSpawnedMessage(data.message);
@@ -4209,7 +4172,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowKeyFoundPopup(false)}
+          onClick={() => { setShowKeyFoundPopup(false); notifyEventCompleted(); }}
           data-testid="key-found-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '500px', backgroundColor: '#2a5934', borderColor: '#4ade80' }}>
@@ -4255,10 +4218,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => {
-  setShowTrapPopup(false);
-  notifyEventCompleted();
-}, 1000)}
                 >
                   <source src={trapVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -4283,10 +4242,6 @@ const selectRoom = (roomName) => {
           onClick={() => {
             setShowPoisonVideoPopup(false);
             setShowPoisonPopup(true);
-            setTimeout(() => {
-              setShowPoisonPopup(false);
-              notifyEventCompleted();
-            }, 5000);
           }}
           data-testid="poison-video-popup"
         >
@@ -4303,24 +4258,10 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer' }}
-                  onEnded={() => {
-                    setTimeout(() => {
-                      setShowPoisonVideoPopup(false);
-                      setShowPoisonPopup(true);
-                      setTimeout(() => {
-                        setShowPoisonPopup(false);
-                        notifyEventCompleted();
-                      }, 5000);
-                    }, 500);
-                  }}
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowPoisonVideoPopup(false);
                     setShowPoisonPopup(true);
-                    setTimeout(() => {
-                      setShowPoisonPopup(false);
-                      notifyEventCompleted();
-                    }, 5000);
                   }}
                 >
                   <source src={poisonVideoPath} type="video/mp4" />
@@ -4394,10 +4335,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => {
-  setShowMimicPopup(false);
-  notifyEventCompleted();
-}, 1000)}
                 >
                   <source src={mimicVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -4438,10 +4375,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => {
-  setShowTeleportationPopup(false);
-  notifyEventCompleted();
-}, 1000)}
                 >
                   <source src={teleportationVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -4463,7 +4396,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowQuestCompletedPopup(false)}
+          onClick={() => { setShowQuestCompletedPopup(false); notifyEventCompleted(); }}
           data-testid="quest-completed-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a5934', borderColor: '#4ade80' }}>
@@ -4479,7 +4412,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowQuestCompletedPopup(false), 1000)}
                 >
                   <source src={questVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -4501,7 +4433,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowToxinDeathPopup(false)}
+          onClick={() => { setShowToxinDeathPopup(false); notifyEventCompleted(); }}
           data-testid="toxin-death-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a1d1d', borderColor: '#dc2626' }}>
@@ -4517,7 +4449,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowToxinDeathPopup(false), 500)}
                 >
                   <source src={toxinDeathVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -4539,7 +4470,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1000 }}
-          onClick={() => setShowWrongClassPopup(false)}
+          onClick={() => { setShowWrongClassPopup(false); notifyEventCompleted(); }}
           data-testid="wrong-class-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#4a3a2a', borderColor: '#f59e0b' }}>
@@ -5264,7 +5195,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1001 }}
-          onClick={() => setShowEboulementPopup(false)}
+          onClick={() => { setShowEboulementPopup(false); notifyEventCompleted(); }}
           data-testid="eboulement-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#3a2a1a', borderColor: '#8b4513' }}>
@@ -5280,7 +5211,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowEboulementPopup(false), 1000)}
                 >
                   <source src={eboulementVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -5302,7 +5232,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1001 }}
-          onClick={() => setShowPatrouillePopup(false)}
+          onClick={() => { setShowPatrouillePopup(false); notifyEventCompleted(); }}
           data-testid="patrouille-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#2a1a1a', borderColor: '#ef4444' }}>
@@ -5318,7 +5248,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowPatrouillePopup(false), 1000)}
                 >
                   <source src={patrouilleVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
@@ -5340,7 +5269,7 @@ const selectRoom = (roomName) => {
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1001 }}
-          onClick={() => setShowGoliathDeathPopup(false)}
+          onClick={() => { setShowGoliathDeathPopup(false); notifyEventCompleted(); }}
           data-testid="goliath-death-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a1a', borderColor: '#8b0000' }}>
@@ -5356,7 +5285,6 @@ const selectRoom = (roomName) => {
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowGoliathDeathPopup(false), 1000)}
                 >
                   <source src={goliathDeathVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
