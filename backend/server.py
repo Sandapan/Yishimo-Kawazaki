@@ -233,7 +233,9 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
         "forge_placed": False,  # NEW: whether forge has been placed
-        "observation_stone_placed": False,  # NEW: whether observation stone has been placed
+        "observation_stone_placed": False,
+        "observation_stone_target_room": None,  # room where the stone must be thrown
+        "observation_stone_quest_completed": False,  # whether the stone quest has been completed
         "goliath_active": False,  # NEW: whether Goliath is active
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
@@ -1510,8 +1512,11 @@ async def process_turn(session_id: str):
     # Check victory conditions
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
 
-    # Check if all quests completed but crystal not spawned yet
-    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0 and not game["crystal_spawned"]:
+    # Check if all quests AND stone quest completed, but crystal not spawned yet
+    stone_quest_done = game.get("observation_stone_quest_completed", False)
+    if (len(game["completed_quests"]) >= len(game["quests"]) and
+            stone_quest_done and
+            len(alive_survivors) > 0 and not game["crystal_spawned"]):
         # Spawn the crystal for final quest
         crystal_room = place_crystal(game)
         if crystal_room:
@@ -1763,8 +1768,11 @@ async def process_rage_second_selections(session_id: str):
     # Check victory conditions again
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
     
-    # Check if all quests completed but crystal not spawned yet
-    if len(game["completed_quests"]) >= len(game["quests"]) and len(alive_survivors) > 0 and not game["crystal_spawned"]:
+    # Check if all quests AND stone quest completed, but crystal not spawned yet
+    stone_quest_done = game.get("observation_stone_quest_completed", False)
+    if (len(game["completed_quests"]) >= len(game["quests"]) and
+            stone_quest_done and
+            len(alive_survivors) > 0 and not game["crystal_spawned"]):
         # Spawn the crystal for final quest
         crystal_room = place_crystal(game)
         if crystal_room:
@@ -2175,6 +2183,10 @@ async def start_game(session_id: str):
     stone_room = place_observation_stone(game)
     if stone_room:
         logger.info(f"Observation stone placed in: {stone_room}")
+        target_candidates = [r for r in game["rooms"].keys() if r != stone_room]
+        if target_candidates:
+            game["observation_stone_target_room"] = random.choice(target_candidates)
+            logger.info(f"Observation stone target room: {game['observation_stone_target_room']}")
     else:
         logger.warning("Could not place observation stone - no available rooms")
 
@@ -2826,6 +2838,7 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
 class ForgeUseRuneRequest(BaseModel):
     player_id: str
     slot_index: int
+    cursor_hit: Optional[bool] = None  # True = cursor was in green zone when player clicked
 
 class ForgeCloseRequest(BaseModel):
     player_id: str
@@ -2866,11 +2879,13 @@ async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
     # Consume the rune regardless of outcome
     inventory[request.slot_index] = None
 
-    # Determine success rate based on attempts already done
+    # Determine success via mini-game result from client, fallback to random
     attempts_done = player.get("weapon_forge_attempts", 0)
     success_rate = get_forge_success_rate(attempts_done)
-    roll = random.random()
-    success = roll < success_rate
+    if request.cursor_hit is not None:
+        success = request.cursor_hit
+    else:
+        success = random.random() < success_rate
 
     # Always increment attempts counter (a rune was consumed)
     player["weapon_forge_attempts"] = attempts_done + 1
@@ -3603,7 +3618,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     game["completed_quests"].append(quest_class)
                                     game["keys_collected"] = len(game["completed_quests"])
                                     
-                                    quests_left = game["keys_needed"] - len(game["completed_quests"])
+                                    # Include stone quest in remaining count
+                                    class_quests_left = game["keys_needed"] - len(game["completed_quests"])
+                                    stone_left = 0 if game.get("observation_stone_quest_completed", False) else 1
+                                    quests_left = class_quests_left + stone_left
                                     event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
                                     game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
                                     await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
@@ -3640,6 +3658,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             game["events"].append({"message": event_msg, "type": "search_no_quest", "for_role": "survivor"})
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
                         
+                        # Check if survivor carrying the stone enters the target room (non-blocking)
+                        if has_item(player, "pierre_quete"):
+                            target_room = game.get("observation_stone_target_room")
+                            if target_room and room_name == target_room and not game.get("observation_stone_quest_completed", False):
+                                if not game["rooms"][room_name].get("trap_triggered", False):
+                                    remove_item(player, "pierre_quete")
+                                    game["observation_stone_quest_completed"] = True
+                                    stone_msg = f"🪨 {player['name']} a jeté la Pierre d'observation dans {target_room} ! Quête accomplie !"
+                                    game["events"].append({"message": stone_msg, "type": "stone_quest_completed", "for_role": "survivor"})
+                                    await broadcast_to_session(session_id, {"type": "event", "message": stone_msg}, role_filter="survivor")
+                                    await broadcast_to_session(session_id, {"type": "event", "message": f"🪨 La Pierre d'observation a été jetée dans {target_room} !"}, role_filter="killer")
+                                    # Non-blocking direct WS push (no enqueue — does not block the turn)
+                                    ws = active_connections.get(session_id, {}).get(player_id)
+                                    if ws:
+                                        try:
+                                            await ws.send_json({"type": "stone_quest_completed_popup", "message": f"Vous avez jeté la Pierre dans {target_room} ! Quête accomplie !"})
+                                        except Exception:
+                                            pass
+                                    logger.info(f"Stone quest completed by {player['name']} in {target_room}")
+
                         # Check for crystal
                         if room.get("has_crystal", False) and game.get("crystal_spawned", False):
                             room["has_crystal"] = False

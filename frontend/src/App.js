@@ -1989,7 +1989,7 @@ const RunePickupModal = ({ event, playerId, sessionId }) => {
 };
 
 // ========== PIERRE QUETE PICKUP MODAL COMPONENT ==========
-const PierreQueteModal = ({ event, playerId, sessionId }) => {
+const PierreQueteModal = ({ event, playerId, sessionId, targetRoom }) => {
   if (!event || event.type !== 'pierre_quete_found') return null;
 
   const inventoryFull = event.inventory_full;
@@ -2066,6 +2066,11 @@ const PierreQueteModal = ({ event, playerId, sessionId }) => {
             </h3>
             <p style={{ color: '#a0aec0', fontSize: '0.95rem', margin: '8px 0 0' }}>
               La Pierre d'observation révèle la position de son porteur aux Orcs.
+              {targetRoom && (
+                <span style={{ display: 'block', marginTop: '6px', color: '#f6c90e', fontWeight: 'bold' }}>
+                  Vous devez la jeter à {targetRoom}.
+                </span>
+              )}
             </p>
           </div>
 
@@ -3288,196 +3293,145 @@ const PowerSelectionOverlay = ({
 
 // Game Page - Main gameplay
 // ========== FORGE BAR ANIMATION COMPONENT ==========
-const ForgeBar = ({ successRate, onAnimationComplete }) => {
+// ========== FORGE TIMING MINI-GAME ==========
+// Interactive: player clicks to stop the cursor; landing in the green zone = success.
+// Green zone shrinks with each forge attempt on the weapon (−8% per attempt, min 12%).
+// Cursor oscillates left↔right with progressive acceleration (25 → 120 %/s).
+const ForgeTimingGame = ({ attempts, onResult }) => {
   const [cursorPos, setCursorPos] = useState(0);
-  const [animating, setAnimating] = useState(true);
-  const animationRef = useRef(null);
-  const startTimeRef = useRef(performance.now());
+  const [clicked, setClicked] = useState(false);
+  const [hitResult, setHitResult] = useState(null); // 'success' | 'failure'
+  const rafRef = useRef(null);
+  const startTimeRef = useRef(null);
+  const dirRef = useRef(1);
+  const posRef = useRef(0);
+
+  // NOUVELLE LOGIQUE: La vitesse de base augmente avec chaque tentative
+  // Tentative 1: vitesse x1, Tentative 2: vitesse x2, etc.
+  const BASE_SPEED_MULTIPLIER = Math.max(1, attempts + 1);
   
+  // Green zone: shrinks 8% per attempt, minimum 12%
+  const GREEN_WIDTH = Math.max(12, 50 - attempts * 8);
+  const GREEN_LEFT = (100 - GREEN_WIDTH) / 2;
+  
+  // La tentative N donne N zones de succès (dès la tentative 2)
+  // attempts=0 → tentative 1 → 1 zone, attempts=1 → tentative 2 → 2 zones, etc.
+  const segmentCount = attempts + 1;
+
   useEffect(() => {
-    const ANIMATION_DURATION = 3500; // 3.5 secondes
-    const FAST_PHASE = 2000; // 2 sec rapide
-    const SLOW_PHASE = 1500; // 1.5 sec ralentissement
-    
-    const animate = (currentTime) => {
-      const elapsed = currentTime - startTimeRef.current;
-      
-      if (elapsed < FAST_PHASE) {
-        // Phase rapide: le curseur va de 0 à 100 plusieurs fois
-        const speed = 0.3; // vitesse en %/ms
-        const pos = (elapsed * speed) % 100;
-        setCursorPos(pos);
-        animationRef.current = requestAnimationFrame(animate);
-      } else if (elapsed < ANIMATION_DURATION) {
-        // Phase de ralentissement
-        const slowPhaseProgress = (elapsed - FAST_PHASE) / SLOW_PHASE;
-        const easeOut = 1 - Math.pow(1 - slowPhaseProgress, 3); // Cubic ease-out
-        
-        // Position finale basée sur le taux de succès avec un peu de variance
-        const targetPos = successRate - 5 + (Math.random() * 10); // ±5% de variance
-        const finalPos = Math.max(0, Math.min(100, targetPos));
-        
-        // Interpolation vers la position finale
-        const lastFastPos = ((FAST_PHASE * 0.3) % 100);
-        const pos = lastFastPos + (finalPos - lastFastPos) * easeOut;
-        
-        setCursorPos(pos);
-        animationRef.current = requestAnimationFrame(animate);
-      } else {
-        // Animation terminée
-        const finalPos = successRate - 3 + (Math.random() * 6);
-        setCursorPos(Math.max(0, Math.min(100, finalPos)));
-        setAnimating(false);
-        
-        // Attendre un peu avant de notifier
-        setTimeout(() => {
-          if (onAnimationComplete) {
-            onAnimationComplete();
-          }
-        }, 500);
-      }
+    if (clicked) return;
+    startTimeRef.current = performance.now();
+
+    const animate = (now) => {
+      // La vitesse de base est multipliée par le nombre de tentatives
+      const baseSpeed = 25 * BASE_SPEED_MULTIPLIER;
+      const speed = Math.min(baseSpeed, 200); // %/s, capped at 200
+      posRef.current += dirRef.current * speed * (1 / 60);
+      if (posRef.current >= 100) { posRef.current = 100; dirRef.current = -1; }
+      if (posRef.current <= 0)   { posRef.current = 0;   dirRef.current =  1; }
+      setCursorPos(posRef.current);
+      rafRef.current = requestAnimationFrame(animate);
     };
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [clicked, BASE_SPEED_MULTIPLIER]);
+
+  const handleClick = () => {
+    if (clicked) return;
+    cancelAnimationFrame(rafRef.current);
+    setClicked(true);
     
-    animationRef.current = requestAnimationFrame(animate);
+    // Vérifier si le curseur est dans une zone de succès
+    let inGreen = false;
     
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [successRate, onAnimationComplete]);
-  
+    const totalSlots = segmentCount === 1 ? 1 : segmentCount * 2 - 1;
+    const slotWidth = GREEN_WIDTH / totalSlots;
+    const cursorRelativePos = posRef.current - GREEN_LEFT;
+    
+    if (cursorRelativePos >= 0 && cursorRelativePos <= GREEN_WIDTH) {
+      const slotIndex = Math.floor(cursorRelativePos / slotWidth);
+      // Les slots pairs (0, 2, 4…) sont des zones de succès
+      inGreen = (slotIndex % 2 === 0);
+    }
+    
+    setHitResult(inGreen ? 'success' : 'failure');
+    setTimeout(() => onResult(inGreen), 900);
+  };
+
   return (
-    <div style={{
-      width: '100%',
-      marginTop: '30px',
-      marginBottom: '20px'
-    }}>
-      {/* Titre */}
-      <div style={{
-        textAlign: 'center',
-        color: '#d4af37',
-        fontSize: '18px',
-        fontWeight: 'bold',
-        marginBottom: '15px',
-        animation: animating ? 'pulse 1s infinite' : 'none'
-      }}>
-        {animating ? '⚒️ Forge en cours...' : '✨ Forge terminée !'}
+    <div style={{ width: '100%', padding: '0 4px', userSelect: 'none' }}>
+      <div style={{ textAlign: 'center', color: '#d4af37', fontSize: '15px', fontWeight: 'bold', marginBottom: '10px' }}>
+        {clicked
+          ? (hitResult === 'success' ? '✅ Dans la zone !' : '💥 Raté !')
+          : '⚒️ Cliquez au bon moment !'}
       </div>
-      
-      {/* Barre de progression */}
-      <div style={{
-        position: 'relative',
-        width: '100%',
-        height: '50px',
-        backgroundColor: '#1a1410',
-        border: '3px solid #d4af37',
-        borderRadius: '10px',
-        overflow: 'hidden',
-        boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.8)'
-      }}>
-        {/* Zone de succès (verte) */}
-        <div style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          width: `${successRate}%`,
-          height: '100%',
-          background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
-          transition: 'width 0.3s ease'
-        }}>
-          <div style={{
-            position: 'absolute',
-            left: '50%',
-            top: '50%',
-            transform: 'translate(-50%, -50%)',
-            color: '#fff',
-            fontSize: '14px',
-            fontWeight: 'bold',
-            textShadow: '1px 1px 3px rgba(0,0,0,0.8)'
-          }}>
-            ✓ SUCCÈS
-          </div>
+
+      {/* Clickable bar */}
+      <div
+        onClick={handleClick}
+        style={{
+          position: 'relative', width: '100%', height: '56px',
+          backgroundColor: '#1a1410',
+          border: `3px solid ${clicked ? (hitResult === 'success' ? '#4ade80' : '#ef4444') : '#d4af37'}`,
+          borderRadius: '10px', overflow: 'hidden',
+          cursor: clicked ? 'default' : 'pointer',
+          boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.8)',
+          transition: 'border-color 0.2s'
+        }}
+      >
+        {/* Red left */}
+        <div style={{ position: 'absolute', left: 0, top: 0, width: `${GREEN_LEFT}%`, height: '100%',
+          background: 'linear-gradient(90deg, #7f1d1d, #dc2626)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
         </div>
-        
-        {/* Zone d'échec (rouge) */}
-        <div style={{
-          position: 'absolute',
-          left: `${successRate}%`,
-          top: 0,
-          width: `${100 - successRate}%`,
-          height: '100%',
-          background: 'linear-gradient(90deg, #dc2626 0%, #991b1b 100%)'
-        }}>
-          <div style={{
-            position: 'absolute',
-            left: '50%',
-            top: '50%',
-            transform: 'translate(-50%, -50%)',
-            color: '#fff',
-            fontSize: '14px',
-            fontWeight: 'bold',
-            textShadow: '1px 1px 3px rgba(0,0,0,0.8)',
-            whiteSpace: 'nowrap'
-          }}>
-            ✗ ÉCHEC
-          </div>
+        {/* Green zone — either a single block or N alternating segments */}
+        {/* Zone centrale : N zones de succès séparées par N-1 zones d'échec = 2*N-1 sous-segments */}
+        {(() => {
+          // totalSlots : si N=1 → 1 slot vert ; si N=2 → vert|rouge|vert (3 slots) ; etc.
+          const totalSlots = segmentCount === 1 ? 1 : segmentCount * 2 - 1;
+          const slotW = GREEN_WIDTH / totalSlots;
+          return Array.from({ length: totalSlots }).map((_, i) => {
+            // Les slots pairs (0, 2, 4…) sont des zones de succès
+            const isSuccess = i % 2 === 0;
+            const slotLeft = GREEN_LEFT + i * slotW;
+            return (
+              <div key={i} style={{
+                position: 'absolute', left: `${slotLeft}%`, top: 0, width: `${slotW}%`, height: '100%',
+                background: isSuccess
+                  ? 'linear-gradient(90deg, #059669, #10b981, #059669)'
+                  : 'linear-gradient(90deg, #dc2626, #b91c1c, #dc2626)',
+                boxShadow: isSuccess ? '0 0 8px rgba(16,185,129,0.5)' : 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {slotW > 5 && (
+                  <span style={{ color: '#fff', fontSize: segmentCount === 1 ? '12px' : '10px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.9)', whiteSpace: 'nowrap' }}>
+                    {isSuccess ? (segmentCount === 1 ? '✓ SUCCÈS' : '✓') : '✗'}
+                  </span>
+                )}
+              </div>
+            );
+          });
+        })()}
+        {/* Red right */}
+        <div style={{ position: 'absolute', left: `${GREEN_LEFT + GREEN_WIDTH}%`, top: 0,
+          width: `${100 - GREEN_LEFT - GREEN_WIDTH}%`, height: '100%',
+          background: 'linear-gradient(90deg, #dc2626, #7f1d1d)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
         </div>
-        
-        {/* Curseur */}
+
+        {/* Cursor needle */}
         <div style={{
-          position: 'absolute',
-          left: `${cursorPos}%`,
-          top: '-10px',
-          bottom: '-10px',
-          width: '4px',
-          backgroundColor: '#fff',
-          boxShadow: '0 0 20px rgba(255,255,255,0.8), 0 0 40px rgba(212,175,55,0.6)',
-          transform: 'translateX(-50%)',
-          transition: animating ? 'none' : 'left 0.3s ease',
-          zIndex: 10
-        }}>
-          {/* Flèche du curseur */}
-          <div style={{
-            position: 'absolute',
-            top: '-15px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 0,
-            height: 0,
-            borderLeft: '8px solid transparent',
-            borderRight: '8px solid transparent',
-            borderTop: '12px solid #fff',
-            filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))'
-          }} />
-          <div style={{
-            position: 'absolute',
-            bottom: '-15px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 0,
-            height: 0,
-            borderLeft: '8px solid transparent',
-            borderRight: '8px solid transparent',
-            borderBottom: '12px solid #fff',
-            filter: 'drop-shadow(0 -2px 4px rgba(0,0,0,0.5))'
-          }} />
-        </div>
+          position: 'absolute', left: `${cursorPos}%`, top: 0, bottom: 0, width: '4px',
+          backgroundColor: '#fff', transform: 'translateX(-50%)',
+          boxShadow: '0 0 12px rgba(255,255,255,0.9), 0 0 24px rgba(212,175,55,0.7)',
+          zIndex: 10, pointerEvents: 'none'
+        }} />
       </div>
-      
-      {/* Légende */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        marginTop: '10px',
-        fontSize: '12px',
-        color: '#b8956a'
-      }}>
-        <span>0%</span>
-        <span style={{ color: '#d4af37', fontWeight: 'bold' }}>
-          Chance de réussite : {successRate}%
-        </span>
-        <span>100%</span>
+
+      {/* Hint */}
+      <div style={{ marginTop: '8px', textAlign: 'center', color: '#9a8475', fontSize: '0.78rem' }}>
+        Zone de succès : <strong style={{ color: '#d4af37' }}>{Math.round(GREEN_WIDTH)}%</strong>
+        {attempts > 0 && <span style={{ color: '#ef4444' }}> (−{attempts * 8}% depuis la 1ʳᵉ tentative)</span>}
       </div>
     </div>
   );
@@ -3519,6 +3473,10 @@ const prevPendingActionsRef = useRef('{}');
   const [showQuestCompletedPopup, setShowQuestCompletedPopup] = useState(false);
   const [questCompletedMessage, setQuestCompletedMessage] = useState("");
   const [questVideoPath, setQuestVideoPath] = useState("");
+
+  // Stone quest completed popup (non-blocking, auto-closes)
+  const [showStoneQuestPopup, setShowStoneQuestPopup] = useState(false);
+  const [stoneQuestMessage, setStoneQuestMessage] = useState("");
   
   // NEW: Wrong class popup state (with image)
   const [showWrongClassPopup, setShowWrongClassPopup] = useState(false);
@@ -3920,11 +3878,13 @@ const prevPendingActionsRef = useRef('{}');
         setShowKeyFoundPopup(true);
         // NOTE: No auto-hide — user must click to close
       } else if (data.type === "quest_completed_popup") {
-        // Show popup with video for quest completed
         setQuestCompletedMessage(data.message);
         setQuestVideoPath(data.video_path);
         setShowQuestCompletedPopup(true);
-        // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
+      } else if (data.type === "stone_quest_completed_popup") {
+        setStoneQuestMessage(data.message);
+        setShowStoneQuestPopup(true);
+        setTimeout(() => setShowStoneQuestPopup(false), 4000);
       } else if (data.type === "toxin_death_popup") {
         // Show popup with video for toxin death
         setToxinDeathMessage(data.message);
@@ -4573,6 +4533,24 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* Stone quest completed — non-blocking toast */}
+      {showStoneQuestPopup && (
+        <div
+          onClick={() => setShowStoneQuestPopup(false)}
+          data-testid="stone-quest-popup"
+          style={{
+            position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1100, backgroundColor: '#1a3a2a', border: '2px solid #4ade80',
+            borderRadius: '12px', padding: '16px 24px', maxWidth: '420px', textAlign: 'center',
+            boxShadow: '0 4px 24px rgba(74,222,128,0.3)', cursor: 'pointer'
+          }}
+        >
+          <p style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '1.1rem', margin: 0 }}>🪨 Quête de la Pierre accomplie !</p>
+          <p style={{ color: '#e8dcc4', fontSize: '0.9rem', marginTop: '6px' }}>{stoneQuestMessage}</p>
+          <p style={{ color: '#a0aec0', fontSize: '0.75rem', marginTop: '4px' }}>Cliquez pour fermer</p>
+        </div>
+      )}
+
       {/* NEW: Toxin Death Popup with Video */}
       {showToxinDeathPopup && (
         <div 
@@ -5027,35 +5005,30 @@ const selectRoom = (roomName) => {
           .map((it, idx) => ({ item: it, idx }))
           .filter(s => s.item && s.item.type && s.item.type.startsWith('rune_'));
 
-        const handleForge = async (slotIndex) => {
+        // cursorHit is passed by ForgeTimingGame after the player clicks
+        const handleForge = async (slotIndex, cursorHit) => {
           if (forgeBusy) return;
           setForgeBusy(true);
-          setForgeBarAnimation(true); // NOUVEAU : Démarrer l'animation de la barre
-          setForgeAnimation('forging');          // NEW: suspense phase
+          setForgeAnimation('forging');
           setForgeFlashLabel('');
           try {
-            const resPromise = axios.post(`${API}/game/${sessionId}/forge_use_rune`, {
+            const res = await axios.post(`${API}/game/${sessionId}/forge_use_rune`, {
               player_id: playerId,
               slot_index: slotIndex,
+              cursor_hit: cursorHit,
             });
-            // Attendre la fin de l'animation de la barre (4 sec)
-            const [res] = await Promise.all([
-              resPromise,
-              new Promise(r => setTimeout(r, 4000)),
-            ]);
-            setForgeBarAnimation(false); // NOUVEAU : Arrêter l'animation
             const ok = res.data.result === 'success';
+            setForgeBarAnimation(false);
             setForgeAnimation(ok ? 'success' : 'failure');
             setForgeFlashLabel(ok ? `✨ ${res.data.rune_label}` : `💥 Tous les bonus perdus`);
             if (ok) toast.success(`🔨 Forge réussie : ${res.data.rune_label}`);
             else toast.error(`💥 Forge ratée — bonus réinitialisés`);
-            setTimeout(() => { setForgeAnimation(null); setForgeFlashLabel(""); }, 2200);
+            setTimeout(() => { setForgeAnimation(null); setForgeFlashLabel(''); setForgeBusy(false); }, 2200);
           } catch (e) {
             setForgeAnimation(null);
-            setForgeBarAnimation(false); // NOUVEAU : reset en cas d'erreur
-            toast.error(e.response?.data?.detail || "Erreur de forge");
-          } finally {
-            setTimeout(() => setForgeBusy(false), 2600);
+            setForgeBarAnimation(false);
+            toast.error(e.response?.data?.detail || 'Erreur de forge');
+            setForgeBusy(false);
           }
         };
 
@@ -5135,26 +5108,21 @@ const selectRoom = (roomName) => {
                 </p>
               </CardHeader>
               <CardContent>
+                {/* Timing mini-game: shown full-width above the weapon/stats grid when active */}
+                {forgeBarAnimation !== false && (
+                  <div style={{ marginBottom: '1.2rem' }}>
+                    <ForgeTimingGame
+                      attempts={attempts}
+                      onResult={(hit) => {
+                        setForgeBarAnimation(false);
+                        handleForge(forgeBarAnimation, hit);
+                      }}
+                    />
+                  </div>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', alignItems: 'flex-start' }}>
                   <div style={{ position: 'relative', textAlign: 'center', padding: '1rem', backgroundColor: '#0d0a08', borderRadius: '12px', minHeight: '260px' }}>
                     <img src={weaponSrc} alt="Arme" style={weaponStyle} data-testid="forge-weapon-sprite" />
-                    {/* NOUVEAU : Barre d'animation de forge */}
-                    {forgeBarAnimation && (
-                      <div style={{
-                        position: 'absolute',
-                        top: '20px',
-                        left: '20px',
-                        right: '20px',
-                        zIndex: 100
-                      }}>
-                        <ForgeBar 
-                          successRate={Math.round(currentRate * 100)} 
-                          onAnimationComplete={() => {
-                            console.log("Animation de la barre terminée");
-                          }}
-                        />
-                      </div>
-                    )}
                     {forgeAnimation === 'forging' && (
                       <>
                         <div style={{
@@ -5229,22 +5197,22 @@ const selectRoom = (roomName) => {
                         <button
                           key={idx}
                           data-testid={`forge-rune-${idx}`}
-                          disabled={forgeBusy}
-                          onClick={() => handleForge(idx)}
+                          disabled={forgeBusy || forgeBarAnimation !== false}
+                          onClick={() => { if (!forgeBusy && forgeBarAnimation === false) setForgeBarAnimation(idx); }}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
                             gap: '0.6rem',
                             backgroundColor: '#2a1f17',
-                            border: '2px solid #ff7a18',
+                            border: `2px solid ${forgeBarAnimation === idx ? '#ffd166' : '#ff7a18'}`,
                             borderRadius: '10px',
                             padding: '0.6rem 0.9rem',
                             color: '#fff',
-                            cursor: forgeBusy ? 'not-allowed' : 'pointer',
-                            opacity: forgeBusy ? 0.6 : 1,
+                            cursor: (forgeBusy || forgeBarAnimation !== false) ? 'not-allowed' : 'pointer',
+                            opacity: (forgeBusy || forgeBarAnimation !== false) ? 0.6 : 1,
                             transition: 'transform 0.15s',
                           }}
-                          onMouseEnter={(e) => { if (!forgeBusy) e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                          onMouseEnter={(e) => { if (!forgeBusy && forgeBarAnimation === false) e.currentTarget.style.transform = 'translateY(-2px)'; }}
                           onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
                         >
                           <img src={ITEM_SPRITES[item.type]} alt="" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
@@ -5546,6 +5514,18 @@ const selectRoom = (roomName) => {
           <div className="keys-counter" data-testid="keys-counter">
             🔑 {gameState.keys_collected}/{gameState.keys_needed}
           </div>
+          {currentPlayerRole === "survivor" && gameState.observation_stone_target_room && (
+            <div
+              className="keys-counter"
+              data-testid="stone-quest-counter"
+              style={{ marginTop: '4px', fontSize: '0.82em', color: gameState.observation_stone_quest_completed ? '#4ade80' : '#f6c90e' }}
+              title={`Pierre d'observation : jeter à ${gameState.observation_stone_target_room}`}
+            >
+              {gameState.observation_stone_quest_completed
+                ? "🪨 ✅ Pierre jetée"
+                : `🪨 Pierre → ${gameState.observation_stone_target_room}`}
+            </div>
+          )}
         </div>
       </div>
 
@@ -6070,6 +6050,7 @@ const selectRoom = (roomName) => {
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}
+          targetRoom={gameState.observation_stone_target_room}
         />
       )}
     </div>
