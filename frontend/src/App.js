@@ -111,6 +111,7 @@ const ITEM_SPRITES = {
   rune_vitalite: '/inventory/rune_vitalite.png',
   medikit: '/inventory/medikit.png',
   antidote: '/inventory/antidote.png',
+  pierre_quete: '/items/Pierre_Quete.png',
 };
 
 const ITEM_NAMES = {
@@ -119,6 +120,7 @@ const ITEM_NAMES = {
   rune_vitalite: 'Rune de Vitalité',
   medikit: 'Médikit',
   antidote: 'Antidote',
+  pierre_quete: 'Pierre d\'observation',
 };
 
 // MODIFIED: Helper function to copy text with fallback
@@ -1986,6 +1988,138 @@ const RunePickupModal = ({ event, playerId, sessionId }) => {
   );
 };
 
+// ========== PIERRE QUETE PICKUP MODAL COMPONENT ==========
+const PierreQueteModal = ({ event, playerId, sessionId }) => {
+  if (!event || event.type !== 'pierre_quete_found') return null;
+
+  const inventoryFull = event.inventory_full;
+
+  const handlePickup = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/pickup_pierre_quete`, {
+        player_id: playerId,
+      });
+      if (response.data.status === 'success') {
+        toast.success('✨ Pierre d\'observation ajoutée à l\'inventaire !');
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || 'Erreur lors du ramassage';
+      if (errorMsg === 'Inventaire plein') {
+        toast.error('❌ Inventaire plein !');
+      } else {
+        toast.error(errorMsg);
+      }
+    }
+  };
+
+  const handleDismiss = async () => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/dismiss_pierre_quete`, {
+        player_id: playerId,
+      });
+    } catch (error) {
+      console.error('Error dismissing pierre quete:', error);
+    }
+  };
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+    >
+      <Card
+        style={{
+          maxWidth: '500px',
+          backgroundColor: '#1a1a2e',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            ✨ Vous avez trouvé la pierre d'observation !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+            <img
+              src="/items/Pierre_Quete.png"
+              alt="Pierre d'observation"
+              style={{
+                width: '150px',
+                height: '150px',
+                objectFit: 'contain',
+                margin: '0 auto',
+                filter: 'drop-shadow(0 4px 12px rgba(212, 175, 55, 0.6))',
+              }}
+            />
+            <h3 style={{ color: '#e8dcc4', marginTop: '12px', fontSize: '1.3rem' }}>
+              Pierre d'observation
+            </h3>
+            <p style={{ color: '#a0aec0', fontSize: '0.95rem', margin: '8px 0 0' }}>
+              La Pierre d'observation révèle la position de son porteur aux Orcs.
+            </p>
+          </div>
+
+          {inventoryFull && (
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              color: '#ef4444',
+              textAlign: 'center',
+              fontWeight: 'bold'
+            }}>
+              ⚠️ Inventaire plein !
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <Button
+              onClick={handlePickup}
+              disabled={inventoryFull}
+              data-testid="pierre-quete-pickup-btn"
+              style={{
+                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+              }}
+            >
+              🎒 Ramasser
+            </Button>
+            <Button
+              onClick={handleDismiss}
+              data-testid="pierre-quete-dismiss-btn"
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+              }}
+            >
+              ✖ Ignorer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 const Home = () => {
   // Step: "menu" = create/join choice, "configure" = player setup
   const [step, setStep] = useState("menu");
@@ -3484,6 +3618,11 @@ const prevPendingActionsRef = useRef('{}');
   const [patrouilleMessage, setPatrouilleMessage] = useState("");
   const [patrouilleVideoPath, setPatrouilleVideoPath] = useState("");
 
+  // NEW: Observation stone alert popup (for killers, non-blocking)
+  const [showObservationStoneAlert, setShowObservationStoneAlert] = useState(false);
+  const [observationStoneMessage, setObservationStoneMessage] = useState("");
+  const [observationStoneVideoPath, setObservationStoneVideoPath] = useState("");
+
   // NEW: Active traps section state
   const [expandedTrap, setExpandedTrap] = useState(null);
 
@@ -3676,6 +3815,12 @@ const prevPendingActionsRef = useRef('{}');
         setPatrouilleVideoPath(data.video_path);
         setShowPatrouillePopup(true);
         // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
+      } else if (data.type === "observation_stone_alert") {
+        // Non-blocking alert for killers: a survivor is carrying the observation stone
+        setObservationStoneMessage(data.message);
+        setObservationStoneVideoPath(data.video_path);
+        setShowObservationStoneAlert(true);
+        // NOTE: No notifyEventCompleted needed — non-blocking for killers
       } else if (data.type === "patrol_reveal") {
         // Killers get notified that a survivor has been revealed by the patrol goblin
         toast.info(`🔍 ${data.player_name} a été repéré par le gobelin de Patrouille dans ${data.room} !`, {
@@ -5264,6 +5409,43 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* NEW: Observation Stone Alert Popup (for killers, non-blocking) */}
+      {showObservationStoneAlert && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowObservationStoneAlert(false)}
+          data-testid="observation-stone-alert-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#7c3aed' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#a78bfa' }}>
+                🔮
+                <span>Aventurier repéré !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {observationStoneVideoPath && (
+                <video
+                  autoPlay
+                  muted
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                >
+                  <source src={observationStoneVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {observationStoneMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Goliath Death Popup */}
       {showGoliathDeathPopup && (
         <div 
@@ -5509,7 +5691,22 @@ const selectRoom = (roomName) => {
                         .map(([pid]) => gameState.players[pid]);
                     }
 
-                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition, ...patrolRevealedInRoom];
+                    // 4. Pour les orcs : afficher les aventuriers portant la Pierre d'observation (position révélée)
+                    let stoneRevealedInRoom = [];
+                    if (currentPlayerRole === "killer") {
+                      stoneRevealedInRoom = Object.values(gameState.players)
+                        .filter(player => {
+                          if (player.role !== "survivor" || player.eliminated) return false;
+                          if (player.current_room !== room.name) return false;
+                          if (!player.has_observation_stone) return false;
+                          // Ne pas dupliquer avec patrol
+                          const alreadyShown = patrolRevealedInRoom.some(p => p.id === player.id);
+                          return !alreadyShown;
+                        })
+                        .map(player => ({ ...player, _stone_revealed: true }));
+                    }
+
+                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition, ...patrolRevealedInRoom, ...stoneRevealedInRoom];
                   }
 
                   const eliminatedInRoom = room.eliminated_players || [];
@@ -5858,6 +6055,18 @@ const selectRoom = (roomName) => {
        typeof gameState.pending_events[playerId] === 'object' &&
        gameState.pending_events[playerId].type === 'rune_found' && (
         <RunePickupModal
+          event={gameState.pending_events[playerId]}
+          playerId={playerId}
+          sessionId={sessionId}
+        />
+      )}
+
+      {/* Pierre Quete Pickup Modal */}
+      {gameState.pending_events && 
+       gameState.pending_events[playerId] && 
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'pierre_quete_found' && (
+        <PierreQueteModal
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}

@@ -177,6 +177,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_patrol": False,  # NEW: for patrouille power - goblin patrol indicator
             "has_forge": False,  # NEW: for forge event
             "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
+            "has_observation_stone": False,  # NEW: for observation stone quest item
         }
 
     # Get character class from avatar
@@ -232,6 +233,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
         "forge_placed": False,  # NEW: whether forge has been placed
+        "observation_stone_placed": False,  # NEW: whether observation stone has been placed
         "goliath_active": False,  # NEW: whether Goliath is active
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
@@ -353,6 +355,32 @@ def place_forge(game_state: dict) -> Optional[str]:
         game_state["rooms"][selected_room]["has_forge"] = True
         game_state["forge_placed"] = True
         logger.info(f"Forge placed in room: {selected_room}")
+        return selected_room
+
+    return None
+
+def place_observation_stone(game_state: dict) -> Optional[str]:
+    """Place the observation stone in a random room with no events (quest, merchant, forge) at game start."""
+    available_rooms = []
+
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        # Available if: not locked, no quest, no merchant, no forge, no observation stone, not a killer position
+        if (not room_data["locked"] and
+            not room_data.get("has_quest", False) and
+            not room_data.get("has_merchant", False) and
+            not room_data.get("has_forge", False) and
+            not room_data.get("has_observation_stone", False) and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_observation_stone"] = True
+        game_state["observation_stone_placed"] = True
+        logger.info(f"Observation stone placed in room: {selected_room}")
         return selected_room
 
     return None
@@ -1043,10 +1071,22 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
                 player_copy["inventory"] = None  # Killers don't have inventory
                 filtered_state["players"][pid] = player_copy
             else:
-                # Hide survivor position (but keep player in list without current_room)
-                player_copy["current_room"] = None
+                # Check if this survivor carries the observation stone
+                carries_stone = has_item(player_data, "pierre_quete")
+
+                if carries_stone:
+                    # Reveal the room the survivor is moving to (pending_action) if available,
+                    # otherwise fall back to their current_room
+                    pending_action = game_state.get("pending_actions", {}).get(pid)
+                    if pending_action and pending_action.get("room"):
+                        player_copy["current_room"] = pending_action["room"]
+                    # else: current_room already set — keep it as-is
+                else:
+                    player_copy["current_room"] = None
+
                 player_copy["gold"] = 0  # Hide gold from killers
                 player_copy["inventory"] = None  # Hide inventory from killers
+                player_copy["has_observation_stone"] = carries_stone  # Signal to frontend why position is visible
                 filtered_state["players"][pid] = player_copy
 
     # Filter pending_actions: only show actions from same role
@@ -1203,6 +1243,25 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
             "action_data": None,
             "action_complete": False
         }
+
+    # OBSERVATION STONE ALERT: if any alive survivor carries the stone, alert each killer individually (non-blocking)
+    survivors_with_stone = [
+        p for p in game["players"].values()
+        if p["role"] == "survivor" and not p.get("eliminated", False) and has_item(p, "pierre_quete")
+    ]
+    if survivors_with_stone:
+        logger.info(f"Observation stone alert: {len(survivors_with_stone)} survivor(s) carrying the stone - alerting killers")
+        for killer in alive_killers:
+            killer_ws = active_connections.get(session_id, {}).get(killer["id"])
+            if killer_ws is not None:
+                try:
+                    await killer_ws.send_json({
+                        "type": "observation_stone_alert",
+                        "message": "La pierre d'observation a révélé la position d'un aventurier !",
+                        "video_path": "/alertes/Pierre_Detection.mp4"
+                    })
+                except Exception:
+                    pass
 
     await broadcast_to_session(session_id, {
         "type": "phase_change",
@@ -2112,6 +2171,13 @@ async def start_game(session_id: str):
     else:
         logger.warning("Could not place forge - no available rooms")
 
+    # Place the observation stone at game start (once per game)
+    stone_room = place_observation_stone(game)
+    if stone_room:
+        logger.info(f"Observation stone placed in: {stone_room}")
+    else:
+        logger.warning("Could not place observation stone - no available rooms")
+
     await broadcast_to_session(session_id, {
         "type": "game_started",
         "keys_needed": game["keys_needed"],
@@ -2195,6 +2261,7 @@ async def reset_game(session_id: str):
         room_data["has_forge"] = False
         room_data["forge_discovered"] = False
         room_data["merchant_discovered"] = False
+        room_data["has_observation_stone"] = False
     
     # Reset game state
     game["keys_collected"] = 0
@@ -2215,6 +2282,7 @@ async def reset_game(session_id: str):
     game["crystal_destroyed"] = False
     game["merchant_placed"] = False
     game["forge_placed"] = False
+    game["observation_stone_placed"] = False
     game["goliath_active"] = False
     game["goliath_turns_remaining"] = 0
     game["goliath_previous_turn_rooms"] = []
@@ -2559,6 +2627,79 @@ async def dismiss_rune(session_id: str, request: DismissRuneRequest):
 
     return {"status": "success", "message": "Rune ignorée"}
 
+# ========== OBSERVATION STONE ENDPOINTS ==========
+class PickupPierreQueteRequest(BaseModel):
+    player_id: str
+
+class DismissPierreQueteRequest(BaseModel):
+    player_id: str
+
+@api_router.post("/game/{session_id}/pickup_pierre_quete")
+async def pickup_pierre_quete(session_id: str, request: PickupPierreQueteRequest):
+    """Add observation stone to player's inventory"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup items")
+
+    # Check there's a pending pierre_quete event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="No stone to pickup")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "pierre_quete_found":
+        raise HTTPException(status_code=400, detail="No stone to pickup")
+
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Remove the stone from the room
+    room_name = event.get("room")
+    if room_name and room_name in game["rooms"]:
+        game["rooms"][room_name]["has_observation_stone"] = False
+
+    # Add stone to inventory
+    if not add_item(player, "pierre_quete"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter la pierre")
+
+    # Remove pending event and dispatch next
+    del game["pending_events"][request.player_id]
+    await dispatch_next_player_event(session_id, request.player_id)
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    logger.info(f"Player {request.player_id} picked up the observation stone")
+    return {"status": "success", "message": "Pierre d'observation ramassée !"}
+
+
+@api_router.post("/game/{session_id}/dismiss_pierre_quete")
+async def dismiss_pierre_quete(session_id: str, request: DismissPierreQueteRequest):
+    """Ignore the observation stone"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+
+    await dispatch_next_player_event(session_id, request.player_id)
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    logger.info(f"Player {request.player_id} ignored the observation stone")
+    return {"status": "success", "message": "Pierre ignorée"}
+
 @api_router.post("/game/{session_id}/use_item")
 async def use_item(session_id: str, request: UseItemRequest):
     """Use item from inventory slot (medikit/antidote)"""
@@ -2665,6 +2806,7 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
         "rune_vitalite": "Rune de Vitalité",
         "medikit": "Médikit",
         "antidote": "Antidote",
+        "pierre_quete": "Pierre d'observation",
     }.get(item_type, item_type)
 
     # Remove the item
@@ -3609,6 +3751,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
                                 "video_path": "/event/Forge.mp4"
                             })
+
+                    # NEW: Check for observation stone
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_observation_stone", False):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            await enqueue_player_event(session_id, player_id, {
+                                "type": "pierre_quete_found",
+                                "room": room_name,
+                                "inventory_full": is_inventory_full(player)
+                            }, None)
+                            logger.info(f"Player {player_id} ({player['name']}) found the observation stone in {room_name}")
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
