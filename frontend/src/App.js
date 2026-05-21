@@ -112,16 +112,46 @@ const ITEM_SPRITES = {
   medikit: '/inventory/medikit.png',
   antidote: '/inventory/antidote.png',
   pierre_quete: '/items/Pierre_Quete.png',
+  chaussons: '/items/Chaussons.png',
+  couronne: '/items/Couronne.png',
+  culotte: '/items/Culotte.png',
 };
 
 const ITEM_NAMES = {
   rune_dommage: 'Rune de Dommage',
-  rune_initiative: 'Rune d\'Initiative',
+  rune_initiative: "Rune d'Initiative",
   rune_vitalite: 'Rune de Vitalité',
   medikit: 'Médikit',
   antidote: 'Antidote',
-  pierre_quete: 'Pierre d\'observation',
+  pierre_quete: "Pierre d'observation",
+  chaussons: 'Chaussons du Roi Orc',
+  couronne: 'Couronne de rechange du Roi Orc',
+  culotte: 'Culotte du Roi Orc',
 };
+
+// Descriptions des trophées (Chaussons / Couronne / Culotte)
+const TROPHY_DESCRIPTIONS = {
+  chaussons: "Porter ces chaussons est inutile, mais si vous souhaitez repartir avec un trophée, c'est l'occasion rêvée.",
+  couronne: "D'aucune utilité, si ce n'est pour vous la péter sur la place du village.",
+  culotte: "Comptez-vous réellement encombrer votre inventaire avec cette culotte ridicule ?",
+};
+
+// Prix de vente au marchand (doit correspondre au backend SELL_PRICES)
+const SELL_PRICES = {
+  rune_dommage: 100,
+  rune_initiative: 100,
+  rune_vitalite: 100,
+  chaussons: 500,
+  couronne: 500,
+  culotte: 500,
+  medikit: 500,
+  antidote: 150,
+};
+
+// Items NON vendables (objets de quête)
+const NON_SELLABLE_ITEMS = new Set(['pierre_quete']);
+
+const getSellPrice = (itemType) => SELL_PRICES[itemType] ?? 50;
 
 // MODIFIED: Helper function to copy text with fallback
 const copyToClipboard = (text) => {
@@ -2125,6 +2155,142 @@ const PierreQueteModal = ({ event, playerId, sessionId, targetRoom }) => {
   );
 };
 
+// ========== TROPHY PICKUP MODAL COMPONENT (Chaussons / Couronne / Culotte) ==========
+const TrophyModal = ({ event, playerId, sessionId }) => {
+  if (!event || event.type !== 'trophy_found') return null;
+
+  const trophyType = event.trophy_type;
+  const inventoryFull = event.inventory_full;
+  const trophyName = ITEM_NAMES[trophyType] || 'Trophée';
+  const trophySprite = ITEM_SPRITES[trophyType];
+  const trophyDescription = TROPHY_DESCRIPTIONS[trophyType] || '';
+
+  const handlePickup = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/pickup_trophy`, {
+        player_id: playerId,
+      });
+      if (response.data.status === 'success') {
+        toast.success(`🏆 ${trophyName} ajouté à l'inventaire !`);
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || 'Erreur lors du ramassage';
+      if (errorMsg === 'Inventaire plein') {
+        toast.error('❌ Inventaire plein !');
+      } else {
+        toast.error(errorMsg);
+      }
+    }
+  };
+
+  const handleDismiss = async () => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/dismiss_trophy`, {
+        player_id: playerId,
+      });
+    } catch (error) {
+      console.error('Error dismissing trophy:', error);
+    }
+  };
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+    >
+      <Card
+        style={{
+          maxWidth: '500px',
+          backgroundColor: '#1a1a2e',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            🏆 Vous avez trouvé un trophée !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+            <img
+              src={trophySprite}
+              alt={trophyName}
+              style={{
+                width: '150px',
+                height: '150px',
+                objectFit: 'contain',
+                margin: '0 auto',
+                filter: 'drop-shadow(0 4px 12px rgba(212, 175, 55, 0.6))',
+              }}
+            />
+            <h3 style={{ color: '#e8dcc4', marginTop: '12px', fontSize: '1.3rem' }}>
+              {trophyName}
+            </h3>
+            <p style={{ color: '#a0aec0', fontSize: '0.95rem', margin: '8px 0 0', fontStyle: 'italic' }}>
+              {trophyDescription}
+            </p>
+          </div>
+
+          {inventoryFull && (
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              color: '#ef4444',
+              textAlign: 'center',
+              fontWeight: 'bold'
+            }}>
+              ⚠️ Inventaire plein !
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <Button
+              onClick={handlePickup}
+              disabled={inventoryFull}
+              data-testid="trophy-pickup-btn"
+              style={{
+                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+              }}
+            >
+              🎒 Ramasser
+            </Button>
+            <Button
+              onClick={handleDismiss}
+              data-testid="trophy-dismiss-btn"
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+              }}
+            >
+              ✖ Ignorer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 const Home = () => {
   // Step: "menu" = create/join choice, "configure" = player setup
   const [step, setStep] = useState("menu");
@@ -3538,6 +3704,7 @@ const prevPendingActionsRef = useRef('{}');
   
   // NEW: Shop dialog state
   const [showShopDialog, setShowShopDialog] = useState(false);
+  const [showSellDialog, setShowSellDialog] = useState(false);
 
   // NEW: Forge popup + interface state
   const [showForgePopup, setShowForgePopup] = useState(false);
@@ -4784,12 +4951,13 @@ const selectRoom = (roomName) => {
               <p className="game-over-message" style={{ fontSize: '1.2em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
                 Vous rencontrez le marchand !
               </p>
-              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                 <Button
                   onClick={() => {
                     setShowMerchantPopup(false);
                     setShowShopDialog(true);
                   }}
+                  data-testid="merchant-buy-btn"
                   style={{ 
                     backgroundColor: '#d4af37', 
                     color: '#000', 
@@ -4798,7 +4966,23 @@ const selectRoom = (roomName) => {
                     fontSize: '1.1rem'
                   }}
                 >
-                  Qu'avez-vous à me vendre ?
+                  🛒 Acheter
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowMerchantPopup(false);
+                    setShowSellDialog(true);
+                  }}
+                  data-testid="merchant-sell-btn"
+                  style={{ 
+                    backgroundColor: '#a16207', 
+                    color: '#fff', 
+                    fontWeight: 'bold',
+                    padding: '1rem 2rem',
+                    fontSize: '1.1rem'
+                  }}
+                >
+                  💰 Vendre
                 </Button>
                 <Button
                   onClick={() => {
@@ -4924,6 +5108,125 @@ const selectRoom = (roomName) => {
                     setShowShopDialog(false);
                     notifyEventCompleted();  // NEW
                   }}
+                  style={{ 
+                    backgroundColor: '#dc2626', 
+                    color: '#fff',
+                    padding: '0.8rem 2rem',
+                    fontSize: '1rem'
+                  }}
+                >
+                  Fermer la boutique
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Sell Dialog */}
+      {showSellDialog && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 2001 }}
+          data-testid="sell-dialog"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#2a1f17', borderColor: '#d4af37' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d4af37' }}>
+                💰
+                <span>Vendre au Marchand</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* Display player's gold */}
+              <div style={{ textAlign: 'center', marginBottom: '1.5rem', fontSize: '1.3rem', color: '#FFD700', fontWeight: 'bold' }}>
+                Votre or: 🪙 {gameState.players[playerId]?.gold || 0}
+              </div>
+
+              {/* Sellable items list */}
+              {(() => {
+                const inventory = gameState.players[playerId]?.inventory || [];
+                const sellable = inventory
+                  .map((slot, idx) => ({ slot, idx }))
+                  .filter(({ slot }) => slot && !NON_SELLABLE_ITEMS.has(slot.type));
+
+                if (sellable.length === 0) {
+                  return (
+                    <div style={{
+                      padding: '2rem',
+                      textAlign: 'center',
+                      color: '#a0aec0',
+                      fontStyle: 'italic',
+                      fontSize: '1.05rem',
+                    }}>
+                      Vous n'avez aucun objet à vendre.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '50vh', overflowY: 'auto' }}>
+                    {sellable.map(({ slot, idx }) => {
+                      const itemType = slot.type;
+                      const itemName = ITEM_NAMES[itemType] || itemType;
+                      const itemSprite = ITEM_SPRITES[itemType];
+                      const price = getSellPrice(itemType);
+
+                      return (
+                        <div key={idx} style={{
+                          padding: '1.5rem',
+                          backgroundColor: 'rgba(139, 92, 46, 0.3)',
+                          border: '2px solid #d4af37',
+                          borderRadius: '8px',
+                          display: 'flex',
+                          gap: '1rem',
+                          alignItems: 'center'
+                        }}>
+                          <img
+                            src={itemSprite}
+                            alt={itemName}
+                            style={{ width: '80px', height: '80px', objectFit: 'contain' }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>{itemName}</h3>
+                            <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>
+                              Valeur: 🪙 {price}
+                            </p>
+                          </div>
+                          <Button
+                            onClick={async () => {
+                              try {
+                                const res = await axios.post(`${API}/shop/sell_item?session_id=${sessionId}&player_id=${playerId}&slot_index=${idx}`);
+                                toast.success(`${itemName} vendu pour ${res.data.gold_gained} pièces !`);
+                              } catch (error) {
+                                toast.error(error.response?.data?.detail || "Erreur lors de la vente");
+                              }
+                            }}
+                            data-testid={`sell-item-btn-${idx}`}
+                            style={{
+                              backgroundColor: '#10b981',
+                              minWidth: '100px',
+                              color: '#fff',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            Vendre
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* Close button */}
+              <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                <Button
+                  onClick={() => {
+                    setShowSellDialog(false);
+                    notifyEventCompleted();
+                  }}
+                  data-testid="close-sell-dialog-btn"
                   style={{ 
                     backgroundColor: '#dc2626', 
                     color: '#fff',
@@ -6051,6 +6354,18 @@ const selectRoom = (roomName) => {
           playerId={playerId}
           sessionId={sessionId}
           targetRoom={gameState.observation_stone_target_room}
+        />
+      )}
+
+      {/* Trophy Pickup Modal (Chaussons / Couronne / Culotte) */}
+      {gameState.pending_events &&
+       gameState.pending_events[playerId] &&
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'trophy_found' && (
+        <TrophyModal
+          event={gameState.pending_events[playerId]}
+          playerId={playerId}
+          sessionId={sessionId}
         />
       )}
     </div>

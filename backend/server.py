@@ -178,6 +178,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_forge": False,  # NEW: for forge event
             "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
             "has_observation_stone": False,  # NEW: for observation stone quest item
+            "has_trophy": None,  # NEW: trophy type ("chaussons"/"couronne"/"culotte") or None
         }
 
     # Get character class from avatar
@@ -386,6 +387,36 @@ def place_observation_stone(game_state: dict) -> Optional[str]:
         return selected_room
 
     return None
+
+def place_trophies(game_state: dict) -> List[str]:
+    """Place the 3 trophy items (Chaussons / Couronne / Culotte) in 3 distinct event-free rooms."""
+    trophies = ["chaussons", "couronne", "culotte"]
+    placed_rooms = []
+
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for trophy_type in trophies:
+        available_rooms = []
+        for room_name, room_data in game_state["rooms"].items():
+            if (not room_data["locked"] and
+                not room_data.get("has_quest", False) and
+                not room_data.get("has_merchant", False) and
+                not room_data.get("has_forge", False) and
+                not room_data.get("has_observation_stone", False) and
+                not room_data.get("has_trophy") and
+                room_name not in killer_positions):
+                available_rooms.append(room_name)
+
+        if available_rooms:
+            selected_room = random.choice(available_rooms)
+            game_state["rooms"][selected_room]["has_trophy"] = trophy_type
+            placed_rooms.append(selected_room)
+            logger.info(f"Trophy '{trophy_type}' placed in room: {selected_room}")
+        else:
+            logger.warning(f"Could not place trophy '{trophy_type}' - no available rooms")
+
+    return placed_rooms
 
 # Forge: bonus values per rune type (identical to existing StatsModal preview)
 FORGE_RUNE_BONUSES = {
@@ -1260,6 +1291,18 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
                     await killer_ws.send_json({
                         "type": "observation_stone_alert",
                         "message": "La pierre d'observation a révélé la position d'un aventurier !",
+                        "video_path": "/alertes/Pierre_Detection.mp4"
+                    })
+                except Exception:
+                    pass
+        # Alert the survivor(s) carrying the stone that their position has been revealed
+        for survivor in survivors_with_stone:
+            survivor_ws = active_connections.get(session_id, {}).get(survivor["id"])
+            if survivor_ws is not None:
+                try:
+                    await survivor_ws.send_json({
+                        "type": "observation_stone_alert",
+                        "message": "La pierre d'observation a révélé votre position !",
                         "video_path": "/alertes/Pierre_Detection.mp4"
                     })
                 except Exception:
@@ -2190,6 +2233,10 @@ async def start_game(session_id: str):
     else:
         logger.warning("Could not place observation stone - no available rooms")
 
+    # Place the 3 trophy items at game start (once per game)
+    placed_trophies = place_trophies(game)
+    logger.info(f"Trophies placed in {len(placed_trophies)} rooms: {placed_trophies}")
+
     await broadcast_to_session(session_id, {
         "type": "game_started",
         "keys_needed": game["keys_needed"],
@@ -2274,6 +2321,7 @@ async def reset_game(session_id: str):
         room_data["forge_discovered"] = False
         room_data["merchant_discovered"] = False
         room_data["has_observation_stone"] = False
+        room_data["has_trophy"] = None
     
     # Reset game state
     game["keys_collected"] = 0
@@ -2513,6 +2561,78 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     
     return {"status": "success", "message": f"{item['name']} acheté !"}
 
+# ========== SELL PRICES (Vente au marchand) ==========
+# Items de quête NON vendables (ne doivent pas figurer dans la liste de vente)
+NON_SELLABLE_ITEMS = {"pierre_quete"}
+
+# Prix de vente fixes (override le calcul par défaut)
+SELL_PRICES = {
+    # Runes : 100 pièces
+    "rune_dommage": 100,
+    "rune_initiative": 100,
+    "rune_vitalite": 100,
+    # Trophées : 500 pièces
+    "chaussons": 500,
+    "couronne": 500,
+    "culotte": 500,
+    # Items du shop : moitié du prix d'achat
+    "medikit": 500,    # potion résurrection achetée à 1000
+    "antidote": 150,   # antidote achetée à 300
+}
+
+def get_sell_price(item_type: str) -> int:
+    """Returns the sell value for an item_type. Default to 50 if not listed."""
+    return SELL_PRICES.get(item_type, 50)
+
+@api_router.post("/shop/sell_item")
+async def sell_item(session_id: str = Query(...), player_id: str = Query(...), slot_index: int = Query(...)):
+    """Sell an item from the player's inventory to the merchant"""
+    logger.info(f"Sell item request: session={session_id}, player={player_id}, slot={slot_index}")
+
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can sell items")
+
+    inventory = player.get("inventory") or []
+
+    if slot_index < 0 or slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+
+    item = inventory[slot_index]
+    if item is None:
+        raise HTTPException(status_code=400, detail="Slot is empty")
+
+    item_type = item.get("type")
+
+    # Items de quête non vendables
+    if item_type in NON_SELLABLE_ITEMS:
+        raise HTTPException(status_code=400, detail="Cet objet ne peut pas être vendu")
+
+    sell_price = get_sell_price(item_type)
+
+    # Retirer l'item et créditer l'or
+    inventory[slot_index] = None
+    player["gold"] = player.get("gold", 0) + sell_price
+
+    logger.info(f"Player {player_id} sold {item_type} for {sell_price} gold (new balance: {player['gold']})")
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return {"status": "success", "message": f"Vendu pour {sell_price} pièces !", "gold_gained": sell_price, "new_balance": player["gold"]}
+
 # Inventory system endpoints
 class PickupRuneRequest(BaseModel):
     player_id: str
@@ -2712,6 +2832,82 @@ async def dismiss_pierre_quete(session_id: str, request: DismissPierreQueteReque
     logger.info(f"Player {request.player_id} ignored the observation stone")
     return {"status": "success", "message": "Pierre ignorée"}
 
+# ========== TROPHY ENDPOINTS (Chaussons / Couronne / Culotte) ==========
+class PickupTrophyRequest(BaseModel):
+    player_id: str
+
+class DismissTrophyRequest(BaseModel):
+    player_id: str
+
+@api_router.post("/game/{session_id}/pickup_trophy")
+async def pickup_trophy(session_id: str, request: PickupTrophyRequest):
+    """Add a trophy item (chaussons/couronne/culotte) to player's inventory"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup items")
+
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="No trophy to pickup")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "trophy_found":
+        raise HTTPException(status_code=400, detail="No trophy to pickup")
+
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    trophy_type = event.get("trophy_type")
+    if trophy_type not in ("chaussons", "couronne", "culotte"):
+        raise HTTPException(status_code=400, detail="Invalid trophy type")
+
+    # Remove the trophy from the room
+    room_name = event.get("room")
+    if room_name and room_name in game["rooms"]:
+        game["rooms"][room_name]["has_trophy"] = None
+
+    # Add trophy to inventory
+    if not add_item(player, trophy_type):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter le trophée")
+
+    # Remove pending event and dispatch next
+    del game["pending_events"][request.player_id]
+    await dispatch_next_player_event(session_id, request.player_id)
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    logger.info(f"Player {request.player_id} picked up trophy '{trophy_type}'")
+    return {"status": "success", "message": "Trophée ramassé !"}
+
+
+@api_router.post("/game/{session_id}/dismiss_trophy")
+async def dismiss_trophy(session_id: str, request: DismissTrophyRequest):
+    """Ignore a trophy item"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+
+    await dispatch_next_player_event(session_id, request.player_id)
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    logger.info(f"Player {request.player_id} ignored a trophy")
+    return {"status": "success", "message": "Trophée ignoré"}
+
 @api_router.post("/game/{session_id}/use_item")
 async def use_item(session_id: str, request: UseItemRequest):
     """Use item from inventory slot (medikit/antidote)"""
@@ -2819,6 +3015,9 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
         "medikit": "Médikit",
         "antidote": "Antidote",
         "pierre_quete": "Pierre d'observation",
+        "chaussons": "Chaussons du Roi Orc",
+        "couronne": "Couronne de rechange du Roi Orc",
+        "culotte": "Culotte du Roi Orc",
     }.get(item_type, item_type)
 
     # Remove the item
@@ -3800,6 +3999,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "inventory_full": is_inventory_full(player)
                             }, None)
                             logger.info(f"Player {player_id} ({player['name']}) found the observation stone in {room_name}")
+
+                    # NEW: Check for trophy item (Chaussons / Couronne / Culotte)
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_trophy"):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            trophy_type = game["rooms"][room_name]["has_trophy"]
+                            await enqueue_player_event(session_id, player_id, {
+                                "type": "trophy_found",
+                                "room": room_name,
+                                "trophy_type": trophy_type,
+                                "inventory_full": is_inventory_full(player)
+                            }, None)
+                            logger.info(f"Player {player_id} ({player['name']}) found trophy '{trophy_type}' in {room_name}")
 
                     # Notify all players
                     await broadcast_to_session(session_id, {
