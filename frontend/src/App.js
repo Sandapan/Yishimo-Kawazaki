@@ -3704,6 +3704,10 @@ const prevPendingActionsRef = useRef('{}');
   
   // NEW: Shop dialog state
   const [showShopDialog, setShowShopDialog] = useState(false);
+  const [showCartographerDialog, setShowCartographerDialog] = useState(false);
+  const [cartographerDialogStep, setCartographerDialogStep] = useState('initial'); // 'initial', 'payment', 'topic_choice', 'hint_shown'
+  const [cartographerHint, setCartographerHint] = useState('');
+  const [cartographerVideoPath, setCartographerVideoPath] = useState('');
   const [showSellDialog, setShowSellDialog] = useState(false);
 
   // NEW: Forge popup + interface state
@@ -3896,6 +3900,11 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Show forge intro popup for survivor who found the forge
         setForgeVideoPath(data.video_path || "/event/Forge.mp4");
         setShowForgePopup(true);
+      } else if (data.type === "cartographer_encounter") {
+        // NEW: Cartographer encounter
+        setShowCartographerDialog(true);
+        setCartographerDialogStep('initial');
+        setCartographerVideoPath(data.video_path || '/event/cartographe.mp4');
       } else if (data.type === "room_discovered") {
         // NEW: Show room discovery animation
         const roomName = data.room_name;
@@ -5242,6 +5251,212 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* NEW: Cartographer Dialog */}
+      {showCartographerDialog && (
+        <div 
+          className="game-over-overlay" 
+          style={{ zIndex: 2002 }}
+          data-testid="cartographer-dialog"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#2a1f17', borderColor: '#d4af37' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d4af37' }}>
+                🗺️
+                <span>Le Cartographe</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* Video */}
+              {cartographerVideoPath && cartographerDialogStep === 'initial' && (
+                <video 
+                  autoPlay 
+                  muted 
+                  loop
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1.5rem' }}
+                >
+                  <source src={cartographerVideoPath} type="video/mp4" />
+                  Votre navigateur ne supporte pas la vidéo.
+                </video>
+              )}
+
+              {/* Initial step */}
+              {cartographerDialogStep === 'initial' && (
+                <>
+                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
+                    Vous rencontrez le cartographe !
+                  </p>
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <Button
+                      onClick={() => setCartographerDialogStep('payment')}
+                      style={{ 
+                        backgroundColor: '#10b981', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      💬 Dialoguer
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setShowCartographerDialog(false);
+                        notifyEventCompleted();
+                      }}
+                      style={{ 
+                        backgroundColor: '#6b7280', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      🚪 Je ne suis pas intéressé
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* Payment step */}
+              {cartographerDialogStep === 'payment' && (
+                <>
+                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1rem' }}>
+                    Vous semblez perdu jeune aventurier. Contre une modique somme, je pourrai probablement vous aider.
+                  </p>
+                  <p style={{ textAlign: 'center', color: '#FFD700', fontSize: '1.2rem', fontWeight: 'bold', marginBottom: '1.5rem' }}>
+                    Prix : 🪙 300 pièces d'or
+                  </p>
+                  <p style={{ textAlign: 'center', color: '#a0aec0', fontSize: '0.95rem', marginBottom: '1.5rem' }}>
+                    Votre or : 🪙 {gameState.players[playerId]?.gold || 0}
+                  </p>
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <Button
+                      onClick={() => {
+                        if ((gameState.players[playerId]?.gold || 0) >= 300) {
+                          setCartographerDialogStep('topic_choice');
+                        } else {
+                          toast.error("Vous n'avez pas assez d'or !");
+                        }
+                      }}
+                      disabled={(gameState.players[playerId]?.gold || 0) < 300}
+                      style={{ 
+                        backgroundColor: (gameState.players[playerId]?.gold || 0) >= 300 ? '#10b981' : '#555',
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      💰 Payer 300 pièces d'or
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setShowCartographerDialog(false);
+                        notifyEventCompleted();
+                      }}
+                      style={{ 
+                        backgroundColor: '#dc2626', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      ❌ Non merci
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* Topic choice step */}
+              {cartographerDialogStep === 'topic_choice' && (
+                <>
+                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
+                    Que recherchez-vous ?
+                  </p>
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const response = await axios.post(`${API}/cartographer/pay_for_hint?session_id=${sessionId}&player_id=${playerId}&hint_topic=merchant`);
+                          setCartographerHint(response.data.hint_text);
+                          setCartographerDialogStep('hint_shown');
+                          toast.success("Indice obtenu !");
+                        } catch (error) {
+                          toast.error(error.response?.data?.detail || "Erreur lors de l'obtention de l'indice");
+                        }
+                      }}
+                      style={{ 
+                        backgroundColor: '#8b5cf6', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      🧙 Je cherche un marchand
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const response = await axios.post(`${API}/cartographer/pay_for_hint?session_id=${sessionId}&player_id=${playerId}&hint_topic=forge`);
+                          setCartographerHint(response.data.hint_text);
+                          setCartographerDialogStep('hint_shown');
+                          toast.success("Indice obtenu !");
+                        } catch (error) {
+                          toast.error(error.response?.data?.detail || "Erreur lors de l'obtention de l'indice");
+                        }
+                      }}
+                      style={{ 
+                        backgroundColor: '#ef4444', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      🔥 Je cherche la forge
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* Hint shown step */}
+              {cartographerDialogStep === 'hint_shown' && (
+                <>
+                  <div style={{ 
+                    backgroundColor: 'rgba(212, 175, 55, 0.2)', 
+                    border: '2px solid #d4af37',
+                    borderRadius: '8px',
+                    padding: '1.5rem',
+                    marginBottom: '1.5rem'
+                  }}>
+                    <p style={{ fontSize: '1.2rem', color: '#d4af37', fontWeight: 'bold', textAlign: 'center', marginBottom: '1rem' }}>
+                      💡 Indice du Cartographe
+                    </p>
+                    <p style={{ fontSize: '1.1rem', color: '#fff', textAlign: 'center' }}>
+                      {cartographerHint}
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <Button
+                      onClick={() => {
+                        setShowCartographerDialog(false);
+                        setCartographerDialogStep('initial');
+                        setCartographerHint('');
+                        notifyEventCompleted();
+                      }}
+                      style={{ 
+                        backgroundColor: '#10b981', 
+                        color: '#fff',
+                        padding: '1rem 2rem',
+                        fontSize: '1.1rem'
+                      }}
+                    >
+                      👋 Saluer le cartographe
+                    </Button>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Forge Intro Popup */}
       {showForgePopup && (() => {
         const closeForge = async () => {
@@ -6038,6 +6253,11 @@ const selectRoom = (roomName) => {
                           {room.merchant_discovered && (
                              <span className="room-player-avatar" title="Marchand">
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                             </span>
+                          )}
+                          {room.cartographer_discovered && (
+                             <span className="room-player-avatar" title="Cartographe">
+                                 <img src="/avatars/Cartographe.png" alt="Cartographe" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
                           )}
                           {room.forge_discovered && currentPlayerRole === "survivor" && (
