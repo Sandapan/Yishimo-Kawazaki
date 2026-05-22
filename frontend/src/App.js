@@ -3904,7 +3904,7 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Cartographer encounter
         setShowCartographerDialog(true);
         setCartographerDialogStep('initial');
-        setCartographerVideoPath(data.video_path || '/event/cartographe.mp4');
+        setCartographerVideoPath(data.video_path || '/event/Cartographe.mp4');
       } else if (data.type === "room_discovered") {
         // NEW: Show room discovery animation
         const roomName = data.room_name;
