@@ -115,6 +115,9 @@ const ITEM_SPRITES = {
   chaussons: '/items/Chaussons.png',
   couronne: '/items/Couronne.png',
   culotte: '/items/Culotte.png',
+  relique_triangulaire: '/items/Relique_Triangulaire.png',
+  relique_cubique: '/items/Relique_Cubique.png',
+  relique_spherique: '/items/Relique_Spherique.png',
 };
 
 const ITEM_NAMES = {
@@ -127,6 +130,9 @@ const ITEM_NAMES = {
   chaussons: 'Chaussons du Roi Orc',
   couronne: 'Couronne de rechange du Roi Orc',
   culotte: 'Culotte du Roi Orc',
+  relique_triangulaire: 'Relique Triangulaire',
+  relique_cubique: 'Relique Cubique',
+  relique_spherique: 'Relique Sphérique',
 };
 
 // Descriptions des trophées (Chaussons / Couronne / Culotte)
@@ -146,10 +152,11 @@ const SELL_PRICES = {
   culotte: 500,
   medikit: 500,
   antidote: 150,
+  relique_triangulaire: 500,
 };
 
 // Items NON vendables (objets de quête)
-const NON_SELLABLE_ITEMS = new Set(['pierre_quete']);
+const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique']);
 
 const getSellPrice = (itemType) => SELL_PRICES[itemType] ?? 50;
 
@@ -635,8 +642,14 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
 };
 
 // ========== SPRITE SHEET ANIMATOR COMPONENT ==========
+// frameWidth, frameHeight et totalFrames sont OPTIONNELS :
+//   - frameWidth  et frameHeight sont calculés automatiquement depuis image.naturalWidth / cols
+//     et image.naturalHeight / rows si non fournis.
+//   - totalFrames vaut cols x rows par défaut.
+// Il suffit donc de passer spriteSheet + cols + rows pour que tout fonctionne correctement.
 const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows, totalFrames, frameDuration = 100, loop = true, onAnimationEnd }) => {
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [computedFrameSize, setComputedFrameSize] = useState({ w: frameWidth, h: frameHeight });
   const canvasRef = useRef(null);
   const imageRef = useRef(null);
   const animationRef = useRef(null);
@@ -646,55 +659,65 @@ const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows,
     image.src = spriteSheet;
     image.onload = () => {
       imageRef.current = image;
+      // Calcul automatique si frameWidth / frameHeight ne sont pas fournis explicitement
+      const w = frameWidth  || Math.floor(image.naturalWidth  / cols);
+      const h = frameHeight || Math.floor(image.naturalHeight / rows);
+      setComputedFrameSize({ w, h });
+      setCurrentFrame(0);
     };
-    // Réinitialiser la frame à 0 quand on change de sprite sheet (idle → attack → hurt)
+    // Reinitialisr la frame a 0 quand on change de sprite sheet (idle -> attack -> hurt)
     setCurrentFrame(0);
-  }, [spriteSheet]);
+  }, [spriteSheet, cols, rows, frameWidth, frameHeight]);
+
+  // totalFrames explicite, ou cols x rows par defaut
+  const effectiveTotalFrames = totalFrames || (cols * rows);
 
   useEffect(() => {
     if (!imageRef.current || !canvasRef.current) return;
-    
-    // Attendre que l'image soit complètement chargée
     if (!imageRef.current.complete) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    
+
+    const fw = computedFrameSize.w;
+    const fh = computedFrameSize.h;
+    if (!fw || !fh) return;
+
     // Calculer la position de la frame dans la sprite sheet
     const col = currentFrame % cols;
     const row = Math.floor(currentFrame / cols);
-    
+
     // Effacer le canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+
     // Dessiner la frame actuelle
     try {
       ctx.drawImage(
         imageRef.current,
-        col * frameWidth,      // source X
-        row * frameHeight,     // source Y
-        frameWidth,            // source largeur
-        frameHeight,           // source hauteur
-        0,                     // destination X
-        0,                     // destination Y
-        canvas.width,          // destination largeur
-        canvas.height          // destination hauteur
+        col * fw,      // source X
+        row * fh,      // source Y
+        fw,            // source largeur
+        fh,            // source hauteur
+        0,             // destination X
+        0,             // destination Y
+        canvas.width,  // destination largeur
+        canvas.height  // destination hauteur
       );
     } catch (error) {
       console.error('Erreur lors du dessin de la frame:', error);
     }
-  }, [currentFrame, frameWidth, frameHeight, cols, rows]);
+  }, [currentFrame, computedFrameSize, cols, rows]);
 
   useEffect(() => {
     const animate = () => {
       setCurrentFrame(prev => {
         const nextFrame = prev + 1;
-        if (nextFrame >= totalFrames) {
+        if (nextFrame >= effectiveTotalFrames) {
           if (loop) {
             return 0;
           } else {
             if (onAnimationEnd) onAnimationEnd();
-            return prev; // Rester sur la dernière frame
+            return prev; // Rester sur la derniere frame
           }
         }
         return nextFrame;
@@ -708,13 +731,13 @@ const SpriteSheetAnimator = ({ spriteSheet, frameWidth, frameHeight, cols, rows,
         clearInterval(animationRef.current);
       }
     };
-  }, [totalFrames, frameDuration, loop, onAnimationEnd]);
+  }, [effectiveTotalFrames, frameDuration, loop, onAnimationEnd]);
 
   return (
     <canvas
       ref={canvasRef}
-      width={200}  // Taille d'affichage à l'écran
-      height={138} // Ratio 1000:690 ≈ 200:138
+      width={200}  // Taille d'affichage a l'ecran
+      height={115} // frameHeight calcule : 1000x690 / 5cols x 6rows = 200x115
       style={{ imageRendering: 'pixelated' }}
     />
   );
@@ -746,6 +769,293 @@ class SeededRandom {
     return Math.floor(this.next() * (max - min + 1)) + min;
   }
 }
+
+// ========== FLEEING GOBLIN COMBAT COMPONENT ==========
+// Même système que MultiPlayerCombat, mais simplifié :
+//   - Gobelin Fuyard : 1 PdV, initiative 10, N'ATTAQUE PAS, pas de sprite "hurt"
+//   - Si gobelin > initiative survivant → flee (animation inversée), pas de récompense
+//   - Si survivant ≥ initiative gobelin → survivant attaque, gobelin tombe (fainted), relique obtenue
+const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
+  const goblinData   = event.goblin;
+  const survivorData = event.survivor;
+  const survivorWins = survivorData.initiative >= goblinData.initiative;
+
+  // ── État du combat ───────────────────────────────────────────────────────────
+  const [combatants, setCombatants]           = useState([]);
+  const [survivorAnim, setSurvivorAnim]       = useState('idle'); // 'idle' | 'attack'
+  const [goblinAnim,   setGoblinAnim]         = useState('idle'); // 'idle' | 'flee' | 'fainted'
+  const [survivorLeft, setSurvivorLeft]       = useState('10%'); // position pour animer l'avance
+  const [damageIndicators, setDamageIndicators] = useState({});
+  const [combatLog,   setCombatLog]           = useState([]);
+  const [combatOver,  setCombatOver]          = useState(false);
+  const [canClose,    setCanClose]            = useState(false);
+  const [resultMessage, setResultMessage]     = useState('');
+
+  // ── Init combattants ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const fighters = [
+      {
+        id: survivorData.id,
+        name: survivorData.name,
+        survivorClass: survivorData.survivorClass || survivorData.name, // classe pour les sprites
+        type: 'survivor',
+        hp: survivorData.hp,
+        maxHp: survivorData.maxHp,
+        initiative: survivorData.initiative,
+        alive: true,
+      },
+      {
+        id: 'fleeing_goblin',
+        name: 'Gobelin Fuyard',
+        type: 'fleeing_goblin',
+        hp: goblinData.hp,
+        maxHp: goblinData.maxHp,
+        initiative: goblinData.initiative,
+        alive: true,
+      },
+    ];
+    fighters.sort((a, b) => b.initiative - a.initiative);
+    setCombatants(fighters);
+
+    setCombatLog([
+      `⚔️ Un Gobelin Fuyard surgit !`,
+      `📊 Initiatives — ${survivorData.name} : ${survivorData.initiative} | Gobelin : ${goblinData.initiative}`,
+    ]);
+  }, [event]);
+
+  // ── Simulation du combat ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (combatants.length === 0) return;
+    let mounted = true;
+
+    const runCombat = async () => {
+      await new Promise(r => setTimeout(r, 800)); // pause intro
+      if (!mounted) return;
+
+      if (!survivorWins) {
+        // ── CAS : Gobelin fuit ───────────────────────────────────────────────
+        setGoblinAnim('flee');
+        setCombatLog(prev => [...prev,
+          `💨 Le Gobelin Fuyard est plus rapide (${goblinData.initiative} > ${survivorData.initiative}) et prend la fuite !`
+        ]);
+        await new Promise(r => setTimeout(r, 2200)); // durée animation flee (20 frames × 100ms + marge)
+        if (!mounted) return;
+        setGoblinAnim('idle');
+        setResultMessage('💨 Le Gobelin Fuyard vous a échappé… Pas de récompense.');
+
+      } else {
+        // ── CAS : Survivant attaque ──────────────────────────────────────────
+        setCombatLog(prev => [...prev,
+          `⚔️ ${survivorData.name} a l'initiative (${survivorData.initiative} ≥ ${goblinData.initiative}) et charge !`
+        ]);
+
+        // 1. Avance du survivant
+        setSurvivorAnim('attack');
+        setSurvivorLeft('30%');
+        await new Promise(r => setTimeout(r, 1700)); // 30 frames × ~50ms + marge
+        if (!mounted) return;
+
+        // 2. Impact + dégâts
+        const damage = goblinData.hp; // 1 PdV → mort immédiate
+        setDamageIndicators({ fleeing_goblin: { damage, timestamp: Date.now() } });
+        setTimeout(() => setDamageIndicators({}), 1500);
+
+        setCombatants(prev => prev.map(f =>
+          f.id === 'fleeing_goblin' ? { ...f, hp: 0, alive: false } : f
+        ));
+
+        // 3. Retour survivant + gobelin fainted
+        setSurvivorLeft('10%');
+        setSurvivorAnim('idle');
+        setGoblinAnim('fainted');
+
+        setCombatLog(prev => [...prev,
+          `💥 ${survivorData.name} assène ${damage} dégât(s) au Gobelin Fuyard (0/${goblinData.maxHp} PV) !`
+        ]);
+        await new Promise(r => setTimeout(r, 3200)); // 30 frames × 100ms + marge
+        if (!mounted) return;
+
+        setCombatLog(prev => [...prev, `🎁 Vous obtenez la Relique Sphérique !`]);
+        setResultMessage('🎁 Vous avez vaincu le Gobelin Fuyard ! Relique Sphérique obtenue !');
+      }
+
+      // ── Résoudre côté backend ─────────────────────────────────────────────
+      setCombatOver(true);
+      try {
+        await axios.post(`${API}/game/${sessionId}/resolve_fleeing_goblin_combat`, {
+          survivor_id: survivorData.id,
+          result: survivorWins ? 'survivor_win' : 'goblin_fled',
+        });
+      } catch (err) {
+        console.error('Erreur résolution gobelin fuyard:', err);
+      }
+      if (!mounted) return;
+      await new Promise(r => setTimeout(r, 1500));
+      setCanClose(true);
+    };
+
+    runCombat();
+    return () => { mounted = false; };
+  }, [combatants.length]);
+
+  // ── Paramètres spritesheets ───────────────────────────────────────────────────
+  // Règle : frameWidth = 1000÷5 = 200 | frameHeight = hauteur÷rows = toujours 115
+  // GobelinFuyard :  idle 1000×690 (5×6, 30f) | flee 1000×460 (5×4, 20f) | fainted 1000×690 (5×6, 30f)
+  // Survivant      : idle 1000×690 (5×6, 30f) | attack 1000×690 (5×6, 30f)
+
+  const survivorClass = survivorData.survivorClass || survivorData.name;
+
+  const SURVIVOR_PARAMS = {
+    idle:   { spriteSheet: `/fight/${survivorClass}_idle.webp`,   cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: true  },
+    attack: { spriteSheet: `/fight/${survivorClass}_attack.webp`, cols: 5, rows: 6, totalFrames: 30, frameDuration: 50,  loop: false },
+  };
+  const GOBLIN_PARAMS = {
+    idle:    { spriteSheet: '/fight/GobelinFuyard_idle.webp',    cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: true  },
+    flee:    { spriteSheet: '/fight/GobelinFuyard_flee.webp',    cols: 5, rows: 4, totalFrames: 20, frameDuration: 100, loop: false },
+    fainted: { spriteSheet: '/fight/GobelinFuyard_fainted.webp', cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: false },
+  };
+
+  const sp = SURVIVOR_PARAMS[survivorAnim] || SURVIVOR_PARAMS.idle;
+  const gp = GOBLIN_PARAMS[goblinAnim]     || GOBLIN_PARAMS.idle;
+
+  const survivorF = combatants.find(c => c.id === survivorData.id);
+  const goblinF   = combatants.find(c => c.id === 'fleeing_goblin');
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{ zIndex: 3000, cursor: canClose ? 'pointer' : 'default' }}
+      onClick={() => canClose && onClose && onClose()}
+      data-testid="fleeing-goblin-combat"
+    >
+      <div style={{
+        position: 'relative',
+        width: '90%',
+        maxWidth: '1000px',
+        height: '75vh',
+        backgroundImage: 'url(/fight/Ground.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        borderRadius: '12px',
+        border: '4px solid #d4af37',
+        overflow: 'hidden',
+      }}>
+
+        {/* ── Survivant (gauche) ─────────────────────────────────────────── */}
+        <div style={{
+          position: 'absolute',
+          left: survivorLeft,
+          bottom: '20%',
+          opacity: survivorF?.alive !== false ? 1 : 0.35,
+          transition: 'left 0.4s ease-out',
+        }}>
+          <SpriteSheetAnimator
+            key={`survivor-${survivorAnim}`}
+            spriteSheet={sp.spriteSheet}
+            frameWidth={200}
+            frameHeight={115}
+            cols={sp.cols}
+            rows={sp.rows}
+            totalFrames={sp.totalFrames}
+            frameDuration={sp.frameDuration}
+            loop={sp.loop}
+          />
+          {/* Barre de vie */}
+          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
+            <div style={{ width: `${((survivorF?.hp ?? 0) / (survivorF?.maxHp ?? 1)) * 100}%`, height: '100%', backgroundColor: '#10b981', transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ color: '#fff', textAlign: 'center', fontSize: '13px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+            {survivorData.name} ({survivorF?.hp ?? 0}/{survivorF?.maxHp ?? 0}) — Init: {survivorData.initiative}
+          </div>
+        </div>
+
+        {/* ── Gobelin Fuyard (droite) ────────────────────────────────────── */}
+        <div style={{
+          position: 'absolute',
+          right: '10%',
+          bottom: '20%',
+          opacity: goblinF?.alive !== false ? 1 : 0.35,
+          // En mode "flee" → court vers la droite (sans miroir)
+          // Sinon → fait face au survivant (miroir)
+          transform: goblinAnim === 'flee' ? 'scaleX(1)' : 'scaleX(-1)',
+          transition: 'opacity 0.3s',
+        }}>
+          <SpriteSheetAnimator
+            key={`goblin-${goblinAnim}`}
+            spriteSheet={gp.spriteSheet}
+            frameWidth={200}
+            frameHeight={115}
+            cols={gp.cols}
+            rows={gp.rows}
+            totalFrames={gp.totalFrames}
+            frameDuration={gp.frameDuration}
+            loop={gp.loop}
+          />
+          {/* Indicateur de dégâts (re-miroir pour être lisible malgré le scaleX(-1)) */}
+          {damageIndicators['fleeing_goblin'] && (
+            <div style={{
+              position: 'absolute', top: '-30px', left: '50%',
+              transform: 'translateX(-50%) scaleX(-1)',
+              fontSize: '28px', fontWeight: 'bold', color: '#ff0000',
+              textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
+              animation: 'floatUpMirrored 1.5s ease-out',
+              pointerEvents: 'none', zIndex: 1000,
+            }}>
+              -{damageIndicators['fleeing_goblin'].damage}
+            </div>
+          )}
+          {/* Barre de vie (re-miroir) */}
+          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37', transform: 'scaleX(-1)' }}>
+            <div style={{ width: `${((goblinF?.hp ?? 0) / (goblinF?.maxHp ?? 1)) * 100}%`, height: '100%', backgroundColor: '#ef4444', transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ color: '#fff', textAlign: 'center', fontSize: '13px', fontWeight: 'bold', textShadow: '2px 2px 4px #000', transform: 'scaleX(-1)' }}>
+            Gobelin Fuyard ({goblinF?.hp ?? 0}/{goblinF?.maxHp ?? 0}) — Init: {goblinData.initiative}
+          </div>
+        </div>
+
+        {/* ── Combat log ────────────────────────────────────────────────── */}
+        <div style={{
+          position: 'absolute', bottom: '10px', left: '50%', transform: 'translateX(-50%)',
+          width: '80%', maxHeight: '140px',
+          backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: '8px',
+          padding: '10px', overflowY: 'auto', border: '2px solid #d4af37',
+        }}>
+          {combatLog.map((entry, idx) => (
+            <div key={idx} style={{ color: '#e8dcc4', fontSize: '12px', marginBottom: '3px' }}>{entry}</div>
+          ))}
+        </div>
+
+        {/* ── Résultat ──────────────────────────────────────────────────── */}
+        {combatOver && resultMessage && (
+          <div style={{
+            position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)',
+            backgroundColor: 'rgba(0,0,0,0.9)', padding: '16px 32px', borderRadius: '12px',
+            border: `3px solid ${survivorWins ? '#10b981' : '#f59e0b'}`,
+          }}>
+            <div style={{ color: survivorWins ? '#10b981' : '#f59e0b', fontSize: '20px', fontWeight: 'bold', textAlign: 'center' }}>
+              {resultMessage}
+            </div>
+          </div>
+        )}
+
+        {/* ── Bouton fermer ─────────────────────────────────────────────── */}
+        {canClose && (
+          <div style={{
+            position: 'absolute', top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%)',
+            color: '#d4af37', fontSize: '18px', fontWeight: 'bold', textAlign: 'center',
+            backgroundColor: 'rgba(0,0,0,0.8)', padding: '15px 30px',
+            borderRadius: '8px', border: '2px solid #d4af37', cursor: 'pointer',
+          }}
+          onClick={(e) => { e.stopPropagation(); if (onClose) onClose(); }}
+          >
+            Cliquez pour fermer
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // ========== MULTIPLAYER COMBAT COMPONENT ==========
 const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
@@ -1089,11 +1399,8 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
             >
               <SpriteSheetAnimator
                 spriteSheet={getSpriteSheet(combatant, animationType)}
-                frameWidth={200}
-                frameHeight={115}
                 cols={spriteParams.cols}
                 rows={spriteParams.rows}
-                totalFrames={spriteParams.totalFrames}
                 frameDuration={animationType === 'attack' ? 33 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
@@ -1162,11 +1469,8 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
             >
               <SpriteSheetAnimator
                 spriteSheet={getSpriteSheet(combatant, animationType)}
-                frameWidth={200}
-                frameHeight={115}
                 cols={spriteParams.cols}
                 rows={spriteParams.rows}
-                totalFrames={spriteParams.totalFrames}
                 frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
@@ -1283,6 +1587,295 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
           }}
           >
             {canClose ? 'Cliquez pour fermer' : 'Combat terminé - Cliquez pour fermer'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ========== MIMIC COMBAT COMPONENT ==========
+const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
+  // État du combat
+  const [survivorHP, setSurvivorHP] = useState(event.survivor_hp);
+  const [survivorGold, setSurvivorGold] = useState(event.survivor_gold);
+  const [mimicHP, setMimicHP] = useState(event.mimic_hp);
+  const [combatLog, setCombatLog] = useState([]);
+  const [combatOver, setCombatOver] = useState(false);
+  const [canClose, setCanClose] = useState(false);
+  const [animatingEntity, setAnimatingEntity] = useState(null);
+  const [totalDamageTaken, setTotalDamageTaken] = useState(0);
+  const [totalGoldStolen, setTotalGoldStolen] = useState(0);
+  const [mimicDefeated, setMimicDefeated] = useState(false);
+  const [damageIndicator, setDamageIndicator] = useState(null);
+
+  const getSurvivorSpriteSheet = (animationType) => {
+    return `/fight/${event.survivor_class}_${animationType}.webp`;
+  };
+
+  const getMimicSpriteSheet = (animationType) => {
+    return `/fight/Mimic_${animationType}.webp`;
+  };
+
+  const getSpriteParams = (entityType, animationType) => {
+    if (entityType === 'mimic') {
+      switch (animationType) {
+        case 'idle': return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'attack': return { cols: 5, rows: 4, totalFrames: 20 };
+        case 'hurt': return { cols: 5, rows: 2, totalFrames: 10 };
+        case 'fainted': return { cols: 5, rows: 4, totalFrames: 20 };
+        default: return { cols: 5, rows: 6, totalFrames: 30 };
+      }
+    } else {
+      switch (animationType) {
+        case 'idle': return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'attack': return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'hurt': return { cols: 5, rows: 2, totalFrames: 10 };
+        default: return { cols: 5, rows: 6, totalFrames: 30 };
+      }
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+
+    const runCombat = async () => {
+      let currentSurvivorHP = event.survivor_hp;
+      let currentMimicHP = event.mimic_hp;
+      let currentGold = event.survivor_gold;
+      let goldStolen = 0;
+      let damageTaken = 0;
+
+      const survivorInitiative = Math.floor(Math.random() * 20) + 1;
+      const mimicInitiative = Math.floor(Math.random() * 20) + 1;
+
+      const log = [`⚔️ Combat contre le Mimic !`];
+      log.push(`Initiative : ${event.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
+      setCombatLog([...log]);
+
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      const survivorFirst = survivorInitiative >= mimicInitiative;
+
+      while (mounted && currentSurvivorHP > 0 && currentMimicHP > 0) {
+        if (survivorFirst || currentMimicHP > 0) {
+          setAnimatingEntity('survivor_attack');
+          await new Promise(resolve => setTimeout(resolve, 600));
+
+          const damage = Math.floor(Math.random() * 6) + 1;
+          currentMimicHP = Math.max(0, currentMimicHP - damage);
+          setMimicHP(currentMimicHP);
+
+          setAnimatingEntity('mimic_hurt');
+          setDamageIndicator({ type: 'damage', value: damage });
+          setTimeout(() => setDamageIndicator(null), 1500);
+
+          log.push(`⚔️ ${event.survivor_class} attaque : ${damage} dégâts !`);
+          setCombatLog([...log]);
+
+          await new Promise(resolve => setTimeout(resolve, 800));
+          setAnimatingEntity(null);
+
+          if (currentMimicHP <= 0) break;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        if (currentMimicHP > 0 && currentSurvivorHP > 0) {
+          setAnimatingEntity('mimic_attack');
+          await new Promise(resolve => setTimeout(resolve, 600));
+
+          const damage = Math.floor(Math.random() * 6) + 1;
+          currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
+          damageTaken += damage;
+          setSurvivorHP(currentSurvivorHP);
+          setTotalDamageTaken(damageTaken);
+
+          const goldToSteal = Math.floor(currentGold * 0.5);
+          currentGold = Math.max(0, currentGold - goldToSteal);
+          goldStolen += goldToSteal;
+          setSurvivorGold(currentGold);
+          setTotalGoldStolen(goldStolen);
+
+          setAnimatingEntity('survivor_hurt');
+          setDamageIndicator({ type: 'both', damage: damage, gold: goldToSteal });
+          setTimeout(() => setDamageIndicator(null), 1500);
+
+          log.push(`💰 Le Mimic attaque : ${damage} dégâts et vole ${goldToSteal}💰 !`);
+          setCombatLog([...log]);
+
+          await new Promise(resolve => setTimeout(resolve, 800));
+          setAnimatingEntity(null);
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      setCombatOver(true);
+
+      if (currentMimicHP <= 0) {
+        setMimicDefeated(true);
+        setAnimatingEntity('mimic_fainted');
+        log.push(`🎉 Victoire ! Le Mimic est vaincu !`);
+      } else {
+        setMimicDefeated(false);
+        log.push(`💀 Défaite ! Vous avez été vaincu par le Mimic...`);
+      }
+
+      setCombatLog([...log]);
+
+      try {
+        await axios.post(`${API}/game/${sessionId}/resolve_mimic_combat`, {
+          survivor_id: event.survivor_id,
+          damage_dealt_to_survivor: damageTaken,
+          gold_stolen: goldStolen,
+          mimic_defeated: currentMimicHP <= 0,
+          combat_log: log
+        });
+      } catch (error) {
+        console.error("Erreur lors de la résolution du combat Mimic:", error);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      setCanClose(true);
+    };
+
+    runCombat();
+    return () => { mounted = false; };
+  }, [event, sessionId]);
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{ zIndex: 3000, cursor: canClose ? "pointer" : "default" }}
+      onClick={() => canClose && onClose && onClose()}
+      data-testid="mimic-combat"
+    >
+      <div style={{
+        position: 'relative',
+        width: '90%',
+        maxWidth: '1200px',
+        height: '80vh',
+        backgroundImage: 'url(/fight/Ground.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        borderRadius: '12px',
+        border: '4px solid #d4af37',
+        overflow: 'hidden'
+      }}>
+        {/* Survivant (à gauche) */}
+        <div style={{
+          position: 'absolute',
+          left: animatingEntity === 'survivor_attack' ? '30%' : '10%',
+          bottom: '35%',
+          transition: 'all 0.4s ease-out'
+        }}>
+          <SpriteSheetAnimator
+            spriteSheet={getSurvivorSpriteSheet(
+              animatingEntity === 'survivor_attack' ? 'attack' :
+              animatingEntity === 'survivor_hurt' ? 'hurt' : 'idle'
+            )}
+            cols={getSpriteParams('survivor',
+              animatingEntity === 'survivor_attack' ? 'attack' :
+              animatingEntity === 'survivor_hurt' ? 'hurt' : 'idle'
+            ).cols}
+            rows={getSpriteParams('survivor',
+              animatingEntity === 'survivor_attack' ? 'attack' :
+              animatingEntity === 'survivor_hurt' ? 'hurt' : 'idle'
+            ).rows}
+            frameDuration={animatingEntity === 'survivor_attack' ? 50 : animatingEntity === 'survivor_hurt' ? 80 : 100}
+            loop={!animatingEntity || animatingEntity.includes('idle')}
+          />
+          {damageIndicator && animatingEntity === 'survivor_hurt' && (
+            <div style={{ position: 'absolute', top: '-40px', left: '50%', transform: 'translateX(-50%)' }}>
+              {damageIndicator.type === 'both' && (
+                <>
+                  <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ff0000', textShadow: '2px 2px 4px #000', animation: 'floatUp 1.5s ease-out' }}>
+                    -{damageIndicator.damage}
+                  </div>
+                  <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#FFD700', textShadow: '2px 2px 4px #000', animation: 'floatUp 1.5s ease-out', marginTop: '-10px' }}>
+                    -{damageIndicator.gold}💰
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
+            <div style={{ width: `${(survivorHP / event.survivor_hp) * 100}%`, height: '100%', backgroundColor: survivorHP > event.survivor_hp * 0.3 ? '#10b981' : '#ef4444', transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+            {event.survivor_class} ({survivorHP}/{event.survivor_hp})
+          </div>
+          <div style={{ color: '#FFD700', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+            💰 {survivorGold}
+          </div>
+        </div>
+
+        {/* Mimic (à droite) */}
+        <div style={{
+          position: 'absolute',
+          right: animatingEntity === 'mimic_attack' ? '30%' : '10%',
+          bottom: '35%',
+          transition: 'all 0.4s ease-out',
+          opacity: mimicHP <= 0 && animatingEntity === 'mimic_fainted' ? 0.5 : 1
+        }}>
+          {/* Wrapper qui flippe UNIQUEMENT le sprite, pas les enfants
+              (barre de vie, texte, indicateur de dégâts). Ainsi les dégâts
+              ne sont plus affichés en miroir. */}
+          <div style={{ transform: 'scaleX(-1)' }}>
+            <SpriteSheetAnimator
+              spriteSheet={getMimicSpriteSheet(
+                animatingEntity === 'mimic_fainted' ? 'fainted' :
+                animatingEntity === 'mimic_attack' ? 'attack' :
+                animatingEntity === 'mimic_hurt' ? 'hurt' : 'idle'
+              )}
+              cols={getSpriteParams('mimic',
+                animatingEntity === 'mimic_fainted' ? 'fainted' :
+                animatingEntity === 'mimic_attack' ? 'attack' :
+                animatingEntity === 'mimic_hurt' ? 'hurt' : 'idle'
+              ).cols}
+              rows={getSpriteParams('mimic',
+                animatingEntity === 'mimic_fainted' ? 'fainted' :
+                animatingEntity === 'mimic_attack' ? 'attack' :
+                animatingEntity === 'mimic_hurt' ? 'hurt' : 'idle'
+              ).rows}
+              frameDuration={animatingEntity === 'mimic_attack' ? 50 : animatingEntity === 'mimic_hurt' ? 80 : 100}
+              loop={!animatingEntity || animatingEntity === 'idle' || animatingEntity === 'mimic_fainted'}
+            />
+          </div>
+          {damageIndicator && damageIndicator.type === 'damage' && (
+            <div style={{ position: 'absolute', top: '-30px', left: '50%', transform: 'translateX(-50%)', fontSize: '28px', fontWeight: 'bold', color: '#ff0000', textShadow: '2px 2px 4px #000', animation: 'floatUp 1.5s ease-out' }}>
+              -{damageIndicator.value}
+            </div>
+          )}
+          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
+            <div style={{ width: `${(mimicHP / event.mimic_hp) * 100}%`, height: '100%', backgroundColor: mimicHP > event.mimic_hp * 0.3 ? '#ef4444' : '#991b1b', transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+            Mimic ({mimicHP}/{event.mimic_hp})
+          </div>
+        </div>
+
+        {/* Combat Log */}
+        <div style={{ position: 'absolute', bottom: '10px', left: '50%', transform: 'translateX(-50%)', width: '80%', maxHeight: '150px', backgroundColor: 'rgba(0, 0, 0, 0.8)', borderRadius: '8px', padding: '10px', overflowY: 'auto', border: '2px solid #d4af37' }}>
+          {combatLog.map((entry, idx) => (
+            <div key={idx} style={{ color: '#e8dcc4', fontSize: '12px', marginBottom: '3px' }}>{entry}</div>
+          ))}
+        </div>
+
+        {/* Message de fin */}
+        {combatOver && (
+          <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0, 0, 0, 0.9)', padding: '20px 40px', borderRadius: '12px', border: '3px solid #d4af37' }}>
+            <div style={{ color: mimicDefeated ? '#10b981' : '#ef4444', fontSize: '24px', fontWeight: 'bold', textAlign: 'center' }}>
+              {mimicDefeated ? '🎉 VICTOIRE !' : '💀 DÉFAITE !'}
+            </div>
+            <div style={{ color: '#FFD700', fontSize: '16px', textAlign: 'center', marginTop: '10px' }}>
+              Or volé : {totalGoldStolen}💰
+            </div>
+          </div>
+        )}
+
+        {canClose && (
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: '#d4af37', fontSize: '18px', fontWeight: 'bold', textAlign: 'center', backgroundColor: 'rgba(0, 0, 0, 0.8)', padding: '15px 30px', borderRadius: '8px', border: '2px solid #d4af37' }}>
+            Cliquez pour fermer
           </div>
         )}
       </div>
@@ -3463,35 +4056,78 @@ const PowerSelectionOverlay = ({
 // Interactive: player clicks to stop the cursor; landing in the green zone = success.
 // Green zone shrinks with each forge attempt on the weapon (−8% per attempt, min 12%).
 // Cursor oscillates left↔right with progressive acceleration (25 → 120 %/s).
+// Success zones are placed randomly across the bar without overlapping.
+
+// Helper: generate N non-overlapping random success zones across [0, 100]
+const generateRandomSuccessZones = (count, totalSuccessWidth) => {
+  const zoneWidth = totalSuccessWidth / count;
+  const minGap = 2; // minimum gap between zones in %
+  const margin = 1; // margin from edges
+
+  // Place zones randomly with no overlap, retrying if needed
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const zones = [];
+    let valid = true;
+
+    for (let i = 0; i < count; i++) {
+      const maxLeft = 100 - margin - zoneWidth;
+      const left = margin + Math.random() * (maxLeft - margin);
+      zones.push({ left, width: zoneWidth });
+    }
+
+    // Sort by position and check for overlaps
+    zones.sort((a, b) => a.left - b.left);
+    for (let i = 1; i < zones.length; i++) {
+      if (zones[i].left < zones[i - 1].left + zones[i - 1].width + minGap) {
+        valid = false;
+        break;
+      }
+    }
+    // Also check last zone doesn't go out of bounds
+    const last = zones[zones.length - 1];
+    if (last.left + last.width > 100 - margin) valid = false;
+
+    if (valid) return zones;
+  }
+
+  // Fallback: distribute evenly if random placement fails
+  const spacing = (100 - 2 * margin - count * zoneWidth) / (count + 1);
+  return Array.from({ length: count }, (_, i) => ({
+    left: margin + spacing * (i + 1) + i * zoneWidth,
+    width: zoneWidth,
+  }));
+};
+
 const ForgeTimingGame = ({ attempts, onResult }) => {
   const [cursorPos, setCursorPos] = useState(0);
   const [clicked, setClicked] = useState(false);
   const [hitResult, setHitResult] = useState(null); // 'success' | 'failure'
   const rafRef = useRef(null);
-  const startTimeRef = useRef(null);
-  const dirRef = useRef(1);
   const posRef = useRef(0);
+  const dirRef = useRef(1);
 
   // NOUVELLE LOGIQUE: La vitesse de base augmente avec chaque tentative
-  // Tentative 1: vitesse x1, Tentative 2: vitesse x2, etc.
   const BASE_SPEED_MULTIPLIER = Math.max(1, attempts + 1);
-  
-  // Green zone: shrinks 8% per attempt, minimum 12%
-  const GREEN_WIDTH = Math.max(12, 50 - attempts * 8);
-  const GREEN_LEFT = (100 - GREEN_WIDTH) / 2;
-  
-  // La tentative N donne N zones de succès (dès la tentative 2)
-  // attempts=0 → tentative 1 → 1 zone, attempts=1 → tentative 2 → 2 zones, etc.
+
+  // Green zone total width: shrinks 8% per attempt, minimum 12%
+  const TOTAL_SUCCESS_WIDTH = Math.max(12, 50 - attempts * 8);
+
+  // Number of success zones = number of attempts (min 1)
   const segmentCount = attempts + 1;
+
+  // Generate random zone positions once per render (stable via useMemo pattern with useRef)
+  const zonesRef = useRef(null);
+  if (zonesRef.current === null || zonesRef.current.length !== segmentCount) {
+    zonesRef.current = generateRandomSuccessZones(segmentCount, TOTAL_SUCCESS_WIDTH);
+  }
+  const successZones = zonesRef.current;
 
   useEffect(() => {
     if (clicked) return;
-    startTimeRef.current = performance.now();
 
-    const animate = (now) => {
-      // La vitesse de base est multipliée par le nombre de tentatives
-      const baseSpeed = 25 * BASE_SPEED_MULTIPLIER;
-      const speed = Math.min(baseSpeed, 200); // %/s, capped at 200
+    const animate = () => {
+      const baseSpeed = 10 * BASE_SPEED_MULTIPLIER;
+      const speed = Math.min(baseSpeed, 200);
       posRef.current += dirRef.current * speed * (1 / 60);
       if (posRef.current >= 100) { posRef.current = 100; dirRef.current = -1; }
       if (posRef.current <= 0)   { posRef.current = 0;   dirRef.current =  1; }
@@ -3506,20 +4142,12 @@ const ForgeTimingGame = ({ attempts, onResult }) => {
     if (clicked) return;
     cancelAnimationFrame(rafRef.current);
     setClicked(true);
-    
-    // Vérifier si le curseur est dans une zone de succès
-    let inGreen = false;
-    
-    const totalSlots = segmentCount === 1 ? 1 : segmentCount * 2 - 1;
-    const slotWidth = GREEN_WIDTH / totalSlots;
-    const cursorRelativePos = posRef.current - GREEN_LEFT;
-    
-    if (cursorRelativePos >= 0 && cursorRelativePos <= GREEN_WIDTH) {
-      const slotIndex = Math.floor(cursorRelativePos / slotWidth);
-      // Les slots pairs (0, 2, 4…) sont des zones de succès
-      inGreen = (slotIndex % 2 === 0);
-    }
-    
+
+    // Check if cursor falls inside any success zone
+    const inGreen = successZones.some(
+      (zone) => posRef.current >= zone.left && posRef.current <= zone.left + zone.width
+    );
+
     setHitResult(inGreen ? 'success' : 'failure');
     setTimeout(() => onResult(inGreen), 900);
   };
@@ -3537,7 +4165,8 @@ const ForgeTimingGame = ({ attempts, onResult }) => {
         onClick={handleClick}
         style={{
           position: 'relative', width: '100%', height: '56px',
-          backgroundColor: '#1a1410',
+          backgroundColor: '#dc2626',
+          background: 'linear-gradient(90deg, #7f1d1d, #dc2626 30%, #dc2626 70%, #7f1d1d)',
           border: `3px solid ${clicked ? (hitResult === 'success' ? '#4ade80' : '#ef4444') : '#d4af37'}`,
           borderRadius: '10px', overflow: 'hidden',
           cursor: clicked ? 'default' : 'pointer',
@@ -3545,45 +4174,37 @@ const ForgeTimingGame = ({ attempts, onResult }) => {
           transition: 'border-color 0.2s'
         }}
       >
-        {/* Red left */}
-        <div style={{ position: 'absolute', left: 0, top: 0, width: `${GREEN_LEFT}%`, height: '100%',
-          background: 'linear-gradient(90deg, #7f1d1d, #dc2626)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* ÉCHEC label left */}
+        <div style={{
+          position: 'absolute', left: 0, top: 0, width: '18%', height: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
+        }}>
           <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
         </div>
-        {/* Green zone — either a single block or N alternating segments */}
-        {/* Zone centrale : N zones de succès séparées par N-1 zones d'échec = 2*N-1 sous-segments */}
-        {(() => {
-          // totalSlots : si N=1 → 1 slot vert ; si N=2 → vert|rouge|vert (3 slots) ; etc.
-          const totalSlots = segmentCount === 1 ? 1 : segmentCount * 2 - 1;
-          const slotW = GREEN_WIDTH / totalSlots;
-          return Array.from({ length: totalSlots }).map((_, i) => {
-            // Les slots pairs (0, 2, 4…) sont des zones de succès
-            const isSuccess = i % 2 === 0;
-            const slotLeft = GREEN_LEFT + i * slotW;
-            return (
-              <div key={i} style={{
-                position: 'absolute', left: `${slotLeft}%`, top: 0, width: `${slotW}%`, height: '100%',
-                background: isSuccess
-                  ? 'linear-gradient(90deg, #059669, #10b981, #059669)'
-                  : 'linear-gradient(90deg, #dc2626, #b91c1c, #dc2626)',
-                boxShadow: isSuccess ? '0 0 8px rgba(16,185,129,0.5)' : 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                {slotW > 5 && (
-                  <span style={{ color: '#fff', fontSize: segmentCount === 1 ? '12px' : '10px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.9)', whiteSpace: 'nowrap' }}>
-                    {isSuccess ? (segmentCount === 1 ? '✓ SUCCÈS' : '✓') : '✗'}
-                  </span>
-                )}
-              </div>
-            );
-          });
-        })()}
-        {/* Red right */}
-        <div style={{ position: 'absolute', left: `${GREEN_LEFT + GREEN_WIDTH}%`, top: 0,
-          width: `${100 - GREEN_LEFT - GREEN_WIDTH}%`, height: '100%',
-          background: 'linear-gradient(90deg, #dc2626, #7f1d1d)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* ÉCHEC label right */}
+        <div style={{
+          position: 'absolute', right: 0, top: 0, width: '18%', height: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
+        }}>
           <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
         </div>
+
+        {/* Success zones — randomly placed */}
+        {successZones.map((zone, i) => (
+          <div key={i} style={{
+            position: 'absolute', left: `${zone.left}%`, top: 0,
+            width: `${zone.width}%`, height: '100%',
+            background: 'linear-gradient(90deg, #059669, #10b981, #059669)',
+            boxShadow: '0 0 8px rgba(16,185,129,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            {zone.width > 5 && (
+              <span style={{ color: '#fff', fontSize: segmentCount === 1 ? '12px' : '10px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.9)', whiteSpace: 'nowrap' }}>
+                {segmentCount === 1 ? '✓ SUCCÈS' : '✓'}
+              </span>
+            )}
+          </div>
+        ))}
 
         {/* Cursor needle */}
         <div style={{
@@ -3596,7 +4217,7 @@ const ForgeTimingGame = ({ attempts, onResult }) => {
 
       {/* Hint */}
       <div style={{ marginTop: '8px', textAlign: 'center', color: '#9a8475', fontSize: '0.78rem' }}>
-        Zone de succès : <strong style={{ color: '#d4af37' }}>{Math.round(GREEN_WIDTH)}%</strong>
+        Zone de succès : <strong style={{ color: '#d4af37' }}>{Math.round(TOTAL_SUCCESS_WIDTH)}%</strong>
         {attempts > 0 && <span style={{ color: '#ef4444' }}> (−{attempts * 8}% depuis la 1ʳᵉ tentative)</span>}
       </div>
     </div>
@@ -3617,6 +4238,10 @@ const Game = () => {
   const [goblinCombatEvent, setGoblinCombatEvent] = useState(null);
   const [showMultiplayerCombat, setShowMultiplayerCombat] = useState(false);
   const [multiplayerCombatEvent, setMultiplayerCombatEvent] = useState(null);
+  const [showMimicCombat, setShowMimicCombat] = useState(false);
+  const [mimicCombatEvent, setMimicCombatEvent] = useState(null);
+  const [showFleeingGoblinCombat, setShowFleeingGoblinCombat] = useState(false);
+  const [fleeingGoblinCombatEvent, setFleeingGoblinCombatEvent] = useState(null);
 
   // NEW: Flashing rooms when teammates select
 const [flashingRooms, setFlashingRooms] = useState(new Set());
@@ -3825,6 +4450,12 @@ const prevPendingActionsRef = useRef('{}');
             } else if (event.type === "multiplayer_combat") {
               setMultiplayerCombatEvent(event);
               setShowMultiplayerCombat(true);
+            } else if (event.type === "mimic_combat") {
+              setMimicCombatEvent(event);
+              setShowMimicCombat(true);
+            } else if (event.type === "fleeing_goblin_combat") {
+              setFleeingGoblinCombatEvent(event);
+              setShowFleeingGoblinCombat(true);
             }
           }
         }
@@ -3886,6 +4517,17 @@ const prevPendingActionsRef = useRef('{}');
         setMimicMessage(data.message);
         setShowMimicPopup(true);
         // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
+      } else if (data.type === "mimic_combat") {
+        // FIX: Top-level handler for the mimic combat WS message sent by the backend
+        // via enqueue_player_event / dispatch_next_player_event. Without this branch,
+        // the message was silently dropped when it arrived AFTER a gold popup
+        // (mimic was queued behind gold_found and only dispatched on event_completed).
+        setMimicCombatEvent(data);
+        setShowMimicCombat(true);
+      } else if (data.type === "fleeing_goblin_combat") {
+        // Direct WS handler for fleeing goblin combat
+        setFleeingGoblinCombatEvent(data);
+        setShowFleeingGoblinCombat(true);
       } else if (data.type === "teleportation_notification") {
         // NEW: Show teleportation popup for survivor who entered teleportation trap with video
         setTeleportationVideoPath(data.video_path || "");
@@ -4448,6 +5090,37 @@ const selectRoom = (roomName) => {
         />
       )}
 
+      {/* Mimic Combat Popup */}
+      {showMimicCombat && mimicCombatEvent && (
+        <MimicCombat
+          event={mimicCombatEvent}
+          playerId={playerId}
+          sessionId={sessionId}
+          onClose={() => {
+            setShowMimicCombat(false);
+            setMimicCombatEvent(null);
+            // Notifie le backend pour dispatcher l'événement suivant en queue
+            // (sécurité : resolve_mimic_combat supprime déjà pending_events côté serveur,
+            // mais cela déclenche dispatch_next_player_event côté frontend aussi)
+            notifyEventCompleted();
+          }}
+        />
+      )}
+
+      {/* Fleeing Goblin Combat Popup */}
+      {showFleeingGoblinCombat && fleeingGoblinCombatEvent && (
+        <FleeingGoblinCombat
+          event={fleeingGoblinCombatEvent}
+          playerId={playerId}
+          sessionId={sessionId}
+          onClose={() => {
+            setShowFleeingGoblinCombat(false);
+            setFleeingGoblinCombatEvent(null);
+            notifyEventCompleted();
+          }}
+        />
+      )}
+
       {/* NEW: Key Found Popup */}
       {showKeyFoundPopup && (
         <div 
@@ -4723,7 +5396,23 @@ const selectRoom = (roomName) => {
         >
           <p style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '1.1rem', margin: 0 }}>🪨 Quête de la Pierre accomplie !</p>
           <p style={{ color: '#e8dcc4', fontSize: '0.9rem', marginTop: '6px' }}>{stoneQuestMessage}</p>
-          <p style={{ color: '#a0aec0', fontSize: '0.75rem', marginTop: '4px' }}>Cliquez pour fermer</p>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', marginTop: '12px' }}>
+            <img
+              src={ITEM_SPRITES.relique_cubique}
+              alt="Relique Cubique"
+              style={{
+                width: '80px',
+                height: '80px',
+                objectFit: 'contain',
+                filter: 'drop-shadow(0 0 10px rgba(74,222,128,0.7))',
+                animation: 'pulse 1.5s ease-in-out infinite',
+              }}
+            />
+            <p style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '0.95rem', margin: 0 }}>
+              ✨ Relique Cubique ajoutée à l'inventaire !
+            </p>
+          </div>
+          <p style={{ color: '#a0aec0', fontSize: '0.75rem', marginTop: '8px' }}>Cliquez pour fermer</p>
         </div>
       )}
 
@@ -5108,14 +5797,68 @@ const selectRoom = (roomName) => {
                     Acheter
                   </Button>
                 </div>
+
+                {/* Relique Triangulaire */}
+                {!gameState.relique_triangulaire_sold && (
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/items/Relique_Triangulaire.png" alt="Relique Triangulaire" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Relique Triangulaire</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Le Roi Orc m'a confié cette étrange relique. Je ne dois pas m'en séparer mais si vous m'en offrez un bon prix, elle est à vous !
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 1000</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=relique_triangulaire`);
+                        toast.success("Relique Triangulaire achetée !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 1000 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'relique_triangulaire')}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'relique_triangulaire')) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
+                )}
               </div>
 
-              {/* Close button */}
-              <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+              {/* Buttons */}
+              <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                 <Button
                   onClick={() => {
                     setShowShopDialog(false);
-                    notifyEventCompleted();  // NEW
+                    setShowSellDialog(true);
+                  }}
+                  style={{ 
+                    backgroundColor: '#a16207', 
+                    color: '#fff',
+                    padding: '0.8rem 2rem',
+                    fontSize: '1rem',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  💰 Vendre des objets
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowShopDialog(false);
+                    notifyEventCompleted();
                   }}
                   style={{ 
                     backgroundColor: '#dc2626', 
@@ -5228,8 +5971,23 @@ const selectRoom = (roomName) => {
                 );
               })()}
 
-              {/* Close button */}
-              <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+              {/* Buttons */}
+              <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                <Button
+                  onClick={() => {
+                    setShowSellDialog(false);
+                    setShowShopDialog(true);
+                  }}
+                  style={{ 
+                    backgroundColor: '#d4af37', 
+                    color: '#000',
+                    padding: '0.8rem 2rem',
+                    fontSize: '1rem',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  🛒 Acheter des objets
+                </Button>
                 <Button
                   onClick={() => {
                     setShowSellDialog(false);

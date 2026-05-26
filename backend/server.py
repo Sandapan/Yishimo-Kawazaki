@@ -33,9 +33,9 @@ active_connections: Dict[str, Dict[str, WebSocket]] = {}  # {session_id: {player
 
 # Game configuration
 ROOMS_CONFIG = {
-    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "Salle des Ruines"],
-    "ground_floor": ["Hall Principal", "Salle du Banquet", "Armurerie", "Cour Intérieure"],
-    "upper_floor": ["Chambre Cérémoniale", "Laboratoire", "Salle des Miroirs", "Sanctuaire"]
+    "basement": ["Les Cryptes", "Les Cachots", "La Cave", "La Salle des Ruines"],
+    "ground_floor": ["Le Hall Principal", "La Salle du Banquet", "L'Armurerie", "La Cour Intérieure"],
+    "upper_floor": ["La Chambre Cérémoniale", "Le Laboratoire", "La Salle des Miroirs", "Le Sanctuaire"]
 }
 
 # Avatar images by role with their associated classes
@@ -181,6 +181,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
             "has_observation_stone": False,  # NEW: for observation stone quest item
             "has_trophy": None,  # NEW: trophy type ("chaussons"/"couronne"/"culotte") or None
+            "has_fleeing_goblin": False,  # NEW: for fleeing goblin event
         }
 
     # Get character class from avatar
@@ -235,12 +236,14 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_spawned": False,  # NEW: whether crystal has been spawned
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
+        "relique_triangulaire_sold": False,  # NEW: whether the relique has been sold (unique item)
         "cartographer_placed": False,  # NEW: whether cartographer has been placed
         "cartographer_hints_given": {},  # NEW: {player_id: [hint_texts]} - track hints given to each player
         "forge_placed": False,  # NEW: whether forge has been placed
         "observation_stone_placed": False,
         "observation_stone_target_room": None,  # room where the stone must be thrown
         "observation_stone_quest_completed": False,  # whether the stone quest has been completed
+        "fleeing_goblin_placed": False,  # NEW: whether fleeing goblin has been placed
         "goliath_active": False,  # NEW: whether Goliath is active
         "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
         "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
@@ -451,6 +454,33 @@ def place_trophies(game_state: dict) -> List[str]:
             logger.warning(f"Could not place trophy '{trophy_type}' - no available rooms")
 
     return placed_rooms
+
+def place_fleeing_goblin(game_state: dict) -> Optional[str]:
+    """Place the fleeing goblin in a random available room at game start (once per game)"""
+    available_rooms = []
+
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        if (not room_data["locked"] and
+            not room_data.get("has_quest", False) and
+            not room_data.get("has_merchant", False) and
+            not room_data.get("has_cartographer", False) and
+            not room_data.get("has_forge", False) and
+            not room_data.get("has_observation_stone", False) and
+            not room_data.get("has_trophy") and
+            room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected_room = random.choice(available_rooms)
+        game_state["rooms"][selected_room]["has_fleeing_goblin"] = True
+        game_state["fleeing_goblin_placed"] = True
+        logger.info(f"Fleeing goblin placed in room: {selected_room}")
+        return selected_room
+
+    return None
 
 # Forge: bonus values per rune type (identical to existing StatsModal preview)
 FORGE_RUNE_BONUSES = {
@@ -1265,14 +1295,21 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
     })
     await asyncio.sleep(2)
 
-    # Clear traps and mimics from previous turn
+    # Clear traps, teleportation, and untriggered mimics from previous survivor turn.
+    # Mimics not triggered (survivor didn't enter their room) disappear here.
+    # Mimics that WERE triggered are already cleared in the select_room handler.
+    mimics_cleared = 0
     for room_data in game["rooms"].values():
         room_data["trapped"] = False
         room_data.pop("trap_triggered", None)
-        room_data["has_mimic"] = False
         room_data["teleportation_trap"] = False
         room_data["teleportation_exit"] = False
         room_data["teleportation_target_room"] = None
+        if room_data.get("has_mimic", False):
+            room_data["has_mimic"] = False
+            mimics_cleared += 1
+    if mimics_cleared > 0:
+        logger.info(f"Cleared {mimics_cleared} untriggered mimic(s) after survivor turn")
 
     # GOLIATH: track previous turn rooms
     if game.get("goliath_active", False):
@@ -1725,6 +1762,11 @@ async def process_turn(session_id: str):
         # Send to killers
         await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
         return  # Exit early, game is over
+    
+    # NOTE: Mimics are NOT cleared here — they persist until survivor_selection next turn.
+    # Killers place mimics during killer_power_selection (this turn), then process_turn runs.
+    # Survivors will encounter them at the START of the next turn (survivor_selection).
+    # Untriggered mimics are cleared in try_advance_to_killer_phase after survivor actions.
     
     # Next turn - Start with survivors selection
     game["turn"] += 1
@@ -2278,6 +2320,13 @@ async def start_game(session_id: str):
     placed_trophies = place_trophies(game)
     logger.info(f"Trophies placed in {len(placed_trophies)} rooms: {placed_trophies}")
 
+    # Place the fleeing goblin at game start (once per game)
+    goblin_room = place_fleeing_goblin(game)
+    if goblin_room:
+        logger.info(f"Fleeing goblin placed in: {goblin_room}")
+    else:
+        logger.warning("Could not place fleeing goblin - no available rooms")
+
     await broadcast_to_session(session_id, {
         "type": "game_started",
         "keys_needed": game["keys_needed"],
@@ -2363,6 +2412,7 @@ async def reset_game(session_id: str):
         room_data["merchant_discovered"] = False
         room_data["has_observation_stone"] = False
         room_data["has_trophy"] = None
+        room_data["has_fleeing_goblin"] = False
     
     # Reset game state
     game["keys_collected"] = 0
@@ -2384,6 +2434,7 @@ async def reset_game(session_id: str):
     game["merchant_placed"] = False
     game["forge_placed"] = False
     game["observation_stone_placed"] = False
+    game["fleeing_goblin_placed"] = False
     game["goliath_active"] = False
     game["goliath_turns_remaining"] = 0
     game["goliath_previous_turn_rooms"] = []
@@ -2542,6 +2593,11 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
             "price": 300,
             "item_type": "antidote",
             "name": "Antidote"
+        },
+        "relique_triangulaire": {
+            "price": 1000,
+            "item_type": "relique_triangulaire",
+            "name": "Relique Triangulaire"
         }
     }
     
@@ -2549,6 +2605,10 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
         raise HTTPException(status_code=400, detail="Invalid item name")
     
     item = items[item_name]
+
+    # Relique Triangulaire is a unique item: refuse if already sold to any player
+    if item_name == "relique_triangulaire" and game.get("relique_triangulaire_sold", False):
+        raise HTTPException(status_code=400, detail="La Relique Triangulaire a déjà été vendue !")
     
     # Check if player already has this item
     if has_item(player, item["item_type"]):
@@ -2590,9 +2650,13 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
             add_item(player, item["item_type"])
             logger.info(f"Player {player_id} bought antidote for future use")
     else:
-        # For other items (resurrection potion), just add to inventory
+        # For other items (resurrection potion, relique), just add to inventory
         add_item(player, item["item_type"])
         logger.info(f"Player {player_id} bought {item_name}")
+        # Mark relique as sold globally
+        if item_name == "relique_triangulaire":
+            game["relique_triangulaire_sold"] = True
+            logger.info(f"Relique Triangulaire marked as sold (bought by {player_id})")
     
     # Broadcast state update
     await broadcast_to_session(session_id, {
@@ -2604,7 +2668,7 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
 
 # ========== SELL PRICES (Vente au marchand) ==========
 # Items de quête NON vendables (ne doivent pas figurer dans la liste de vente)
-NON_SELLABLE_ITEMS = {"pierre_quete"}
+NON_SELLABLE_ITEMS = {"pierre_quete", "relique_triangulaire", "relique_cubique", "relique_spherique"}
 
 # Prix de vente fixes (override le calcul par défaut)
 SELL_PRICES = {
@@ -2619,6 +2683,7 @@ SELL_PRICES = {
     # Items du shop : moitié du prix d'achat
     "medikit": 500,    # potion résurrection achetée à 1000
     "antidote": 150,   # antidote achetée à 300
+    "relique_triangulaire": 500,  # relique triangulaire achetée à 1000
 }
 
 def get_sell_price(item_type: str) -> int:
@@ -3609,6 +3674,193 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
     
     return {"status": "success"}
 
+
+# Modèle pour la résolution de combat contre le Mimic
+class ResolveMimicCombatRequest(BaseModel):
+    survivor_id: str
+    damage_dealt_to_survivor: int  # Dégâts subis par le survivant
+    gold_stolen: int  # Or volé par le Mimic pendant le combat
+    mimic_defeated: bool  # Le Mimic a-t-il été vaincu ?
+    combat_log: List[str] = []
+
+@api_router.post("/game/{session_id}/resolve_mimic_combat")
+async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatRequest):
+    """Resolve a combat between a survivor and a Mimic"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    survivor_id = request.survivor_id
+    
+    if survivor_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Survivor not found")
+    
+    survivor = game["players"][survivor_id]
+    
+    logger.info(f"⚔️ Résolution combat Mimic: survivor={survivor['name']}, damage={request.damage_dealt_to_survivor}, gold_stolen={request.gold_stolen}, defeated={request.mimic_defeated}")
+    
+    # Apply damage to survivor
+    if survivor.get("hp") is not None and request.damage_dealt_to_survivor > 0:
+        survivor["hp"] = max(0, survivor["hp"] - request.damage_dealt_to_survivor)
+        logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {request.damage_dealt_to_survivor})")
+    
+    # Apply gold loss
+    if request.gold_stolen > 0:
+        survivor["gold"] = max(0, survivor.get("gold", 0) - request.gold_stolen)
+        logger.info(f"💰 Or de {survivor['name']} mis à jour: {survivor['gold']} (volé: {request.gold_stolen})")
+    
+    # Check if survivor died
+    if survivor.get("hp") is not None and survivor["hp"] <= 0:
+        survivor["eliminated"] = True
+        survivor["hp"] = 0
+        survivor["gold"] = 0
+        survivor_room = survivor.get("current_room")
+        if survivor_room and survivor_room in game["rooms"]:
+            game["rooms"][survivor_room]["eliminated_players"].append(survivor_id)
+        
+        event_msg = f"💀 {survivor['name']} a été vaincu par le Mimic !"
+        game["events"].append({"message": event_msg, "type": "combat_elimination"})
+        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Combat result message
+    if request.mimic_defeated:
+        event_msg = f"⚔️ {survivor['name']} a vaincu le Mimic ! (Or volé: {request.gold_stolen}💰)"
+    else:
+        event_msg = f"💀 Le Mimic a vaincu {survivor['name']} ! (Or volé: {request.gold_stolen}💰)"
+    
+    game["events"].append({"message": event_msg, "type": "mimic_combat_result"})
+    await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    
+    # Clear pending event
+    if survivor_id in game.get("pending_events", {}):
+        del game["pending_events"][survivor_id]
+
+    # Dispatch any event queued behind the mimic combat (e.g. forge/merchant/cartographer
+    # in the same room fouille). Without this, those popups would never show.
+    await dispatch_next_player_event(session_id, survivor_id)
+
+    # Check if all survivors are done so we can advance to killer phase
+    await try_advance_to_killer_phase(session_id)
+
+    # Broadcast updated state
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    # Check victory conditions
+    alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
+    
+    if len(alive_survivors) == 0:
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        
+        survivor_msg = "💀 DÉFAITE ! Tous les survivants ont été éliminés..."
+        killer_msg = "🎉 VICTOIRE ! Tous les aventuriers ont été exterminés !"
+        
+        await broadcast_to_session(session_id, {
+            "type": "game_over",
+            "winner": "killers",
+            "message": survivor_msg
+        }, role_filter="survivor")
+        
+        await broadcast_to_session(session_id, {
+            "type": "game_over",
+            "winner": "killers",
+            "message": killer_msg
+        }, role_filter="killer")
+    
+    return {"status": "success"}
+
+# ========== FLEEING GOBLIN COMBAT ==========
+class ResolveFleeingGoblinCombatRequest(BaseModel):
+    survivor_id: str
+    result: str  # "survivor_win" or "goblin_fled"
+
+@api_router.post("/game/{session_id}/resolve_fleeing_goblin_combat")
+async def resolve_fleeing_goblin_combat(session_id: str, request: ResolveFleeingGoblinCombatRequest):
+    """Resolve a fleeing goblin combat: either survivor wins (gets relic) or goblin flees (moves to new room)"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+    survivor_id = request.survivor_id
+
+    if survivor_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Survivor not found")
+
+    survivor = game["players"][survivor_id]
+    logger.info(f"🐾 Gobelin Fuyard — résolution : survivant={survivor['name']}, résultat={request.result}")
+
+    if request.result == "survivor_win":
+        # Add Relique Sphérique to survivor inventory
+        added = add_item(survivor, "relique_spherique")
+        if added:
+            logger.info(f"🎁 Relique Sphérique accordée à {survivor['name']}")
+        else:
+            logger.warning(f"⚠️ Impossible d'ajouter la Relique Sphérique à {survivor['name']} — inventaire plein")
+
+        event_msg = f"⚔️ {survivor['name']} a attrapé le Gobelin Fuyard et obtenu la Relique Sphérique !"
+        game["events"].append({"message": event_msg, "type": "fleeing_goblin_caught"})
+        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+
+        ws = active_connections.get(session_id, {}).get(survivor_id)
+        if ws:
+            try:
+                await ws.send_json({
+                    "type": "item_found",
+                    "item_type": "relique_spherique",
+                    "message": "Vous avez obtenu la Relique Sphérique !"
+                })
+            except Exception:
+                pass
+
+    elif request.result == "goblin_fled":
+        # Relocate goblin to another available room
+        available_rooms = []
+        for room_name, room_data in game["rooms"].items():
+            if (not room_data["locked"] and
+                not room_data.get("has_fleeing_goblin", False) and
+                not room_data.get("has_merchant", False) and
+                not room_data.get("has_cartographer", False) and
+                not room_data.get("has_forge", False) and
+                not room_data.get("has_quest", False)):
+                available_rooms.append(room_name)
+
+        if available_rooms:
+            new_room = random.choice(available_rooms)
+            game["rooms"][new_room]["has_fleeing_goblin"] = True
+            logger.info(f"🐾 Gobelin Fuyard replacé dans : {new_room}")
+        else:
+            logger.warning("🐾 Gobelin Fuyard — aucune salle disponible pour le replacement")
+
+        event_msg = f"💨 Le Gobelin Fuyard s'est échappé !"
+        game["events"].append({"message": event_msg, "type": "goblin_fled"})
+        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+
+        ws = active_connections.get(session_id, {}).get(survivor_id)
+        if ws:
+            try:
+                await ws.send_json({
+                    "type": "combat_result",
+                    "message": "Le Gobelin Fuyard a pris la fuite !"
+                })
+            except Exception:
+                pass
+
+    # Clear pending event
+    if survivor_id in game.get("pending_events", {}):
+        del game["pending_events"][survivor_id]
+
+    await dispatch_next_player_event(session_id, survivor_id)
+
+    if game["phase"] == "survivor_selection":
+        await try_advance_to_killer_phase(session_id)
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    return {"status": "success", "result": request.result}
+
 # WebSocket endpoint
 @app.websocket("/api/ws/{session_id}/{player_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: str):
@@ -4067,6 +4319,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     game["events"].append({"message": stone_msg, "type": "stone_quest_completed", "for_role": "survivor"})
                                     await broadcast_to_session(session_id, {"type": "event", "message": stone_msg}, role_filter="survivor")
                                     await broadcast_to_session(session_id, {"type": "event", "message": f"🪨 La Pierre d'observation a été jetée dans {target_room} !"}, role_filter="killer")
+                                    # Give the player the Relique Cubique as quest reward
+                                    add_item(player, "relique_cubique")
+                                    logger.info(f"Relique Cubique given to {player['name']} as stone quest reward")
                                     # Non-blocking direct WS push (no enqueue — does not block the turn)
                                     ws = active_connections.get(session_id, {}).get(player_id)
                                     if ws:
@@ -4106,8 +4361,32 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "video_path": crystal_video
                             }, role_filter="killer")
                     
-                    # GOLD SYSTEM
-                    if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False):
+                    # Check for mimic FIRST (priority over gold) - Combat instead of instant gold loss
+                    # Must be enqueued before gold_found so it's dispatched immediately via WS
+                    mimic_triggered = False
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
+                        # Remove mimic from room (will be triggered only once)
+                        game["rooms"][room_name]["has_mimic"] = False
+                        mimic_triggered = True
+
+                        # Create a combat event with the mimic
+                        mimic_combat_event = {
+                            "type": "mimic_combat",
+                            "room": room_name,
+                            "survivor_id": player_id,
+                            "survivor_name": player["name"],
+                            "survivor_class": player.get("character_class", "Survivor"),
+                            "survivor_hp": player.get("hp", 36),
+                            "survivor_gold": player.get("gold", 0),
+                            "mimic_hp": 6,
+                            "message": "💰 Un Mimic vous attaque !"
+                        }
+
+                        await enqueue_player_event(session_id, player_id, "mimic_combat", mimic_combat_event)
+                        logger.info(f"Player {player_id} ({player['name']}) triggered mimic combat in {room_name}")
+
+                    # GOLD SYSTEM (skipped if mimic triggered — gold resolved in resolve_mimic_combat)
+                    if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False) and not mimic_triggered:
                         gold_amount, gold_image = generate_gold_reward()
                         player["gold"] += gold_amount
                         try:
@@ -4145,20 +4424,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 None
                             )
                             logger.info(f"Player {player_id} found rune: {rune_type}")
-                    
-                    # Check for mimic
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
-                        gold_stolen = player.get("gold", 0)
-                        player["gold"] = 0
-
-                        game["rooms"][room_name]["has_mimic"] = False
-
-                        await enqueue_player_event(session_id, player_id, "mimic", {
-                            "type": "mimic_notification",
-                            "message": f"💰 Vous croisez la mimic ! Attirée par votre or, elle vous poursuit ! Vous lachez vos {gold_stolen} pièces d'or pour rester en vie.",
-                            "video_path": "/death/Mimic.mp4",
-                            "gold_stolen": gold_stolen
-                        })
 
                     # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
@@ -4211,6 +4476,35 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "inventory_full": is_inventory_full(player)
                             }, None)
                             logger.info(f"Player {player_id} ({player['name']}) found the observation stone in {room_name}")
+
+                    # NEW: Check for fleeing goblin
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_fleeing_goblin", False):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            # Remove goblin from room
+                            game["rooms"][room_name]["has_fleeing_goblin"] = False
+                            # Calculate survivor initiative
+                            survivor_initiative = random.randint(1, 20) + player.get("initiative_bonus", 0)
+                            goblin_initiative = 10
+                            await enqueue_player_event(session_id, player_id, "fleeing_goblin_combat", {
+                                "type": "fleeing_goblin_combat",
+                                "goblin": {
+                                    "id": "fleeing_goblin",
+                                    "name": "Gobelin Fuyard",
+                                    "hp": 1,
+                                    "maxHp": 1,
+                                    "initiative": goblin_initiative
+                                },
+                                "survivor": {
+                                    "id": player_id,
+                                    "name": player["name"],
+                                    "survivorClass": player.get("character_class", "Guerrier"),
+                                    "hp": player.get("hp", 36),
+                                    "maxHp": player.get("max_hp", 36),
+                                    "initiative": survivor_initiative
+                                }
+                            })
+                            logger.info(f"🐾 Gobelin Fuyard rencontré par {player['name']} dans {room_name} — initiative survivant: {survivor_initiative}, initiative gobelin: {goblin_initiative} → {'survivant attaque' if survivor_initiative >= goblin_initiative else 'gobelin fuit'}")
 
                     # NEW: Check for trophy item (Chaussons / Couronne / Culotte)
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_trophy"):
