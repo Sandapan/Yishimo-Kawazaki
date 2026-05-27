@@ -7400,6 +7400,71 @@ const selectRoom = (roomName) => {
           sessionId={sessionId}
         />
       )}
+
+      {/* Crystal Combat Overlay */}
+      {gameState?.crystal_combat && gameState.crystal_combat.phase === "active" && (() => {
+        const combat = gameState.crystal_combat;
+        const isMyTurn = combat.turn_order[combat.current_turn % combat.turn_order.length] === playerId;
+        const isParticipant = combat.participants.includes(playerId);
+        const animMap = {
+          idle:    { src: "/fight/Cristal_idle.webp",    cols: 5, rows: 6, w: 1000, h: 690, loop: true },
+          attack:  { src: "/fight/Cristal_attack.webp",  cols: 5, rows: 6, w: 1000, h: 690, loop: false },
+          hurt:    { src: "/fight/Cristal_hurt.webp",    cols: 5, rows: 2, w: 1000, h: 230, loop: false },
+          fainted: { src: "/fight/Cristal_fainted.webp", cols: 5, rows: 6, w: 1000, h: 690, loop: false },
+        };
+        const a = animMap[combat.animation] || animMap.idle;
+
+        const handleAttack = async () => {
+          try { await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId }); }
+          catch (e) { toast.error(e.response?.data?.detail || "Erreur"); }
+        };
+
+        return (
+          <div className="game-over-overlay" style={{ zIndex: 2100 }} data-testid="crystal-combat">
+            <Card style={{ maxWidth: '900px', backgroundColor: '#0a0f1f', borderColor: '#5fa8ff', border: '3px solid #5fa8ff' }}>
+              <CardHeader>
+                <CardTitle style={{ color: '#9fd0ff', textAlign: 'center' }}>
+                  💎 Combat contre le Cristal — {combat.hp}/{combat.max_hp} PV
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div style={{ textAlign: 'center', margin: '1rem 0' }}>
+                  <SpriteSheetAnimator
+                    src={a.src} frameWidth={200} frameHeight={a.h / a.rows}
+                    columns={a.cols} rows={a.rows} loop={a.loop} fps={10}
+                  />
+                </div>
+
+                <div style={{ background: '#1a1a2e', padding: '0.8rem', borderRadius: '8px', maxHeight: '120px', overflowY: 'auto', marginBottom: '1rem' }}>
+                  {combat.log.slice(-5).map((l, i) => (
+                    <div key={i} style={{ color: '#ccc', fontSize: '0.85rem' }}>{l}</div>
+                  ))}
+                </div>
+
+                <div style={{ color: '#9fd0ff', textAlign: 'center', marginBottom: '0.8rem' }}>
+                  Tour de : <strong>{combat.turn_order[combat.current_turn % combat.turn_order.length] === 'crystal'
+                    ? 'Le Cristal' : gameState.players[combat.turn_order[combat.current_turn % combat.turn_order.length]]?.name}</strong>
+                </div>
+
+                {isParticipant && isMyTurn && (
+                  <div style={{ textAlign: 'center' }}>
+                    <Button data-testid="crystal-combat-attack-btn" onClick={handleAttack}
+                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold', padding: '0.8rem 2rem' }}>
+                      ⚔️ Attaquer ({5 + (gameState.players[playerId]?.damage_bonus || 0)} dégâts)
+                    </Button>
+                  </div>
+                )}
+                {!isParticipant && (
+                  <p style={{ color: '#888', textAlign: 'center', fontStyle: 'italic' }}>Vous êtes spectateur</p>
+                )}
+                {isParticipant && !isMyTurn && (
+                  <p style={{ color: '#888', textAlign: 'center', fontStyle: 'italic' }}>En attente de votre tour...</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
     </div>
   );
 };

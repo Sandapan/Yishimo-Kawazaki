@@ -244,6 +244,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "relique_cubique": False,
             "relique_triangulaire": False,
         },
+        "crystal_room": None,
+        "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
         "crystal_room": None,                # NEW
         "relique_triangulaire_sold": False,  # NEW: whether the relique has been sold (unique item)
         "cartographer_placed": False,  # NEW: whether cartographer has been placed
@@ -3529,17 +3531,133 @@ async def crystal_place_relic(session_id: str, request: CrystalActionRequest):
         "all_placed": all_placed,
     }
 
+CRYSTAL_MAX_HP = 30
+CRYSTAL_DAMAGE = 3
+SURVIVOR_BASE_DAMAGE = 5
+
 @api_router.post("/game/{session_id}/crystal_attack")
 async def crystal_attack(session_id: str, request: CrystalActionRequest):
     if session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     game = game_sessions[session_id]
+    player = game["players"].get(request.player_id)
+    if not player or player.get("role") != "survivor":
+        raise HTTPException(status_code=400, detail="Survivors only")
+
     placed = game.get("crystal_placed_relics", {})
-    if not all(placed.get(r, False) for r in ("relique_spherique", "relique_cubique", "relique_triangulaire")):
-        raise HTTPException(status_code=400, detail="Les 3 reliques ne sont pas toutes placées")
-    # Placeholder for future logic
-    logger.info(f"Player {request.player_id} attacked the crystal (placeholder)")
-    return {"status": "success"}
+    if not all(placed.get(r, False) for r in ("relique_spherique","relique_cubique","relique_triangulaire")):
+        raise HTTPException(status_code=400, detail="Les 3 reliques manquent")
+
+
+
+    crystal_room = game.get("crystal_room")
+    # The player may not have been moved into the room yet (popup opens during
+    # search phase, before turn resolution). Accept either:
+    #  - already moved into the crystal room (current_room match), OR
+    #  - currently selecting the crystal room this turn (pending_actions), OR
+    #  - has discovered the crystal (the room was reached at some point).
+    pending = game.get("pending_actions", {}).get(request.player_id) or {}
+    selected_room = pending.get("room")
+    discovered = game["rooms"].get(crystal_room, {}).get("crystal_discovered", False)
+
+    in_crystal_room = (
+        player.get("current_room") == crystal_room
+        or selected_room == crystal_room
+        or discovered  # someone already discovered, allow ranged ritual attack
+    )
+    if not in_crystal_room:
+        raise HTTPException(status_code=400, detail="Pas dans la salle du cristal")
+
+    combat = game.get("crystal_combat")
+
+    # Start combat if not started
+    if not combat:
+        participants = [p["id"] for p in game["players"].values()
+                        if p["role"] == "survivor" and not p.get("eliminated")
+                        and p.get("current_room") == crystal_room]
+        if not participants:
+            raise HTTPException(status_code=400, detail="Aucun survivant dans la salle")
+
+        crystal_init = random.randint(1, 20)
+        entities = [{"id": "crystal", "init": crystal_init}]
+        for pid in participants:
+            p = game["players"][pid]
+            entities.append({"id": pid, "init": (p.get("initiative", 10) + (p.get("initiative_bonus") or 0)) + random.randint(0,5)})
+        entities.sort(key=lambda e: -e["init"])
+
+        combat = {
+            "hp": CRYSTAL_MAX_HP, "max_hp": CRYSTAL_MAX_HP,
+            "crystal_initiative": crystal_init,
+            "turn_order": [e["id"] for e in entities],
+            "current_turn": 0,
+            "participants": participants,
+            "phase": "active",
+            "animation": "idle",
+            "log": [f"⚔️ Combat contre le Cristal engagé !"],
+        }
+        game["crystal_combat"] = combat
+
+    # Player turn must match
+    current = combat["turn_order"][combat["current_turn"] % len(combat["turn_order"])]
+    if current != request.player_id:
+        raise HTTPException(status_code=400, detail="Ce n'est pas votre tour")
+
+    damage = SURVIVOR_BASE_DAMAGE + (player.get("damage_bonus") or 0)
+    combat["hp"] = max(0, combat["hp"] - damage)
+    combat["log"].append(f"🗡️ {player['name']} inflige {damage} dégâts !")
+    combat["animation"] = "hurt"
+
+    # Victory
+    if combat["hp"] <= 0:
+        combat["phase"] = "victory"
+        combat["animation"] = "fainted"
+        game["phase"] = "game_over"
+        game["winner"] = "survivors"
+        await broadcast_to_session(session_id, {
+            "type": "game_over", "winner": "survivors",
+            "message": "💎 Le cristal est détruit ! Victoire !"
+        })
+    else:
+        await _advance_crystal_turn(session_id)
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {"status": "success", "combat": combat}
+
+
+async def _advance_crystal_turn(session_id: str):
+    """Advance to next entity. If crystal -> auto-attack all participants."""
+    game = game_sessions[session_id]
+    combat = game.get("crystal_combat")
+    if not combat or combat["phase"] != "active":
+        return
+
+    combat["current_turn"] += 1
+    next_id = combat["turn_order"][combat["current_turn"] % len(combat["turn_order"])]
+
+    if next_id == "crystal":
+        combat["animation"] = "attack"
+        for pid in combat["participants"]:
+            p = game["players"].get(pid)
+            if p and not p.get("eliminated"):
+                p["hp"] = max(0, (p.get("hp") or 0) - CRYSTAL_DAMAGE)
+                if p["hp"] <= 0:
+                    p["eliminated"] = True
+        combat["log"].append(f"💥 Le Cristal frappe tous les survivants ({CRYSTAL_DAMAGE} dégâts) !")
+
+        alive = [pid for pid in combat["participants"]
+                 if game["players"][pid].get("hp", 0) > 0 and not game["players"][pid].get("eliminated")]
+        if not alive:
+            combat["phase"] = "defeat"
+            game["phase"] = "game_over"
+            game["winner"] = "killers"
+            await broadcast_to_session(session_id, {
+                "type": "game_over", "winner": "killers",
+                "message": "💀 Le Cristal a tué tous les survivants..."
+            })
+            return
+
+        # Skip to next survivor
+        await _advance_crystal_turn(session_id)
 
 @api_router.post("/game/{session_id}/crystal_close")
 async def crystal_close(session_id: str, request: CrystalActionRequest):
