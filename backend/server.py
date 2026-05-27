@@ -179,6 +179,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "has_patrol": False,  # NEW: for patrouille power - goblin patrol indicator
             "has_forge": False,  # NEW: for forge event
             "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
+            "has_crystal_event": False,        # NEW: crystal event (replaces old crystal system)
+            "crystal_discovered": False,        # NEW: revealed to survivors after first discovery
             "has_observation_stone": False,  # NEW: for observation stone quest item
             "has_trophy": None,  # NEW: trophy type ("chaussons"/"couronne"/"culotte") or None
             "has_fleeing_goblin": False,  # NEW: for fleeing goblin event
@@ -236,6 +238,13 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "crystal_spawned": False,  # NEW: whether crystal has been spawned
         "crystal_destroyed": False,  # NEW: whether crystal has been destroyed (victory condition)
         "merchant_placed": False,  # NEW: whether merchant has been placed
+        "crystal_event_placed": False,      # NEW
+        "crystal_placed_relics": {           # NEW: persistent state of relics on crystal
+            "relique_spherique": False,
+            "relique_cubique": False,
+            "relique_triangulaire": False,
+        },
+        "crystal_room": None,                # NEW
         "relique_triangulaire_sold": False,  # NEW: whether the relique has been sold (unique item)
         "cartographer_placed": False,  # NEW: whether cartographer has been placed
         "cartographer_hints_given": {},  # NEW: {player_id: [hint_texts]} - track hints given to each player
@@ -395,6 +404,35 @@ def place_forge(game_state: dict) -> Optional[str]:
         logger.info(f"Forge placed in room: {selected_room}")
         return selected_room
 
+    return None
+
+def place_crystal_event(game_state: dict) -> Optional[str]:
+    """Place the crystal event in a random room with no other event."""
+    available_rooms = []
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                       if p["role"] == "killer" and p["current_room"]]
+
+    for room_name, room_data in game_state["rooms"].items():
+        if (not room_data["locked"]
+            and not room_data.get("has_quest", False)
+            and not room_data.get("has_merchant", False)
+            and not room_data.get("has_forge", False)
+            and not room_data.get("has_cartographer", False)
+            and not room_data.get("has_trophy", False)
+            and not room_data.get("has_observation_stone", False)
+            and not room_data.get("has_fleeing_goblin", False)
+            and not room_data.get("has_crystal_event", False)
+            and not room_data.get("has_crystal", False)  # old system
+            and room_name not in killer_positions):
+            available_rooms.append(room_name)
+
+    if available_rooms:
+        selected = random.choice(available_rooms)
+        game_state["rooms"][selected]["has_crystal_event"] = True
+        game_state["crystal_event_placed"] = True
+        game_state["crystal_room"] = selected
+        logger.info(f"Crystal event placed in room: {selected}")
+        return selected
     return None
 
 def place_observation_stone(game_state: dict) -> Optional[str]:
@@ -2255,7 +2293,8 @@ async def start_game(session_id: str):
 
     # Count survivors (only survivors need to complete quests)
     survivors = [p for p in game["players"].values() if p["role"] == "survivor"]
-    game["keys_needed"] = len(survivors)  # Keep for compatibility with frontend display
+    game["keys_needed"] = 0  # NEW: no more keys / quests
+    game["keys_collected"] = 0
     game["game_started"] = True
     game["phase"] = "survivor_selection"  # Start with survivors
     game["turn"] = 1
@@ -2302,6 +2341,10 @@ async def start_game(session_id: str):
     forge_room = place_forge(game)
     if forge_room:
         logger.info(f"Forge placed in: {forge_room}")
+
+    crystal_event_room = place_crystal_event(game)
+    if crystal_event_room:
+        logger.info(f"Crystal event placed in: {crystal_event_room}")
     else:
         logger.warning("Could not place forge - no available rooms")
 
@@ -2409,6 +2452,8 @@ async def reset_game(session_id: str):
         room_data["has_merchant"] = False
         room_data["has_forge"] = False
         room_data["forge_discovered"] = False
+        room_data["has_crystal_event"] = False
+        room_data["crystal_discovered"] = False
         room_data["merchant_discovered"] = False
         room_data["has_observation_stone"] = False
         room_data["has_trophy"] = None
@@ -2433,6 +2478,13 @@ async def reset_game(session_id: str):
     game["crystal_destroyed"] = False
     game["merchant_placed"] = False
     game["forge_placed"] = False
+    game["crystal_event_placed"] = False
+    game["crystal_room"] = None
+    game["crystal_placed_relics"] = {
+        "relique_spherique": False,
+        "relique_cubique": False,
+        "relique_triangulaire": False,
+    }
     game["observation_stone_placed"] = False
     game["fleeing_goblin_placed"] = False
     game["goliath_active"] = False
@@ -3437,6 +3489,70 @@ async def forge_close(session_id: str, request: ForgeCloseRequest):
 
     return {"status": "success"}
 
+class CrystalActionRequest(BaseModel):
+    player_id: str
+    relic_type: Optional[str] = None  # required for "place_relic"
+
+@api_router.post("/game/{session_id}/crystal_place_relic")
+async def crystal_place_relic(session_id: str, request: CrystalActionRequest):
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    player = game["players"].get(request.player_id)
+    if not player or player.get("role") != "survivor":
+        raise HTTPException(status_code=400, detail="Invalid player")
+
+    placed = game.setdefault("crystal_placed_relics", {})
+    VALID = ("relique_spherique", "relique_cubique", "relique_triangulaire")
+
+    # Auto-deposit ALL relics in inventory that haven't been placed yet
+    deposited = []
+    inventory = player.get("inventory") or []
+    for i, item in enumerate(inventory):
+        if item and item.get("type") in VALID and not placed.get(item["type"], False):
+            placed[item["type"]] = True
+            inventory[i] = None
+            deposited.append(item["type"])
+
+    all_placed = all(placed.get(r, False) for r in VALID)
+    msg = (
+        f"{len(deposited)} relique(s) ont été placées au pied du cristal."
+        if deposited else "Aucune relique à déposer."
+    )
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {
+        "status": "success",
+        "message": msg,
+        "deposited": deposited,
+        "placed_relics": placed,
+        "all_placed": all_placed,
+    }
+
+@api_router.post("/game/{session_id}/crystal_attack")
+async def crystal_attack(session_id: str, request: CrystalActionRequest):
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    placed = game.get("crystal_placed_relics", {})
+    if not all(placed.get(r, False) for r in ("relique_spherique", "relique_cubique", "relique_triangulaire")):
+        raise HTTPException(status_code=400, detail="Les 3 reliques ne sont pas toutes placées")
+    # Placeholder for future logic
+    logger.info(f"Player {request.player_id} attacked the crystal (placeholder)")
+    return {"status": "success"}
+
+@api_router.post("/game/{session_id}/crystal_close")
+async def crystal_close(session_id: str, request: CrystalActionRequest):
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    if game.get("pending_events", {}).get(request.player_id) == "crystal":
+        del game["pending_events"][request.player_id]
+    if game["phase"] == "survivor_selection":
+        await try_advance_to_killer_phase(session_id)
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {"status": "success"}
+
 # Combat resolution models
 class CombatLogUpdate(BaseModel):
     attacker_id: str
@@ -4263,44 +4379,45 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 if is_trapped:
                                     pass
                                 else:
+                                    # NEW: fouille miraculeuse triggered (no video, no key, no quest popup)
                                     room["has_quest"] = False
                                     room["quest_class"] = None
-                                    game["completed_quests"].append(quest_class)
-                                    game["keys_collected"] = len(game["completed_quests"])
-                                    
-                                    # Include stone quest in remaining count
-                                    class_quests_left = game["keys_needed"] - len(game["completed_quests"])
-                                    stone_left = 0 if game.get("observation_stone_quest_completed", False) else 1
-                                    quests_left = class_quests_left + stone_left
-                                    event_msg = f"✅ {player['name']} a complété sa quête ! Il reste {quests_left} quête(s) à compléter."
-                                    game["events"].append({"message": event_msg, "type": "quest_completed", "for_role": "survivor"})
+                                    # Flag the rest of the search to be "lucky": doubled gold + 2 guaranteed items
+                                    player["lucky_search_active"] = True
+                                    player["lucky_search_class"] = quest_class
+
+                                    event_msg = f"✨ {player['name']} effectue une Fouille Miraculeuse dans {room_name} !"
+                                    game["events"].append({"message": event_msg, "type": "lucky_search", "for_role": "survivor"})
                                     await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
-                                    
+
+                                    # Show "Vous faites une fouille miraculeuse" popup (replaces gold popup)
                                     try:
-                                        video_path = f"/event/{quest_class}.mp4"
-                                        await enqueue_player_event(session_id, player_id, "quest_completed", {
-                                            "type": "quest_completed_popup",
-                                            "message": f"Vous avez complété votre quête ! Plus que {quests_left} quête(s) pour vous enfuir !",
-                                            "video_path": video_path,
-                                            "quests_left": quests_left
+                                        required_class_image = f"/requis/{quest_class}-requis.png"
+                                        await enqueue_player_event(session_id, player_id, "lucky_search", {
+                                            "type": "lucky_search_popup",
+                                            "message": "Vous faites une fouille miraculeuse !",
+                                            "required_class": quest_class,
+                                            "required_class_image": required_class_image
                                         })
                                     except:
                                         pass
 
+                                    # Re-place the lucky search for this class in a new room so it stays continuous
+                                    place_quest(game, quest_class)
                                     game["rooms_searched_this_key"] = []
                             else:
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"
                                     await enqueue_player_event(session_id, player_id, "wrong_class", {
                                         "type": "wrong_class_popup",
-                                        "message": f"Cette quête nécessite la classe {quest_class}.",
+                                        "message": f"Une fouille miraculeuse se déclenchera pour le joueur étant la classe {quest_class}.",
                                         "required_class": quest_class,
                                         "required_class_image": required_class_image
                                     })
                                 except:
                                     pass
                                 
-                                event_msg = f"🔍 {player['name']} explore {room_name} mais ne peut pas accomplir cette quête."
+                                event_msg = f"🔍 {player['name']} fouille {room_name} — une fouille miraculeuse y attend la classe {quest_class}."
                                 game["events"].append({"message": event_msg, "type": "search_wrong_class", "for_role": "survivor"})
                                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="survivor")
                         else:
@@ -4387,43 +4504,81 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     # GOLD SYSTEM (skipped if mimic triggered — gold resolved in resolve_mimic_combat)
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False) and not mimic_triggered:
+                        is_lucky = player.pop("lucky_search_active", False)
                         gold_amount, gold_image = generate_gold_reward()
+                        if is_lucky:
+                            gold_amount *= 2  # NEW: doubled for lucky search
                         player["gold"] += gold_amount
+
+                        # NEW: always show the gold popup — even after a lucky search.
+                        # Since events are queued, this popup will appear AFTER the
+                        # lucky_search_popup is closed, and runes will follow.
+                        gold_message = (
+                            f"✨ Fouille miraculeuse ! Vous trouvez {gold_amount} pièces d'or (x2) !"
+                            if is_lucky
+                            else f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !"
+                        )
                         try:
                             await enqueue_player_event(session_id, player_id, "gold_found", {
                                 "type": "gold_found",
-                                "message": f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !",
+                                "message": gold_message,
                                 "gold_amount": gold_amount,
                                 "total_gold": player["gold"],
-                                "gold_image": gold_image
+                                "gold_image": gold_image,
+                                "lucky": is_lucky,  # optional flag for frontend styling
                             })
                         except:
                             pass
 
-                        # RUNE DROP SYSTEM (after gold)
-                        roll = random.random()
-                        rune_type = None
-                        if roll < 0.15:
-                            rune_type = "rune_vitalite"
-                        elif roll < 0.30:
-                            rune_type = "rune_initiative"
-                        elif roll < 0.45:
-                            rune_type = "rune_dommage"
+                        if is_lucky:
+                            # Also log in event feed for narrative
+                            game["events"].append({
+                                "message": f"💰 {player['name']} obtient {gold_amount} pièces d'or (x2) grâce à la fouille miraculeuse !",
+                                "type": "lucky_gold",
+                                "for_role": "survivor"
+                            })
 
-                        if rune_type:
-                            # rune_found has no direct WS popup (frontend reads it from
-                            # state_update -> pending_events), so pass ws_message=None.
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {
-                                    "type": "rune_found",
-                                    "rune_type": rune_type,
-                                    "inventory_full": is_inventory_full(player)
-                                },
-                                None
-                            )
-                            logger.info(f"Player {player_id} found rune: {rune_type}")
+                        # ITEM DROP SYSTEM — lucky search guarantees 2 items, otherwise normal probability
+                        if is_lucky:
+                            POSSIBLE_LUCKY_ITEMS = ["rune_vitalite", "rune_initiative", "rune_dommage"]
+                            for _ in range(2):
+                                rune_type = random.choice(POSSIBLE_LUCKY_ITEMS)
+                                await enqueue_player_event(
+                                    session_id,
+                                    player_id,
+                                    {
+                                        "type": "rune_found",
+                                        "rune_type": rune_type,
+                                        "inventory_full": is_inventory_full(player)
+                                    },
+                                    None
+                                )
+                                logger.info(f"Player {player_id} found rune (lucky): {rune_type}")
+                        else:
+                            # RUNE DROP SYSTEM (after gold)
+                            roll = random.random()
+                            rune_type = None
+                            if roll < 0.15:
+                                rune_type = "rune_vitalite"
+                            elif roll < 0.30:
+                                rune_type = "rune_initiative"
+                            elif roll < 0.45:
+                                rune_type = "rune_dommage"
+
+                            if rune_type:
+                                # rune_found has no direct WS popup (frontend reads it from
+                                # state_update -> pending_events), so pass ws_message=None.
+                                await enqueue_player_event(
+                                    session_id,
+                                    player_id,
+                                    {
+                                        "type": "rune_found",
+                                        "rune_type": rune_type,
+                                        "inventory_full": is_inventory_full(player)
+                                    },
+                                    None
+                                )
+                                logger.info(f"Player {player_id} found rune: {rune_type}")
 
                     # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
@@ -4465,6 +4620,32 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
                                 "video_path": "/event/Forge.mp4"
                             })
+
+                    # NEW: Check for crystal event
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_crystal_event", False):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            # 1) ALWAYS mark room as discovered for all survivors,
+                            #    even if other events (gold, rune, ...) are queued first.
+                            game["rooms"][room_name]["crystal_discovered"] = True
+
+                            # 2) Always enqueue the crystal popup. enqueue_player_event
+                            #    naturally queues it AFTER pending events (gold_found, rune_found)
+                            #    so the player will see gold/rune popups first, then crystal.
+                            await enqueue_player_event(session_id, player_id, "crystal", {
+                                "type": "crystal_encounter",
+                                "message": "Vous avez trouvé le cristal. Réunissez les 3 reliques pour le rendre vulnérable et gagner la partie.",
+                                "video_path": "/event/cristal.mp4",
+                                "placed_relics": game.get("crystal_placed_relics", {}),
+                            })
+
+                            # 3) Push state immediately so the avatar appears on the map
+                            #    for ALL survivors right now (otherwise it only updates
+                            #    at the end of the turn).
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game
+                            }, role_filter="survivor")
 
                     # NEW: Check for observation stone
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_observation_stone", False):
@@ -4740,4 +4921,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-

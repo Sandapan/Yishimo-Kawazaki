@@ -4260,10 +4260,7 @@ const prevPendingActionsRef = useRef('{}');
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
   const [keyFoundMessage, setKeyFoundMessage] = useState("");
   
-  // NEW: Quest completed popup state (with video)
-  const [showQuestCompletedPopup, setShowQuestCompletedPopup] = useState(false);
-  const [questCompletedMessage, setQuestCompletedMessage] = useState("");
-  const [questVideoPath, setQuestVideoPath] = useState("");
+  // quest_completed popup state REMOVED — replaced by continuous lucky searches
 
   // Stone quest completed popup (non-blocking, auto-closes)
   const [showStoneQuestPopup, setShowStoneQuestPopup] = useState(false);
@@ -4343,6 +4340,11 @@ const prevPendingActionsRef = useRef('{}');
   const [forgeBusy, setForgeBusy] = useState(false);
   const [forgeFlashLabel, setForgeFlashLabel] = useState("");
   const [forgePendingResult, setForgePendingResult] = useState(null); // response cached during "forging"
+
+  // NEW: Cristal popup
+  const [showCrystalPopup, setShowCrystalPopup] = useState(false);
+  const [crystalVideoPath, setCrystalVideoPath] = useState("");
+  const [crystalMessage, setCrystalMessage] = useState("");
   
   // Animation de la barre de forge
   const [forgeBarAnimation, setForgeBarAnimation] = useState(false);
@@ -4542,6 +4544,10 @@ const prevPendingActionsRef = useRef('{}');
         // NEW: Show forge intro popup for survivor who found the forge
         setForgeVideoPath(data.video_path || "/event/Forge.mp4");
         setShowForgePopup(true);
+      } else if (data.type === "crystal_encounter") {
+        setCrystalVideoPath(data.video_path || "/event/cristal.mp4");
+        setCrystalMessage(data.message || "");
+        setShowCrystalPopup(true);
       } else if (data.type === "cartographer_encounter") {
         // NEW: Cartographer encounter
         setShowCartographerDialog(true);
@@ -4695,10 +4701,7 @@ const prevPendingActionsRef = useRef('{}');
         setKeyFoundMessage(data.message);
         setShowKeyFoundPopup(true);
         // NOTE: No auto-hide — user must click to close
-      } else if (data.type === "quest_completed_popup") {
-        setQuestCompletedMessage(data.message);
-        setQuestVideoPath(data.video_path);
-        setShowQuestCompletedPopup(true);
+        // quest_completed_popup REMOVED — replaced by continuous lucky searches
       } else if (data.type === "stone_quest_completed_popup") {
         setStoneQuestMessage(data.message);
         setShowStoneQuestPopup(true);
@@ -4715,6 +4718,11 @@ const prevPendingActionsRef = useRef('{}');
         setRequiredClassImage(data.required_class_image);
         setShowWrongClassPopup(true);
         // No auto-hide, user must click to close
+      } else if (data.type === "lucky_search_popup") {
+        // NEW: Fouille miraculeuse — réutilise le même rendu que wrong_class (image + message)
+        setRequiredClassImage(data.required_class_image);
+        setWrongClassMessage(data.message); // "Vous faites une fouille miraculeuse !"
+        setShowWrongClassPopup(true);
       } else if (data.type === "gold_found") {
         // Show popup with gold image
         setGoldMessage(data.message);
@@ -5345,42 +5353,7 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* NEW: Quest Completed Popup with Video */}
-      {showQuestCompletedPopup && (
-        <div 
-          className="game-over-overlay" 
-          style={{ zIndex: 1000 }}
-          onClick={() => { setShowQuestCompletedPopup(false); notifyEventCompleted(); }}
-          data-testid="quest-completed-popup"
-        >
-          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#2a5934', borderColor: '#4ade80' }}>
-            <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#4ade80' }}>
-                ✅
-                <span>Quête complétée !</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {questVideoPath && (
-                <video 
-                  autoPlay 
-                  muted 
-                  style={{ width: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '1rem' }}
-                >
-                  <source src={questVideoPath} type="video/mp4" />
-                  Votre navigateur ne supporte pas la vidéo.
-                </video>
-              )}
-              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {questCompletedMessage}
-              </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
-                Cliquez pour continuer
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      {/* quest_completed_popup REMOVED — replaced by continuous lucky searches */}
 
       {/* Stone quest completed — non-blocking toast */}
       {showStoneQuestPopup && (
@@ -6255,6 +6228,83 @@ const selectRoom = (roomName) => {
         );
       })()}
 
+      {/* NEW: Crystal Popup */}
+      {showCrystalPopup && (() => {
+        const placed = gameState?.crystal_placed_relics || {};
+        const allPlaced = placed.relique_spherique && placed.relique_cubique && placed.relique_triangulaire;
+
+        const closeCrystal = async () => {
+          setShowCrystalPopup(false);
+          try { await axios.post(`${API}/game/${sessionId}/crystal_close`, { player_id: playerId }); } catch (e) {}
+          notifyEventCompleted();
+        };
+        const placeRelic = async () => {
+          try {
+            const res = await axios.post(`${API}/game/${sessionId}/crystal_place_relic`, { player_id: playerId });
+            toast.success(res.data.message);
+          } catch (e) {
+            toast.error(e.response?.data?.detail || "Erreur");
+          }
+        };
+        const attackCrystal = async () => {
+          try {
+            await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
+            toast.info("Le cristal vacille...");
+          } catch (e) {
+            toast.error(e.response?.data?.detail || "Erreur");
+          }
+        };
+
+        return (
+          <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="crystal-popup">
+            <Card style={{ maxWidth: '700px', backgroundColor: '#0d1a26', borderColor: '#5fa8ff', border: '3px solid #5fa8ff' }}>
+              <CardHeader>
+                <CardTitle style={{ color: '#9fd0ff', textAlign: 'center' }}>
+                  💎 Le Cristal
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {crystalVideoPath && (
+                  <video src={crystalVideoPath} autoPlay loop muted
+                    style={{ width: '100%', maxHeight: '380px', borderRadius: '8px', marginBottom: '1rem' }} />
+                )}
+                <p style={{ color: '#fff', textAlign: 'center', marginBottom: '1rem' }}>{crystalMessage}</p>
+
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
+                  {['relique_spherique','relique_cubique','relique_triangulaire'].map(r => (
+                    <span key={r} style={{
+                      padding: '0.3rem 0.6rem', borderRadius: '6px',
+                      backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
+                      color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
+                    }}>
+                      {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
+                    </span>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
+                    style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
+                    Placer une relique
+                  </Button>
+                  {allPlaced && (
+                    <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
+                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>
+                      ⚔️ Attaquer le cristal
+                    </Button>
+                  )}
+                  <Button data-testid="crystal-close-btn" onClick={closeCrystal}
+                    style={{ backgroundColor: '#555', color: '#fff' }}>
+                    Fermer
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
+
+
       {/* NEW: Forge Interface */}
       {showForgeInterface && (() => {
         const player = gameState?.players?.[playerId] || {};
@@ -6787,9 +6837,7 @@ const selectRoom = (roomName) => {
             </div>
           )}
           <h2 className="turn-indicator" data-testid="turn-indicator">Tour {gameState.turn}</h2>
-          <div className="keys-counter" data-testid="keys-counter">
-            🔑 {gameState.keys_collected}/{gameState.keys_needed}
-          </div>
+          {/* Keys counter REMOVED — no more quest/key system */}
           {currentPlayerRole === "survivor" && gameState.observation_stone_target_room && (
             <div
               className="keys-counter"
@@ -7013,6 +7061,12 @@ const selectRoom = (roomName) => {
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
                           )}
+                          {(room.has_crystal_event && currentPlayerRole === "killer") ||
+                           (room.crystal_discovered && currentPlayerRole === "survivor") ? (
+                             <span className="room-player-avatar" title="Cristal">
+                               <img src="/avatars/cristal.png" alt="Cristal" style={{ width: '1.4rem', height: '1.4rem', objectFit: 'contain' }} />
+                             </span>
+                          ) : null}
                           {room.cartographer_discovered && (
                              <span className="room-player-avatar" title="Cartographe">
                                  <img src="/avatars/Cartographe.png" alt="Cartographe" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
