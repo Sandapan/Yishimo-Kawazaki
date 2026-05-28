@@ -11,6 +11,7 @@ import uuid
 import random
 import asyncio
 import string
+import time
 from datetime import datetime, timezone
 
 # Configure logging
@@ -710,9 +711,10 @@ POWERS = {
     },
     "secousse": {
         "name": "↩️ Secousse",
-        "description": "Si la clef n'est pas trouvée après le tour des orcs, alors sa localisation change de pièce",
+        "description": "Déplacez aléatoirement un événement déjà découvert (marchand, forge, cartographe, cristal...) vers une autre pièce de la carte",
         "icon": "secousse.mp4",
-        "requires_action": False
+        "requires_action": True,
+        "action_type": "select_event"  # select one already-discovered event to relocate
     },
     "piege": {
         "name": "🥶 Blizzard",
@@ -784,14 +786,117 @@ POWERS = {
         "action_type": "select_room"  # select one room
     }
 }
+def get_discovered_events(game_state: dict) -> list:
+    """
+    Return list of events that have been discovered and are currently visible to killers
+    on the map. An event is "discovered" when killers can see its icon in the room.
+
+    Each item: {"room": <room_name>, "type": <event_type>, "name": <display_name>}
+    Event types: "merchant", "cartographer", "forge", "crystal"
+    """
+    discovered = []
+    for room_name, room_data in game_state.get("rooms", {}).items():
+        if room_data.get("has_merchant", False) and room_data.get("merchant_discovered", False):
+            discovered.append({"room": room_name, "type": "merchant", "name": "🧙 Marchand"})
+        if room_data.get("has_cartographer", False) and room_data.get("cartographer_discovered", False):
+            discovered.append({"room": room_name, "type": "cartographer", "name": "🗺️ Cartographe"})
+        if room_data.get("has_forge", False) and room_data.get("forge_discovered", False):
+            discovered.append({"room": room_name, "type": "forge", "name": "🔥 Forge"})
+        # Crystal event is visible to killers as soon as it is placed (has_crystal_event)
+        if room_data.get("has_crystal_event", False):
+            discovered.append({"room": room_name, "type": "crystal", "name": "💎 Cristal"})
+    return discovered
+
+
+def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optional[str]:
+    """
+    Move a discovered event from `source_room` to a random other valid room on the map.
+    Returns the new room name, or None if no valid relocation is possible.
+
+    Rules:
+    - Destination room must NOT contain another event (merchant, cartographer, forge,
+      crystal event/legacy crystal, observation stone, trophy, fleeing goblin or quest).
+    - Destination room must not be locked.
+    - Destination room must not be a killer's current position.
+    - Destination room must be different from the source room.
+    """
+    if source_room not in game_state.get("rooms", {}):
+        return None
+
+    src = game_state["rooms"][source_room]
+
+    # Map event_type -> (has_flag, discovered_flag)
+    flag_map = {
+        "merchant": ("has_merchant", "merchant_discovered"),
+        "cartographer": ("has_cartographer", "cartographer_discovered"),
+        "forge": ("has_forge", "forge_discovered"),
+        "crystal": ("has_crystal_event", "crystal_discovered"),
+    }
+    if event_type not in flag_map:
+        return None
+
+    has_flag, discovered_flag = flag_map[event_type]
+    if not src.get(has_flag, False):
+        return None  # source no longer holds this event
+
+    killer_positions = [p["current_room"] for p in game_state["players"].values()
+                        if p["role"] == "killer" and p["current_room"]]
+
+    available_rooms = []
+    for room_name, room_data in game_state["rooms"].items():
+        if room_name == source_room:
+            continue
+        if room_data.get("locked", False):
+            continue
+        if room_name in killer_positions:
+            continue
+        # Reject rooms that already contain any event
+        if (room_data.get("has_quest", False)
+                or room_data.get("has_merchant", False)
+                or room_data.get("has_cartographer", False)
+                or room_data.get("has_forge", False)
+                or room_data.get("has_crystal_event", False)
+                or room_data.get("has_crystal", False)
+                or room_data.get("has_observation_stone", False)
+                or room_data.get("has_fleeing_goblin", False)
+                or room_data.get("has_trophy", None) is not None):
+            continue
+        available_rooms.append(room_name)
+
+    if not available_rooms:
+        return None
+
+    destination = random.choice(available_rooms)
+
+    # Move the event flags
+    src[has_flag] = False
+    src[discovered_flag] = False
+    game_state["rooms"][destination][has_flag] = True
+    # Keep the event discovered so killers (and survivors for cartographer/merchant)
+    # can immediately see its new position on the map.
+    game_state["rooms"][destination][discovered_flag] = True
+
+    # Keep crystal_room reference in sync if applicable
+    if event_type == "crystal":
+        game_state["crystal_room"] = destination
+
+    logger.info(f"Secousse: relocated {event_type} from {source_room} to {destination}")
+    return destination
+
+
 def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> list:
-    """Get 3 random unique powers, excluding goliath if already active"""
+    """Get 3 random unique powers, excluding goliath if already active and
+    excluding secousse if no events have been discovered yet."""
     excluded = list(exclude_powers)
-    
+
     # Exclude goliath if already active
     if game_state and game_state.get("goliath_active", False):
         excluded.append("goliath")
-    
+
+    # Exclude secousse if no event has been discovered yet by/visible to killers
+    if game_state and not get_discovered_events(game_state):
+        excluded.append("secousse")
+
     available = [p for p in POWERS.keys() if p not in excluded]
     return random.sample(available, min(3, len(available)))
 
@@ -951,10 +1056,34 @@ async def apply_powers(session_id: str):
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
         elif power_name == "secousse":
-            # Mark that key should move if not found
-            game["active_powers"][power_name]["data"]["should_relocate_key"] = True
-            
-            event_msg = f"↩️ {player['name']} utilise Secousse !"
+            # NEW behavior: relocate a previously discovered event chosen by the killer
+            action_data = selection.get("action_data", {}) or {}
+            target_room = action_data.get("event_room")
+            target_type = action_data.get("event_type")
+
+            # Pretty label for events
+            type_label_map = {
+                "merchant": "🧙 Marchand",
+                "cartographer": "🗺️ Cartographe",
+                "forge": "🔥 Forge",
+                "crystal": "💎 Cristal",
+            }
+            event_label = type_label_map.get(target_type, "Événement")
+
+            new_room = None
+            if target_room and target_type:
+                new_room = relocate_event(game, target_room, target_type)
+
+            if new_room:
+                event_msg = (
+                    f"↩️ {player['name']} utilise Secousse ! "
+                    f"L'événement {event_label} a été déplacé de « {target_room} » vers « {new_room} »."
+                )
+            else:
+                event_msg = (
+                    f"↩️ {player['name']} utilise Secousse mais l'événement n'a pas pu être déplacé."
+                )
+
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
@@ -1282,6 +1411,12 @@ async def broadcast_to_session(session_id: str, message: dict, role_filter: Opti
     # Clean up disconnected players
     for player_id in disconnected:
         del active_connections[session_id][player_id]
+
+
+async def broadcast_to_role(session_id: str, role: str, message: dict):
+    """Convenience wrapper: broadcast to players of a given role."""
+    await broadcast_to_session(session_id, message, role_filter=role)
+
 
 async def try_advance_to_killer_phase(session_id: str) -> bool:
     """
@@ -1644,24 +1779,9 @@ async def process_turn(session_id: str):
     })
         return  # Exit early, will continue after second room selections
     
-    # Apply Secousse power: relocate key if not found this turn
-    if not key_found_this_turn and "secousse" in game.get("active_powers", {}):
-        if game["active_powers"]["secousse"]["data"].get("should_relocate_key", False):
-            # Find current key location and remove it
-            current_key_room = None
-            for room_name, room_data in game["rooms"].items():
-                if room_data.get("has_key", False):
-                    room_data["has_key"] = False
-                    current_key_room = room_name
-                    break
-            
-            # Place key in new location
-            if current_key_room:
-                new_key_room = place_next_key(game)
-                if new_key_room:
-                    event_msg = "↩️ La clef s'est déplacée vers une nouvelle pièce !"
-                    game["events"].append({"message": event_msg, "type": "key_relocated"})
-                    await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
+    # Secousse power: legacy key relocation removed.
+    # The new Secousse behavior is handled at power selection time (apply_powers):
+    # the killer chooses an already-discovered event which is then moved to a random room.
 
     # Check victory conditions
     alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
@@ -3537,6 +3657,13 @@ SURVIVOR_BASE_DAMAGE = 5
 
 @api_router.post("/game/{session_id}/crystal_attack")
 async def crystal_attack(session_id: str, request: CrystalActionRequest):
+    """
+    Trigger the start of the Crystal combat.
+    Same flow as the goblin / mimic combat : we broadcast a `crystal_combat`
+    event to all participating survivors (every alive survivor present in the
+    crystal_room). All clients simulate the combat locally; only the first
+    survivor (the "simulator") will POST the result to /resolve_crystal_combat.
+    """
     if session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     game = game_sessions[session_id]
@@ -3545,17 +3672,10 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
         raise HTTPException(status_code=400, detail="Survivors only")
 
     placed = game.get("crystal_placed_relics", {})
-    if not all(placed.get(r, False) for r in ("relique_spherique","relique_cubique","relique_triangulaire")):
+    if not all(placed.get(r, False) for r in ("relique_spherique", "relique_cubique", "relique_triangulaire")):
         raise HTTPException(status_code=400, detail="Les 3 reliques manquent")
 
-
-
     crystal_room = game.get("crystal_room")
-    # The player may not have been moved into the room yet (popup opens during
-    # search phase, before turn resolution). Accept either:
-    #  - already moved into the crystal room (current_room match), OR
-    #  - currently selecting the crystal room this turn (pending_actions), OR
-    #  - has discovered the crystal (the room was reached at some point).
     pending = game.get("pending_actions", {}).get(request.player_id) or {}
     selected_room = pending.get("room")
     discovered = game["rooms"].get(crystal_room, {}).get("crystal_discovered", False)
@@ -3563,101 +3683,64 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
     in_crystal_room = (
         player.get("current_room") == crystal_room
         or selected_room == crystal_room
-        or discovered  # someone already discovered, allow ranged ritual attack
+        or discovered
     )
     if not in_crystal_room:
         raise HTTPException(status_code=400, detail="Pas dans la salle du cristal")
 
-    combat = game.get("crystal_combat")
+    # Prevent restarting a combat already in progress
+    if game.get("crystal_combat") and game["crystal_combat"].get("phase") == "active":
+        return {"status": "already_started", "combat": game["crystal_combat"]}
 
-    # Start combat if not started
-    if not combat:
-        participants = [p["id"] for p in game["players"].values()
-                        if p["role"] == "survivor" and not p.get("eliminated")
-                        and p.get("current_room") == crystal_room]
-        if not participants:
-            raise HTTPException(status_code=400, detail="Aucun survivant dans la salle")
+    # Gather every alive survivor present in the crystal room
+    participants = []
+    for p in game["players"].values():
+        if (
+            p["role"] == "survivor"
+            and not p.get("eliminated")
+            and (
+                p.get("current_room") == crystal_room
+                or (game.get("pending_actions", {}).get(p["id"], {}) or {}).get("room") == crystal_room
+                or discovered
+            )
+        ):
+            participants.append({
+                "id": p["id"],
+                "name": p["name"],
+                "class": p.get("character_class", "Survivor"),
+                "hp": p.get("hp", 36),
+                "max_hp": p.get("max_hp", 36),
+                "initiative_bonus": p.get("initiative_bonus", 0),
+                "damage_bonus": p.get("damage_bonus", 0),
+            })
 
-        crystal_init = random.randint(1, 20)
-        entities = [{"id": "crystal", "init": crystal_init}]
-        for pid in participants:
-            p = game["players"][pid]
-            entities.append({"id": pid, "init": (p.get("initiative", 10) + (p.get("initiative_bonus") or 0)) + random.randint(0,5)})
-        entities.sort(key=lambda e: -e["init"])
+    if not participants:
+        raise HTTPException(status_code=400, detail="Aucun survivant dans la salle")
 
-        combat = {
-            "hp": CRYSTAL_MAX_HP, "max_hp": CRYSTAL_MAX_HP,
-            "crystal_initiative": crystal_init,
-            "turn_order": [e["id"] for e in entities],
-            "current_turn": 0,
-            "participants": participants,
-            "phase": "active",
-            "animation": "idle",
-            "log": [f"⚔️ Combat contre le Cristal engagé !"],
-        }
-        game["crystal_combat"] = combat
+    combat_event = {
+        "type": "crystal_combat",
+        "survivors": participants,
+        "crystal_hp": CRYSTAL_MAX_HP,
+        "crystal_damage": CRYSTAL_DAMAGE,
+        "turn": game["turn"],
+        "combat_id": f"crystal_{crystal_room}_{game['turn']}_{int(time.time()*1000)}",
+    }
 
-    # Player turn must match
-    current = combat["turn_order"][combat["current_turn"] % len(combat["turn_order"])]
-    if current != request.player_id:
-        raise HTTPException(status_code=400, detail="Ce n'est pas votre tour")
+    game["crystal_combat"] = {
+        "phase": "active",
+        "participants": [s["id"] for s in participants],
+        "combat_id": combat_event["combat_id"],
+    }
 
-    damage = SURVIVOR_BASE_DAMAGE + (player.get("damage_bonus") or 0)
-    combat["hp"] = max(0, combat["hp"] - damage)
-    combat["log"].append(f"🗡️ {player['name']} inflige {damage} dégâts !")
-    combat["animation"] = "hurt"
-
-    # Victory
-    if combat["hp"] <= 0:
-        combat["phase"] = "victory"
-        combat["animation"] = "fainted"
-        game["phase"] = "game_over"
-        game["winner"] = "survivors"
-        await broadcast_to_session(session_id, {
-            "type": "game_over", "winner": "survivors",
-            "message": "💎 Le cristal est détruit ! Victoire !"
-        })
-    else:
-        await _advance_crystal_turn(session_id)
+    # Push the event to every participant via pending_events (same as goblin combat)
+    for s in participants:
+        game["pending_events"][s["id"]] = combat_event
 
     await broadcast_to_session(session_id, {"type": "state_update", "game": game})
-    return {"status": "success", "combat": combat}
+    await broadcast_to_session(session_id, combat_event)
 
-
-async def _advance_crystal_turn(session_id: str):
-    """Advance to next entity. If crystal -> auto-attack all participants."""
-    game = game_sessions[session_id]
-    combat = game.get("crystal_combat")
-    if not combat or combat["phase"] != "active":
-        return
-
-    combat["current_turn"] += 1
-    next_id = combat["turn_order"][combat["current_turn"] % len(combat["turn_order"])]
-
-    if next_id == "crystal":
-        combat["animation"] = "attack"
-        for pid in combat["participants"]:
-            p = game["players"].get(pid)
-            if p and not p.get("eliminated"):
-                p["hp"] = max(0, (p.get("hp") or 0) - CRYSTAL_DAMAGE)
-                if p["hp"] <= 0:
-                    p["eliminated"] = True
-        combat["log"].append(f"💥 Le Cristal frappe tous les survivants ({CRYSTAL_DAMAGE} dégâts) !")
-
-        alive = [pid for pid in combat["participants"]
-                 if game["players"][pid].get("hp", 0) > 0 and not game["players"][pid].get("eliminated")]
-        if not alive:
-            combat["phase"] = "defeat"
-            game["phase"] = "game_over"
-            game["winner"] = "killers"
-            await broadcast_to_session(session_id, {
-                "type": "game_over", "winner": "killers",
-                "message": "💀 Le Cristal a tué tous les survivants..."
-            })
-            return
-
-        # Skip to next survivor
-        await _advance_crystal_turn(session_id)
+    logger.info(f"⚔️ Combat Cristal déclenché : {[s['name'] for s in participants]} VS Cristal")
+    return {"status": "success", "combat_event": combat_event}
 
 @api_router.post("/game/{session_id}/crystal_close")
 async def crystal_close(session_id: str, request: CrystalActionRequest):
@@ -3906,6 +3989,100 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
             "message": killer_msg
         })
     
+    return {"status": "success"}
+
+
+# === CRYSTAL COMBAT RESOLUTION ===========================================
+class ResolveCrystalCombatRequest(BaseModel):
+    survivors_results: List[dict]  # [{"id": str, "damage_dealt": int, "eliminated": bool}]
+    crystal_defeated: bool
+    combat_log: List[str] = []
+
+
+@api_router.post("/game/{session_id}/resolve_crystal_combat")
+async def resolve_crystal_combat(session_id: str, request: ResolveCrystalCombatRequest):
+    """
+    Resolve a combat between the survivors and the Crystal.
+    Mirrors resolve_multiplayer_combat but with a single AOE crystal entity.
+    """
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+    logger.info(
+        f"💎 Résolution combat Cristal: survivors={len(request.survivors_results)} "
+        f"crystal_defeated={request.crystal_defeated}"
+    )
+
+    eliminated_survivors = []
+    for survivor_result in request.survivors_results:
+        survivor_id = survivor_result["id"]
+        damage_dealt = survivor_result.get("damage_dealt", 0)
+        is_eliminated = survivor_result.get("eliminated", False)
+
+        if survivor_id in game["players"]:
+            survivor = game["players"][survivor_id]
+            if survivor.get("hp") is not None and damage_dealt > 0:
+                survivor["hp"] = max(0, survivor["hp"] - damage_dealt)
+
+            if is_eliminated or (survivor.get("hp") is not None and survivor["hp"] <= 0):
+                survivor["eliminated"] = True
+                survivor["hp"] = 0
+                survivor["gold"] = 0
+                survivor_room = survivor.get("current_room")
+                if survivor_room and survivor_room in game["rooms"]:
+                    if survivor_id not in game["rooms"][survivor_room]["eliminated_players"]:
+                        game["rooms"][survivor_room]["eliminated_players"].append(survivor_id)
+
+                eliminated_survivors.append(survivor["name"])
+                event_msg = f"💀 {survivor['name']} a été pulvérisé(e) par le Cristal !"
+                game["events"].append({"message": event_msg, "type": "combat_elimination"})
+
+    for name in eliminated_survivors:
+        await broadcast_to_session(session_id, {"type": "event", "message": f"💀 {name} a été éliminé(e) !"})
+
+    combat_state = game.get("crystal_combat") or {}
+    for pid in combat_state.get("participants", []):
+        if pid in game.get("pending_events", {}):
+            del game["pending_events"][pid]
+
+    if request.crystal_defeated:
+        game["crystal_destroyed"] = True
+        game["phase"] = "game_over"
+        game["winner"] = "survivors"
+        combat_state["phase"] = "victory"
+        game["crystal_combat"] = combat_state
+
+        await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+        await broadcast_to_role(session_id, "survivor", {
+            "type": "game_over", "winner": "survivors",
+            "message": "🎉 VICTOIRE ! Le Cristal a été détruit !"
+        })
+        await broadcast_to_role(session_id, "killer", {
+            "type": "game_over", "winner": "survivors",
+            "message": "💎 Les aventuriers ont détruit le Cristal..."
+        })
+        return {"status": "success"}
+
+    alive_survivors = [p for p in game["players"].values()
+                       if p["role"] == "survivor" and not p["eliminated"]]
+
+    combat_state["phase"] = "defeat" if not alive_survivors else "ended"
+    game["crystal_combat"] = combat_state
+
+    if len(alive_survivors) == 0:
+        game["phase"] = "game_over"
+        game["winner"] = "killers"
+        await broadcast_to_role(session_id, "survivor", {
+            "type": "game_over", "winner": "killers",
+            "message": "💀 DÉFAITE ! Le Cristal vous a tous éliminés..."
+        })
+        await broadcast_to_role(session_id, "killer", {
+            "type": "game_over", "winner": "killers",
+            "message": "🎉 VICTOIRE ! Le Cristal a anéanti les aventuriers !"
+        })
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
     return {"status": "success"}
 
 
@@ -4856,12 +5033,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 power_def = POWERS[power_name]
                 if power_def["requires_action"]:
                     game["pending_power_selections"][player_id]["action_complete"] = False
-                    await websocket.send_json({
+
+                    payload = {
                         "type": "power_action_required",
                         "power": power_name,
                         "action_type": power_def["action_type"],
                         "rooms_count": power_def.get("rooms_count", 1)
-                    })
+                    }
+
+                    # NEW: For Secousse, send the list of currently discovered events
+                    if power_name == "secousse":
+                        payload["events"] = get_discovered_events(game)
+
+                    await websocket.send_json(payload)
                 else:
                     game["pending_power_selections"][player_id]["action_complete"] = True
                     await broadcast_to_session(session_id, {

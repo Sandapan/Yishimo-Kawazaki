@@ -1883,6 +1883,319 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
   );
 };
 
+// ========== CRYSTAL COMBAT COMPONENT ==========
+// Cloned from MultiPlayerCombat: same SpriteSheetAnimator, same deterministic
+// loop, same UI. Différences :
+//   - 1 single Crystal (30 HP) vs N survivors
+//   - Crystal attack is AOE : 3 dégâts à TOUS les survivants dans le même tour
+//   - Sprite sheets /fight/Cristal_{idle,attack,hurt,fainted}.webp
+//   - Resolution endpoint : /api/game/:id/resolve_crystal_combat
+const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
+  const isSurvivor = event.survivors.some(s => s.id === playerId);
+  const isSimulator = isSurvivor && event.survivors[0].id === playerId;
+
+  const [combatants, setCombatants] = useState([]);
+  const [combatLog, setCombatLog] = useState([]);
+  const [combatOver, setCombatOver] = useState(false);
+  const [canClose, setCanClose] = useState(false);
+  const [animatingEntity, setAnimatingEntity] = useState(null);
+  const [damageIndicators, setDamageIndicators] = useState({});
+
+  // --- init combattants (initiative déterministe via combat_id) ---
+  useEffect(() => {
+    const fighters = [];
+    event.survivors.forEach((survivor, idx) => {
+      const baseInitiative = Math.floor(
+        (hashCode(survivor.id + 'crystal' + (event.combat_id || event.turn || Date.now())) % 20) + 1
+      );
+      fighters.push({
+        id: survivor.id, name: survivor.name, class: survivor.class,
+        type: 'survivor',
+        hp: survivor.hp, maxHp: survivor.max_hp || survivor.hp,
+        initiative: baseInitiative + (survivor.initiative_bonus || 0),
+        damageBonus: survivor.damage_bonus || 0,
+        position: idx, alive: true, currentAnimation: 'idle',
+      });
+    });
+    const crystalInitiative = Math.floor(
+      (hashCode('crystal_' + (event.combat_id || event.turn || Date.now())) % 20) + 1
+    );
+    fighters.push({
+      id: 'crystal', name: 'Le Cristal', class: 'Cristal', type: 'crystal',
+      hp: event.crystal_hp, maxHp: event.crystal_hp,
+      initiative: crystalInitiative, position: 0, alive: true, currentAnimation: 'idle',
+    });
+    fighters.sort((a, b) => b.initiative - a.initiative);
+    setCombatants(fighters);
+    const initLog = [`💎 Combat contre le Cristal ! Ordre d'initiative :`];
+    fighters.forEach(f => initLog.push(`${f.name} (${f.initiative})`));
+    setCombatLog(initLog);
+  }, [event]);
+
+  // --- boucle simulation déterministe ---
+  useEffect(() => {
+    if (combatants.length === 0) return;
+    let mounted = true;
+    let turnIndex = 0;
+    let fighters = [...combatants];
+    const combatSeed = hashCode(
+      event.combat_id || ('crystal' + event.survivors.map(s => s.id).join('') + event.turn)
+    );
+    const rng = new SeededRandom(combatSeed);
+    for (let i = 0; i < 10; i++) rng.next();
+
+    const runCombat = async () => {
+      while (mounted) {
+        const aliveSurvivors = fighters.filter(f => f.type === 'survivor' && f.alive);
+        const crystal = fighters.find(f => f.type === 'crystal');
+
+        if (aliveSurvivors.length === 0 || !crystal.alive) {
+          setCombatOver(true);
+          const survivorsResults = event.survivors.map(survivor => {
+            const fighter = fighters.find(f => f.id === survivor.id);
+            return {
+              id: survivor.id,
+              damage_dealt: Math.max(0, survivor.hp - (fighter?.hp || 0)),
+              eliminated: !fighter || !fighter.alive,
+            };
+          });
+          if (isSimulator) {
+            try {
+              await axios.post(`${API}/game/${sessionId}/resolve_crystal_combat`, {
+                survivors_results: survivorsResults,
+                crystal_defeated: !crystal.alive,
+                combat_log: combatLog,
+              });
+            } catch (error) {
+              console.error("Erreur lors de la résolution du combat Cristal:", error);
+            }
+          }
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          setCanClose(true);
+          break;
+        }
+
+        const attacker = fighters[turnIndex % fighters.length];
+        if (!attacker.alive) { turnIndex++; continue; }
+
+        if (attacker.type === 'survivor') {
+          // Survivant attaque le cristal
+          setAnimatingEntity({ id: attacker.id, type: 'attack' });
+          await new Promise(resolve => setTimeout(resolve, 1700));
+          const damage = rng.nextInt(1, 6) + (attacker.damageBonus || 0);
+          crystal.hp = Math.max(0, crystal.hp - damage);
+          if (crystal.hp <= 0) crystal.alive = false;
+
+          setDamageIndicators(prev => ({ ...prev, [crystal.id]: { damage, timestamp: Date.now() } }));
+          setTimeout(() => setDamageIndicators(prev => {
+            const n = { ...prev }; delete n[crystal.id]; return n;
+          }), 1500);
+
+          setAnimatingEntity({ id: crystal.id, type: 'hurt' });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          setAnimatingEntity(null);
+
+          setCombatLog(prev => [...prev, `${attacker.name} attaque ${crystal.name} : ${damage} dégâts ! (${crystal.hp}/${crystal.maxHp} PV)`]);
+          setCombatants([...fighters]);
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        } else {
+          // Cristal attaque AOE
+          setAnimatingEntity({ id: 'crystal', type: 'attack' });
+          await new Promise(resolve => setTimeout(resolve, 1700));
+
+          const damage = event.crystal_damage || 3;
+          const hitNames = [];
+          aliveSurvivors.forEach(s => {
+            s.hp = Math.max(0, s.hp - damage);
+            if (s.hp <= 0) s.alive = false;
+            hitNames.push(s.name);
+            setDamageIndicators(prev => ({ ...prev, [s.id]: { damage, timestamp: Date.now() } }));
+          });
+          setTimeout(() => setDamageIndicators(prev => {
+            const n = { ...prev }; aliveSurvivors.forEach(s => delete n[s.id]); return n;
+          }), 1500);
+
+          // hurt synchronisé sur tous les survivants
+          setAnimatingEntity({ id: '__aoe__', type: 'aoe_hurt' });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          setAnimatingEntity(null);
+
+          setCombatLog(prev => [...prev, `💥 ${crystal.name} frappe TOUS les survivants (${hitNames.join(', ')}) : ${damage} dégâts AOE !`]);
+          setCombatants([...fighters]);
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+        turnIndex++;
+      }
+    };
+
+    runCombat();
+    return () => { mounted = false; };
+    // eslint-disable-next-line
+  }, [combatants.length, sessionId, event]);
+  
+  const getSpriteSheet = (combatant, animationType) =>
+    combatant.type === 'crystal'
+      ? `/fight/Cristal_${animationType}.webp`
+      : `/fight/${combatant.class}_${animationType}.webp`;
+
+  const getSpriteParams = (combatant, animationType) => {
+    if (combatant.type === 'crystal') {
+      switch (animationType) {
+        case 'idle':    return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'attack':  return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'hurt':    return { cols: 5, rows: 2, totalFrames: 10 };
+        case 'fainted': return { cols: 5, rows: 6, totalFrames: 30 };
+        default:        return { cols: 5, rows: 6, totalFrames: 30 };
+      }
+    }
+    switch (animationType) {
+      case 'idle':    return { cols: 5, rows: 6, totalFrames: 30 };
+      case 'attack':  return { cols: 5, rows: 6, totalFrames: 30 };
+      case 'hurt':    return { cols: 5, rows: 2, totalFrames: 10 };
+      case 'fainted': return { cols: 5, rows: 4, totalFrames: 20 };
+      default:        return { cols: 5, rows: 6, totalFrames: 30 };
+    }
+  };
+
+  const getPosition = (combatant) => {
+    const positions = [
+      { bottom: '15%', top: 'auto' }, { bottom: '35%', top: 'auto' },
+      { bottom: '55%', top: 'auto' }, { bottom: '75%', top: 'auto' },
+    ];
+    return positions[combatant.position] || positions[0];
+  };
+  const aoeHurt = animatingEntity && animatingEntity.type === 'aoe_hurt';
+
+  return (
+    <div className="game-over-overlay"
+         style={{ zIndex: 3000, cursor: (canClose || combatOver) ? "pointer" : "default" }}
+         onClick={() => (canClose || combatOver) && onClose && onClose()}
+         data-testid="crystal-combat">
+      <div style={{
+        position: 'relative', width: '90%', maxWidth: '1200px', height: '80vh',
+        backgroundImage: 'url(/fight/Ground.jpg)', backgroundSize: 'cover', backgroundPosition: 'center',
+        borderRadius: '12px', border: '4px solid #5fa8ff', overflow: 'hidden',
+      }}>
+        {/* Survivants (à gauche) — rendu identique à MultiPlayerCombat, avec hurt AOE synchronisé */}
+        {combatants.filter(c => c.type === 'survivor').map((combatant) => {
+          const isAttackingNow = animatingEntity?.id === combatant.id && animatingEntity.type === 'attack';
+          const isHurtNow = combatant.alive && aoeHurt;
+          const animationType = !combatant.alive ? 'fainted'
+            : (isAttackingNow ? 'attack' : (isHurtNow ? 'hurt' : 'idle'));
+          const spriteParams = getSpriteParams(combatant, animationType);
+          return (
+            <div key={combatant.id}
+                 style={{ position: 'absolute', left: isAttackingNow ? '30%' : '10%',
+                          ...getPosition(combatant), opacity: combatant.alive ? 1 : 0.3,
+                          transition: 'all 0.4s ease-out' }}
+                 data-testid={`crystal-combat-survivor-${combatant.id}`}>
+              <SpriteSheetAnimator
+                spriteSheet={getSpriteSheet(combatant, animationType)}
+                cols={spriteParams.cols} rows={spriteParams.rows}
+                frameDuration={animationType === 'attack' ? 33 : animationType === 'hurt' ? 80 : 100}
+                loop={animationType === 'idle'} />
+              {damageIndicators[combatant.id] && (
+                <div style={{ position: 'absolute', top: '-30px', left: '50%',
+                              transform: 'translateX(-50%)', fontSize: '28px', fontWeight: 'bold',
+                              color: '#ff0000', textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
+                              animation: 'floatUp 1.5s ease-out', pointerEvents: 'none', zIndex: 1000 }}>
+                  -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              <div style={{ width: '200px', height: '12px', backgroundColor: '#333',
+                            borderRadius: '6px', overflow: 'hidden', marginTop: '5px',
+                            border: '2px solid #5fa8ff' }}>
+                <div style={{ width: `${(combatant.hp / combatant.maxHp) * 100}%`, height: '100%',
+                              backgroundColor: combatant.hp > combatant.maxHp * 0.3 ? '#10b981' : '#ef4444',
+                              transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px',
+                            fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
+                {combatant.name} ({combatant.hp}/{combatant.maxHp})
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Cristal (à droite, miroir) */}
+        {combatants.filter(c => c.type === 'crystal').map((combatant) => {
+          const isAttackingNow = animatingEntity?.id === combatant.id && animatingEntity.type === 'attack';
+          const isHurtNow = animatingEntity?.id === combatant.id && animatingEntity.type === 'hurt';
+          const animationType = !combatant.alive ? 'fainted'
+            : (isAttackingNow ? 'attack' : (isHurtNow ? 'hurt' : 'idle'));
+          const spriteParams = getSpriteParams(combatant, animationType);
+          return (
+            <div key={combatant.id}
+                 style={{ position: 'absolute', right: isAttackingNow ? '30%' : '10%',
+                          bottom: '35%', opacity: combatant.alive ? 1 : 0.4,
+                          transition: 'all 0.4s ease-out', transform: 'scaleX(-1)' }}
+                 data-testid="crystal-combat-crystal">
+              <SpriteSheetAnimator
+                spriteSheet={getSpriteSheet(combatant, animationType)}
+                cols={spriteParams.cols} rows={spriteParams.rows}
+                frameDuration={animationType === 'attack' ? 50 : animationType === 'hurt' ? 80 : 100}
+                loop={animationType === 'idle'} />
+              {damageIndicators[combatant.id] && (
+                <div style={{ position: 'absolute', top: '-30px', left: '50%',
+                              transform: 'translateX(-50%) scaleX(-1)', fontSize: '28px',
+                              fontWeight: 'bold', color: '#ff0000',
+                              textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
+                              animation: 'floatUpMirrored 1.5s ease-out',
+                              pointerEvents: 'none', zIndex: 1000 }}>
+                  -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              <div style={{ width: '200px', height: '12px', backgroundColor: '#333',
+                            borderRadius: '6px', overflow: 'hidden', marginTop: '5px',
+                            border: '2px solid #5fa8ff', transform: 'scaleX(-1)' }}>
+                <div style={{ width: `${(combatant.hp / combatant.maxHp) * 100}%`, height: '100%',
+                              backgroundColor: combatant.hp > combatant.maxHp * 0.3 ? '#9fd0ff' : '#5fa8ff',
+                              transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px',
+                            fontWeight: 'bold', textShadow: '2px 2px 4px #000',
+                            transform: 'scaleX(-1)' }}>
+                {combatant.name} ({combatant.hp}/{combatant.maxHp})
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Log */}
+        <div style={{ position: 'absolute', bottom: '10px', left: '50%',
+                      transform: 'translateX(-50%)', width: '80%', maxHeight: '150px',
+                      backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: '8px',
+                      padding: '10px', overflowY: 'auto', border: '2px solid #5fa8ff' }}>
+          {combatLog.map((entry, idx) => (
+            <div key={idx} style={{ color: '#e8dcc4', fontSize: '12px', marginBottom: '3px' }}>{entry}</div>
+          ))}
+        </div>
+
+        {combatOver && (
+          <div style={{ position: 'absolute', top: '20px', left: '50%',
+                        transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.9)',
+                        padding: '20px 40px', borderRadius: '12px', border: '3px solid #5fa8ff' }}>
+            <div style={{ color: '#9fd0ff', fontSize: '24px', fontWeight: 'bold', textAlign: 'center' }}>
+              💎 COMBAT TERMINÉ !
+            </div>
+          </div>
+        )}
+
+        {(canClose || combatOver) && (
+          <div style={{ position: 'absolute', top: '50%', left: '50%',
+                        transform: 'translate(-50%, -50%)', color: '#9fd0ff',
+                        fontSize: '18px', fontWeight: 'bold', textAlign: 'center',
+                        backgroundColor: 'rgba(0,0,0,0.8)', padding: '15px 30px',
+                        borderRadius: '8px', border: '2px solid #5fa8ff', cursor: 'pointer' }}
+               onClick={(e) => { e.stopPropagation(); if (onClose) onClose(); }}>
+            {canClose ? 'Cliquez pour fermer' : 'Combat terminé - Cliquez pour fermer'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ========== INVENTORY HUD COMPONENT ==========
 const InventoryHUD = ({ player, onClick }) => {
   if (!player || player.role !== "survivor") return null;
@@ -3777,12 +4090,16 @@ const PowerSelectionOverlay = ({
   selectPower, 
   showPowerAction, 
   confirmPowerAction,
-  powerActionData 
+  powerActionData,
+  secousseEvents = []
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
   const [selectedFloor, setSelectedFloor] = useState(null);
   const [teleportationStep, setTeleportationStep] = useState(1); // 1 = trap room, 2 = exit room
   const [trapRoom, setTrapRoom] = useState(null);
+  // NEW: Secousse - currently picked event and confirmation modal toggle
+  const [secousseSelected, setSecousseSelected] = useState(null);
+  const [secousseConfirming, setSecousseConfirming] = useState(false);
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
@@ -3872,6 +4189,133 @@ const PowerSelectionOverlay = ({
   }
   
   if (showPowerAction && requiresAction) {
+    // NEW: Secousse - select an already-discovered event then confirm relocation
+    if (actionType === "select_event") {
+      // If user is in confirmation step
+      if (secousseConfirming && secousseSelected) {
+        return (
+          <div className="power-selection-overlay" data-testid="secousse-confirm-overlay">
+            <Card className="power-action-card">
+              <CardHeader>
+                <CardTitle className="text-center">
+                  {selectedPowerDef.name}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p
+                  className="text-center mb-4"
+                  data-testid="secousse-confirm-message"
+                  style={{ fontSize: '1.1rem', lineHeight: '1.5' }}
+                >
+                  La secousse déplacera l'événement suivant aléatoirement sur la carte :
+                  <br />
+                  <strong>{secousseSelected.name}</strong>
+                  <br />
+                  <span style={{ opacity: 0.85 }}>
+                    (actuellement dans « {secousseSelected.room} »)
+                  </span>
+                </p>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+                  <Button
+                    data-testid="secousse-confirm-btn"
+                    onClick={() => {
+                      confirmPowerAction({
+                        event_room: secousseSelected.room,
+                        event_type: secousseSelected.type
+                      });
+                      setSecousseConfirming(false);
+                    }}
+                    style={{ backgroundColor: '#8b5cf6', padding: '0.75rem 1.5rem' }}
+                  >
+                    Confirmer
+                  </Button>
+                  <Button
+                    data-testid="secousse-cancel-btn"
+                    onClick={() => {
+                      setSecousseConfirming(false);
+                      setSecousseSelected(null);
+                    }}
+                    style={{ backgroundColor: '#555', padding: '0.75rem 1.5rem' }}
+                  >
+                    Annuler
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      // Otherwise show the event selection list
+      const hasEvents = Array.isArray(secousseEvents) && secousseEvents.length > 0;
+      return (
+        <div className="power-selection-overlay" data-testid="secousse-select-overlay">
+          <Card className="power-action-card">
+            <CardHeader>
+              <CardTitle className="text-center">
+                {selectedPowerDef.name}
+              </CardTitle>
+              <CardDescription className="text-center">
+                {selectedPowerDef.description}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {!hasEvents ? (
+                <p className="text-center mb-4" data-testid="secousse-no-events">
+                  Aucun événement découvert n'est disponible pour le moment.
+                </p>
+              ) : (
+                <>
+                  <p className="text-center mb-4">
+                    Choisissez un événement déjà découvert à déplacer :
+                  </p>
+                  <div
+                    data-testid="secousse-event-list"
+                    style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}
+                  >
+                    {secousseEvents.map((ev, idx) => {
+                      const isSel =
+                        secousseSelected &&
+                        secousseSelected.room === ev.room &&
+                        secousseSelected.type === ev.type;
+                      return (
+                        <Button
+                          key={`${ev.type}-${ev.room}-${idx}`}
+                          data-testid={`secousse-event-${ev.type}-${idx}`}
+                          onClick={() => setSecousseSelected(ev)}
+                          style={{
+                            backgroundColor: isSel ? '#8b5cf6' : '#555',
+                            padding: '1rem',
+                            textAlign: 'left',
+                            fontSize: '1rem'
+                          }}
+                        >
+                          {ev.name} — {ev.room} {isSel && ' ✓'}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              <Button
+                data-testid="secousse-next-btn"
+                onClick={() => setSecousseConfirming(true)}
+                disabled={!secousseSelected}
+                className="w-full mt-4"
+                style={{
+                  backgroundColor: secousseSelected ? '#8b5cf6' : '#555',
+                  marginTop: '1.5rem'
+                }}
+              >
+                Suivant
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
     // Show room selection interface
     return (
       <div className="power-selection-overlay">
@@ -4240,6 +4684,8 @@ const Game = () => {
   const [multiplayerCombatEvent, setMultiplayerCombatEvent] = useState(null);
   const [showMimicCombat, setShowMimicCombat] = useState(false);
   const [mimicCombatEvent, setMimicCombatEvent] = useState(null);
+  const [showCrystalCombat, setShowCrystalCombat] = useState(false);
+  const [crystalCombatEvent, setCrystalCombatEvent] = useState(null);
   const [showFleeingGoblinCombat, setShowFleeingGoblinCombat] = useState(false);
   const [fleeingGoblinCombatEvent, setFleeingGoblinCombatEvent] = useState(null);
 
@@ -4255,6 +4701,8 @@ const prevPendingActionsRef = useRef('{}');
   const [powerActionData, setPowerActionData] = useState(null);
   const [showPowerAction, setShowPowerAction] = useState(false);
   const [powerDefinitions, setPowerDefinitions] = useState({});
+  // NEW: Discovered events list for the Secousse power (provided by backend)
+  const [secousseEvents, setSecousseEvents] = useState([]);
   
   // NEW: Key found popup state
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
@@ -4455,6 +4903,9 @@ const prevPendingActionsRef = useRef('{}');
             } else if (event.type === "mimic_combat") {
               setMimicCombatEvent(event);
               setShowMimicCombat(true);
+            } else if (event.type === "crystal_combat") {
+              setCrystalCombatEvent(event);
+              setShowCrystalCombat(true);
             } else if (event.type === "fleeing_goblin_combat") {
               setFleeingGoblinCombatEvent(event);
               setShowFleeingGoblinCombat(true);
@@ -4526,6 +4977,13 @@ const prevPendingActionsRef = useRef('{}');
         // (mimic was queued behind gold_found and only dispatched on event_completed).
         setMimicCombatEvent(data);
         setShowMimicCombat(true);
+      } else if (data.type === "crystal_combat") {
+        // Direct WS handler for the crystal combat (broadcasted by crystal_attack)
+        // Only show the overlay to participants of the combat.
+        if (Array.isArray(data.survivors) && data.survivors.some(s => s.id === storedPlayerId)) {
+          setCrystalCombatEvent(data);
+          setShowCrystalCombat(true);
+        }
       } else if (data.type === "fleeing_goblin_combat") {
         // Direct WS handler for fleeing goblin combat
         setFleeingGoblinCombatEvent(data);
@@ -4761,6 +5219,12 @@ const prevPendingActionsRef = useRef('{}');
         toast.info(data.message);
       } else if (data.type === "power_action_required") {
         // Show power action interface
+        // NEW: store discovered events list for Secousse
+        if (data.power === "secousse" && Array.isArray(data.events)) {
+          setSecousseEvents(data.events);
+        } else {
+          setSecousseEvents([]);
+        }
         setShowPowerAction(true);
       } else if (data.type === "game_reset") {
         // Redirect all players back to lobby when game is reset
@@ -5110,6 +5574,21 @@ const selectRoom = (roomName) => {
             // Notifie le backend pour dispatcher l'événement suivant en queue
             // (sécurité : resolve_mimic_combat supprime déjà pending_events côté serveur,
             // mais cela déclenche dispatch_next_player_event côté frontend aussi)
+            notifyEventCompleted();
+          }}
+        />
+      )}
+
+      {/* Crystal Combat Popup (identical pattern to MultiPlayerCombat) */}
+      {showCrystalCombat && crystalCombatEvent && (
+        <CrystalCombat
+          event={crystalCombatEvent}
+          playerId={playerId}
+          sessionId={sessionId}
+          wsRef={ws}
+          onClose={() => {
+            setShowCrystalCombat(false);
+            setCrystalCombatEvent(null);
             notifyEventCompleted();
           }}
         />
@@ -6249,7 +6728,10 @@ const selectRoom = (roomName) => {
         const attackCrystal = async () => {
           try {
             await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
-            toast.info("Le cristal vacille...");
+            // Close the crystal popup — the combat overlay will be opened by
+            // the `crystal_combat` WS event broadcasted by the backend.
+            setShowCrystalPopup(false);
+            toast.info("⚔️ Le combat contre le cristal commence !");
           } catch (e) {
             toast.error(e.response?.data?.detail || "Erreur");
           }
@@ -6889,6 +7371,7 @@ const selectRoom = (roomName) => {
           showPowerAction={showPowerAction}
           confirmPowerAction={confirmPowerAction}
           powerActionData={powerActionData}
+          secousseEvents={secousseEvents}
         />
       )}
 
@@ -7401,70 +7884,9 @@ const selectRoom = (roomName) => {
         />
       )}
 
-      {/* Crystal Combat Overlay */}
-      {gameState?.crystal_combat && gameState.crystal_combat.phase === "active" && (() => {
-        const combat = gameState.crystal_combat;
-        const isMyTurn = combat.turn_order[combat.current_turn % combat.turn_order.length] === playerId;
-        const isParticipant = combat.participants.includes(playerId);
-        const animMap = {
-          idle:    { src: "/fight/Cristal_idle.webp",    cols: 5, rows: 6, w: 1000, h: 690, loop: true },
-          attack:  { src: "/fight/Cristal_attack.webp",  cols: 5, rows: 6, w: 1000, h: 690, loop: false },
-          hurt:    { src: "/fight/Cristal_hurt.webp",    cols: 5, rows: 2, w: 1000, h: 230, loop: false },
-          fainted: { src: "/fight/Cristal_fainted.webp", cols: 5, rows: 6, w: 1000, h: 690, loop: false },
-        };
-        const a = animMap[combat.animation] || animMap.idle;
-
-        const handleAttack = async () => {
-          try { await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId }); }
-          catch (e) { toast.error(e.response?.data?.detail || "Erreur"); }
-        };
-
-        return (
-          <div className="game-over-overlay" style={{ zIndex: 2100 }} data-testid="crystal-combat">
-            <Card style={{ maxWidth: '900px', backgroundColor: '#0a0f1f', borderColor: '#5fa8ff', border: '3px solid #5fa8ff' }}>
-              <CardHeader>
-                <CardTitle style={{ color: '#9fd0ff', textAlign: 'center' }}>
-                  💎 Combat contre le Cristal — {combat.hp}/{combat.max_hp} PV
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div style={{ textAlign: 'center', margin: '1rem 0' }}>
-                  <SpriteSheetAnimator
-                    src={a.src} frameWidth={200} frameHeight={a.h / a.rows}
-                    columns={a.cols} rows={a.rows} loop={a.loop} fps={10}
-                  />
-                </div>
-
-                <div style={{ background: '#1a1a2e', padding: '0.8rem', borderRadius: '8px', maxHeight: '120px', overflowY: 'auto', marginBottom: '1rem' }}>
-                  {combat.log.slice(-5).map((l, i) => (
-                    <div key={i} style={{ color: '#ccc', fontSize: '0.85rem' }}>{l}</div>
-                  ))}
-                </div>
-
-                <div style={{ color: '#9fd0ff', textAlign: 'center', marginBottom: '0.8rem' }}>
-                  Tour de : <strong>{combat.turn_order[combat.current_turn % combat.turn_order.length] === 'crystal'
-                    ? 'Le Cristal' : gameState.players[combat.turn_order[combat.current_turn % combat.turn_order.length]]?.name}</strong>
-                </div>
-
-                {isParticipant && isMyTurn && (
-                  <div style={{ textAlign: 'center' }}>
-                    <Button data-testid="crystal-combat-attack-btn" onClick={handleAttack}
-                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold', padding: '0.8rem 2rem' }}>
-                      ⚔️ Attaquer ({5 + (gameState.players[playerId]?.damage_bonus || 0)} dégâts)
-                    </Button>
-                  </div>
-                )}
-                {!isParticipant && (
-                  <p style={{ color: '#888', textAlign: 'center', fontStyle: 'italic' }}>Vous êtes spectateur</p>
-                )}
-                {isParticipant && !isMyTurn && (
-                  <p style={{ color: '#888', textAlign: 'center', fontStyle: 'italic' }}>En attente de votre tour...</p>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        );
-      })()}
+      {/* Crystal Combat — handled by the dedicated <CrystalCombat /> component
+          (see render block above). The previous server-driven overlay was
+          replaced by an event-broadcast model identical to GoblinCombat. */}
     </div>
   );
 };
