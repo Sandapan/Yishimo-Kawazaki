@@ -75,11 +75,19 @@ class CreateGameRequest(BaseModel):
 
 class JoinGameRequest(BaseModel):
     player_name: str
+    player_avatar: Optional[str] = None  # NEW: optionnel (sera choisi dans le lobby)
+    role: Optional[str] = None           # NEW: optionnel (sera choisi dans le lobby)
+
+class SelectRoleRequest(BaseModel):      # NEW: Lobby-first role/avatar selection
+    player_id: str
+    role: str          # "survivor" or "killer"
     player_avatar: str
-    role: str  # "survivor" or "killer"
 
 class StartGameRequest(BaseModel):
     pass
+
+class UpdateGameSettingsRequest(BaseModel):  # NEW
+    required_relics: dict  # {"relique_spherique": bool, "relique_cubique": bool, "relique_triangulaire": bool}
 
 class PlayerAction(BaseModel):
     action: str  # "select_room", "use_medikit", "use_antidote"
@@ -244,6 +252,11 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "relique_spherique": False,
             "relique_cubique": False,
             "relique_triangulaire": False,
+        },
+        "required_relics": {                 # NEW: relics enabled by the host in lobby settings
+            "relique_spherique": True,
+            "relique_cubique": True,
+            "relique_triangulaire": True,
         },
         "crystal_room": None,
         "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
@@ -869,12 +882,16 @@ def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optio
     destination = random.choice(available_rooms)
 
     # Move the event flags
+    killer_visible_flag = f"{event_type}_killer_visible"
     src[has_flag] = False
     src[discovered_flag] = False
+    src[killer_visible_flag] = False  # clear killer-only flag at source (au cas où Secousse a déjà été utilisée)
     game_state["rooms"][destination][has_flag] = True
-    # Keep the event discovered so killers (and survivors for cartographer/merchant)
-    # can immediately see its new position on the map.
-    game_state["rooms"][destination][discovered_flag] = True
+    # NEW: après Secousse, l'événement DISPARAÎT pour les survivors :
+    # ils devront le redécouvrir en fouillant la nouvelle pièce.
+    # Les killers, eux, voient la nouvelle position via un flag dédié.
+    game_state["rooms"][destination][discovered_flag] = False
+    game_state["rooms"][destination][killer_visible_flag] = True
 
     # Keep crystal_room reference in sync if applicable
     if event_type == "crystal":
@@ -2275,26 +2292,26 @@ async def join_game(session_id: str, request: JoinGameRequest):
         raise HTTPException(status_code=400, detail="Game is full")
 
     player_id = str(uuid.uuid4())
-    
-    # Get character class from avatar
-    character_class = get_avatar_class(request.player_avatar)
-    
+
+    # NEW: Lobby-first — role and avatar are optional at join time
+    character_class = get_avatar_class(request.player_avatar) if request.player_avatar else None
+
     game["players"][player_id] = {
         "id": player_id,
         "name": request.player_name,
-        "avatar": request.player_avatar,
-        "character_class": character_class,  # NEW: character class based on avatar
+        "avatar": request.player_avatar,          # peut être None (choisi dans le lobby)
+        "character_class": character_class,        # peut être None
         "is_host": False,
         "eliminated": False,
         "current_room": None,
-        "role": request.role,  # "survivor" or "killer"
-        "immobilized_next_turn": False,  # NEW: for piege power
-        "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
-        "gold": 0,  # NEW: gold accumulated by survivors
-        "hp": 36 if request.role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
-        "max_hp": 36 if request.role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
-        "initiative_bonus": 0,  # NEW: bonus d'initiative individuel
-        "damage_bonus": 0,  # NEW: bonus de dégâts individuel
+        "role": request.role,                      # peut être None (choisi dans le lobby)
+        "immobilized_next_turn": False,
+        "poisoned_countdown": 0,
+        "gold": 0,
+        "hp": 36 if request.role == "survivor" else None,
+        "max_hp": 36 if request.role == "survivor" else None,
+        "initiative_bonus": 0,
+        "damage_bonus": 0,
         "inventory": [None] * 9 if request.role == "survivor" else None
     }
 
@@ -2315,6 +2332,81 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "player_id": player_id
     }
 
+@api_router.post("/game/{session_id}/update_settings")
+async def update_game_settings(session_id: str, request: UpdateGameSettingsRequest):
+    """NEW: l'hôte modifie les paramètres de la partie (reliques requises) dans la salle d'attente."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if game["game_started"]:
+        raise HTTPException(status_code=400, detail="Game already started")
+    
+    # Valider les clés attendues
+    VALID_KEYS = ("relique_spherique", "relique_cubique", "relique_triangulaire")
+    new_settings = {}
+    for key in VALID_KEYS:
+        if key in request.required_relics:
+            new_settings[key] = bool(request.required_relics[key])
+        else:
+            new_settings[key] = game.get("required_relics", {}).get(key, True)
+    
+    # Au moins une relique doit rester requise
+    if not any(new_settings.values()):
+        raise HTTPException(status_code=400, detail="Au moins une relique doit être requise")
+    
+    game["required_relics"] = new_settings
+    
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+    
+    return {"success": True, "required_relics": new_settings}
+
+@api_router.post("/game/{session_id}/select_role")
+async def select_role(session_id: str, request: SelectRoleRequest):
+    """NEW: Lobby-first — permet à un joueur de choisir son rôle/avatar après avoir rejoint."""
+    session_id_upper = session_id.upper()
+    matching_session = next((sid for sid in game_sessions if sid.upper() == session_id_upper), None)
+
+    if not matching_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[matching_session]
+
+    if game["game_started"]:
+        raise HTTPException(status_code=400, detail="Game already started")
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if request.role not in ("survivor", "killer"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    player = game["players"][request.player_id]
+    player["role"] = request.role
+    player["avatar"] = request.player_avatar
+    player["character_class"] = get_avatar_class(request.player_avatar)
+
+    # Reset stats according to the (possibly new) role
+    if request.role == "survivor":
+        player["hp"] = 36
+        player["max_hp"] = 36
+        player["inventory"] = [None] * 9
+    else:
+        player["hp"] = None
+        player["max_hp"] = None
+        player["inventory"] = None
+
+    await broadcast_to_session(matching_session, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return {"success": True}
+
 @api_router.post("/game/{session_id}/start")
 async def start_game(session_id: str):
     """Start the game"""
@@ -2333,6 +2425,16 @@ async def start_game(session_id: str):
     if game["game_started"]:
         logger.error(f"Game already started: {session_id}")
         raise HTTPException(status_code=400, detail="Game already started")
+
+    # NEW: Lobby-first validation — tous les joueurs doivent avoir choisi un rôle
+    # (sauf en mode complot où les rôles sont assignés aléatoirement au démarrage)
+    if not game.get("conspiracy_mode", False):
+        players_without_role = [p["name"] for p in game["players"].values() if not p.get("role")]
+        if players_without_role:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Les joueurs suivants n'ont pas encore choisi leur camp : {', '.join(players_without_role)}"
+            )
 
     # NEW: Handle conspiracy mode - randomly assign roles AND classes
     if game.get("conspiracy_mode", False):
@@ -2470,27 +2572,42 @@ async def start_game(session_id: str):
     else:
         logger.warning("Could not place forge - no available rooms")
 
+    # NEW: lire les paramètres de l'hôte pour savoir quelles reliques sont requises
+    required_relics = game.get("required_relics", {
+        "relique_spherique": True,
+        "relique_cubique": True,
+        "relique_triangulaire": True,
+    })
+
     # Place the observation stone at game start (once per game)
-    stone_room = place_observation_stone(game)
-    if stone_room:
-        logger.info(f"Observation stone placed in: {stone_room}")
-        target_candidates = [r for r in game["rooms"].keys() if r != stone_room]
-        if target_candidates:
-            game["observation_stone_target_room"] = random.choice(target_candidates)
-            logger.info(f"Observation stone target room: {game['observation_stone_target_room']}")
+    # NEW: uniquement si la Relique Cubique est requise
+    if required_relics.get("relique_cubique", True):
+        stone_room = place_observation_stone(game)
+        if stone_room:
+            logger.info(f"Observation stone placed in: {stone_room}")
+            target_candidates = [r for r in game["rooms"].keys() if r != stone_room]
+            if target_candidates:
+                game["observation_stone_target_room"] = random.choice(target_candidates)
+                logger.info(f"Observation stone target room: {game['observation_stone_target_room']}")
+        else:
+            logger.warning("Could not place observation stone - no available rooms")
     else:
-        logger.warning("Could not place observation stone - no available rooms")
+        logger.info("Observation stone NOT placed (Relique Cubique disabled by host)")
 
     # Place the 3 trophy items at game start (once per game)
     placed_trophies = place_trophies(game)
     logger.info(f"Trophies placed in {len(placed_trophies)} rooms: {placed_trophies}")
 
     # Place the fleeing goblin at game start (once per game)
-    goblin_room = place_fleeing_goblin(game)
-    if goblin_room:
-        logger.info(f"Fleeing goblin placed in: {goblin_room}")
+    # NEW: uniquement si la Relique Sphérique est requise
+    if required_relics.get("relique_spherique", True):
+        goblin_room = place_fleeing_goblin(game)
+        if goblin_room:
+            logger.info(f"Fleeing goblin placed in: {goblin_room}")
+        else:
+            logger.warning("Could not place fleeing goblin - no available rooms")
     else:
-        logger.warning("Could not place fleeing goblin - no available rooms")
+        logger.info("Fleeing goblin NOT placed (Relique Sphérique disabled by host)")
 
     await broadcast_to_session(session_id, {
         "type": "game_started",
@@ -2607,6 +2724,7 @@ async def reset_game(session_id: str):
         "relique_cubique": False,
         "relique_triangulaire": False,
     }
+    # NEW: ne PAS réinitialiser required_relics ici (paramètre choisi par l'hôte avant la partie).
     game["observation_stone_placed"] = False
     game["fleeing_goblin_placed"] = False
     game["goliath_active"] = False
@@ -2783,6 +2901,10 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     # Relique Triangulaire is a unique item: refuse if already sold to any player
     if item_name == "relique_triangulaire" and game.get("relique_triangulaire_sold", False):
         raise HTTPException(status_code=400, detail="La Relique Triangulaire a déjà été vendue !")
+    
+    # NEW: bloquer l'achat si la relique n'est pas requise dans cette partie
+    if item_name == "relique_triangulaire" and not game.get("required_relics", {}).get("relique_triangulaire", True):
+        raise HTTPException(status_code=400, detail="La Relique Triangulaire n'est pas requise dans cette partie")
     
     # Check if player already has this item
     if has_item(player, item["item_type"]):
@@ -3672,8 +3794,15 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
         raise HTTPException(status_code=400, detail="Survivors only")
 
     placed = game.get("crystal_placed_relics", {})
-    if not all(placed.get(r, False) for r in ("relique_spherique", "relique_cubique", "relique_triangulaire")):
-        raise HTTPException(status_code=400, detail="Les 3 reliques manquent")
+    required = game.get("required_relics", {
+        "relique_spherique": True,
+        "relique_cubique": True,
+        "relique_triangulaire": True,
+    })
+    # NEW: ne vérifier que les reliques activées par l'hôte
+    missing = [r for r, is_required in required.items() if is_required and not placed.get(r, False)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Reliques manquantes : {', '.join(missing)}")
 
     crystal_room = game.get("crystal_room")
     pending = game.get("pending_actions", {}).get(request.player_id) or {}
@@ -4881,6 +5010,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                         if not is_trapped:
                             game["rooms"][room_name]["merchant_discovered"] = True
+                            game["rooms"][room_name]["merchant_killer_visible"] = False  # NEW: clear killer-only flag
 
                             await enqueue_player_event(session_id, player_id, "merchant", {
                                 "type": "merchant_encounter",
@@ -4894,6 +5024,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                         if not is_trapped:
                             game["rooms"][room_name]["cartographer_discovered"] = True
+                            game["rooms"][room_name]["cartographer_killer_visible"] = False  # NEW: clear killer-only flag
 
                             await enqueue_player_event(session_id, player_id, "cartographer", {
                                 "type": "cartographer_encounter",
@@ -4927,9 +5058,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             # 2) Always enqueue the crystal popup. enqueue_player_event
                             #    naturally queues it AFTER pending events (gold_found, rune_found)
                             #    so the player will see gold/rune popups first, then crystal.
+                            # NEW: message dynamique selon les reliques requises par l'hôte
+                            required_relics = game.get("required_relics", {
+                                "relique_spherique": True,
+                                "relique_cubique": True,
+                                "relique_triangulaire": True,
+                            })
+                            required_list = [r for r, req in required_relics.items() if req]
+                            required_count = len(required_list)
+                            if required_count == 3:
+                                crystal_msg = "Vous avez trouvé le cristal. Réunissez les 3 reliques pour le rendre vulnérable et gagner la partie."
+                            elif required_count == 1:
+                                relic_name = required_list[0].replace("relique_", "")
+                                crystal_msg = f"Vous avez trouvé le cristal. Réunissez la relique {relic_name} pour le rendre vulnérable et gagner la partie."
+                            else:
+                                crystal_msg = f"Vous avez trouvé le cristal. Réunissez les {required_count} reliques pour le rendre vulnérable et gagner la partie."
+                            
                             await enqueue_player_event(session_id, player_id, "crystal", {
                                 "type": "crystal_encounter",
-                                "message": "Vous avez trouvé le cristal. Réunissez les 3 reliques pour le rendre vulnérable et gagner la partie.",
+                                "message": crystal_msg,
                                 "video_path": "/event/cristal.mp4",
                                 "placed_relics": game.get("crystal_placed_relics", {}),
                             })

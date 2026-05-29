@@ -3318,9 +3318,8 @@ const Home = () => {
           navigate(`/lobby/${joinSessionId}`);
         } else {
           const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
-            player_name: playerName,
-            player_avatar: selectedAvatar.path,
-            role: selectedRole
+            player_name: playerName
+            // player_avatar et role seront choisis dans le lobby (lobby-first flow)
           });
 
           const { session_id, player_id } = response.data;
@@ -3788,6 +3787,18 @@ const Lobby = () => {
   const [gameState, setGameState] = useState(null);
   const [playerId, setPlayerId] = useState(null);
   const ws = useRef(null);
+  // NEW: Lobby-first role/avatar selection state
+  const [showRoleAvatarPicker, setShowRoleAvatarPicker] = useState(false);
+  const [lobbySelectedRole, setLobbySelectedRole] = useState('survivor');
+  const [lobbySelectedAvatar, setLobbySelectedAvatar] = useState(SURVIVOR_AVATARS[0]);
+
+  // NEW: Game settings modal (host only)
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [localRequiredRelics, setLocalRequiredRelics] = useState({
+    relique_spherique: true,
+    relique_cubique: true,
+    relique_triangulaire: true,
+  });
 
   useEffect(() => {
 const storedPlayerId = sessionStorage.getItem('player_id');
@@ -3882,6 +3893,27 @@ const storedPlayerId = sessionStorage.getItem('player_id');
     };
   }, [sessionId, navigate]);
 
+  // NEW: Lobby-first — le joueur valide son rôle/avatar depuis la salle d'attente
+  const handleSelectRoleAndClass = async () => {
+    if (!lobbySelectedAvatar) {
+      toast.error("Veuillez choisir un avatar");
+      return;
+    }
+    try {
+      await axios.post(`${API}/game/${sessionId}/select_role`, {
+        player_id: playerId,
+        role: lobbySelectedRole,
+        player_avatar: lobbySelectedAvatar.path
+      });
+      setShowRoleAvatarPicker(false);
+      toast.success("Camp choisi !");
+      // Le state_update WebSocket mettra à jour l'UI automatiquement
+    } catch (error) {
+      console.error("Error selecting role:", error);
+      toast.error(error.response?.data?.detail || "Erreur lors du choix du rôle");
+    }
+  };
+
   const startGame = async () => {
     try {
       await axios.post(`${API}/game/${sessionId}/start`);
@@ -3935,6 +3967,13 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
       toast.error("Impossible de copier. Veuillez copier manuellement : " + sessionId);
     }
   };
+
+  // NEW: sync local settings with backend state (must be before any early return)
+  useEffect(() => {
+    if (gameState?.required_relics) {
+      setLocalRequiredRelics(gameState.required_relics);
+    }
+  }, [gameState?.required_relics]);
 
   if (!gameState) {
     return <div className="loading">Chargement...</div>;
@@ -4015,7 +4054,10 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
         <div key={player.id} className="player-item" data-testid={`player-${player.id}`}>
           <div className="player-item-main">
             <span className="player-avatar">
-              <img src={player.avatar} alt={player.name} style={{ width: '3.5rem', height: '3.5rem', objectFit: 'contain' }} />
+              {player.avatar
+                ? <img src={player.avatar} alt={player.name} style={{ width: '3.5rem', height: '3.5rem', objectFit: 'contain' }} />
+                : <span style={{ width: '3.5rem', height: '3.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem' }}>❓</span>
+              }
             </span>
             <span className="player-name">{player.name}</span>
           </div>
@@ -4051,12 +4093,120 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
   </div>
 
   {/* BOUTON DÉMARRER LA PARTIE – juste en dessous de la liste */}
+
+  {/* NEW: Lobby-first — panneau de sélection de rôle pour le joueur courant */}
+  {(() => {
+    const currentPlayer = gameState.players[playerId];
+    if (!currentPlayer || currentPlayer.role || gameState.conspiracy_mode) return null;
+    const survivors = Object.values(gameState.players).filter(p => p.role === "survivor").length;
+    const killers = Object.values(gameState.players).filter(p => p.role === "killer").length;
+    const suggestion = survivors > killers + 1 ? "💡 Les Orcs ont besoin de renfort !" :
+                       killers > survivors + 1 ? "💡 Les Aventuriers ont besoin de renfort !" : null;
+
+    if (!showRoleAvatarPicker) {
+      return (
+        <div style={{
+          marginTop: '1.5rem', padding: '1rem',
+          background: 'rgba(212, 175, 55, 0.08)',
+          border: '1px solid rgba(212, 175, 55, 0.35)',
+          borderRadius: '8px', textAlign: 'center'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '0.5rem', fontSize: '0.9em', color: '#aaa' }}>
+            <span>🛡️ Aventuriers : {survivors}</span>
+            <span>🗡️ Orcs : {killers}</span>
+          </div>
+          {suggestion && <p style={{ color: '#d4af37', fontSize: '0.85em', marginBottom: '0.75rem' }}>{suggestion}</p>}
+          <button
+            onClick={() => setShowRoleAvatarPicker(true)}
+            style={{
+              padding: '0.7rem 1.5rem', fontSize: '1em', fontWeight: 'bold',
+              backgroundColor: '#8b5e3c', color: '#fff',
+              border: '2px solid #d4af37', borderRadius: '8px', cursor: 'pointer'
+            }}
+          >
+            ⚔️ Choisir mon camp et ma classe
+          </button>
+        </div>
+      );
+    }
+
+    const lobbyAvatars = lobbySelectedRole === 'survivor' ? SURVIVOR_AVATARS : KILLER_AVATARS;
+    return (
+      <div style={{
+        marginTop: '1.5rem', padding: '1rem',
+        background: 'rgba(30, 20, 10, 0.9)',
+        border: '2px solid rgba(212, 175, 55, 0.5)',
+        borderRadius: '10px'
+      }}>
+        <h3 style={{ textAlign: 'center', color: '#d4af37', marginBottom: '0.75rem', fontSize: '1.1em' }}>
+          Choisissez votre camp
+        </h3>
+        <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+          {['survivor', 'killer'].map(r => (
+            <button key={r}
+              onClick={() => {
+                setLobbySelectedRole(r);
+                setLobbySelectedAvatar(r === 'survivor' ? SURVIVOR_AVATARS[0] : KILLER_AVATARS[0]);
+              }}
+              style={{
+                flex: 1, padding: '0.6rem', fontWeight: 'bold', cursor: 'pointer',
+                borderRadius: '6px', border: `2px solid ${lobbySelectedRole === r ? '#d4af37' : '#555'}`,
+                backgroundColor: lobbySelectedRole === r ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.05)',
+                color: '#fff'
+              }}
+            >
+              {r === 'survivor' ? '🛡️ Aventurier' : '🗡️ Orc'}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'center', marginBottom: '1rem' }}>
+          {lobbyAvatars.map((av, idx) => (
+            <button key={idx}
+              onClick={() => setLobbySelectedAvatar(av)}
+              style={{
+                width: '70px', height: '70px', padding: '4px',
+                border: `2px solid ${lobbySelectedAvatar?.path === av.path ? '#d4af37' : '#555'}`,
+                borderRadius: '8px', background: 'rgba(0,0,0,0.4)', cursor: 'pointer'
+              }}
+            >
+              <img src={av.path} alt={av.class} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            </button>
+          ))}
+        </div>
+        {lobbySelectedAvatar && (
+          <p style={{ textAlign: 'center', color: '#d4af37', fontSize: '0.9em', marginBottom: '0.75rem' }}>
+            <strong>{lobbySelectedAvatar.class}</strong>
+          </p>
+        )}
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button onClick={() => setShowRoleAvatarPicker(false)}
+            style={{ flex: 1, padding: '0.6rem', background: 'transparent', color: '#aaa', border: '1px solid #555', borderRadius: '6px', cursor: 'pointer' }}>
+            Annuler
+          </button>
+          <button onClick={handleSelectRoleAndClass}
+            style={{ flex: 2, padding: '0.6rem', fontWeight: 'bold', background: '#d32f2f', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+            ✔ Confirmer
+          </button>
+        </div>
+      </div>
+    );
+  })()}
+
   {isHost && !gameState.game_started && (
     <div style={{ marginTop: '2rem', textAlign: 'center' }}>
+      <button
+        data-testid="game-settings-btn"
+        className="settings-btn"
+        onClick={() => setShowSettingsModal(true)}
+      >
+        ⚙️ Paramètres de la partie
+      </button>
       <button
         onClick={startGame}
         disabled={Object.values(gameState.players).some(p => !p.role)}
         style={{
+          display: 'block',
+          margin: '0 auto',
           padding: '1rem 2rem',
           fontSize: '1.5rem',
           backgroundColor: Object.values(gameState.players).every(p => p.role) ? '#d32f2f' : '#666',
@@ -4070,6 +4220,117 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
           ? `Démarrer la partie (${Object.keys(gameState.players).length}/8)`
           : "En attente des rôles..."}
       </button>
+    </div>
+  )}
+
+  {/* Affichage en lecture seule pour les non-hôtes */}
+  {!isHost && gameState.required_relics && (
+    <div className="settings-readonly">
+      <h4>Reliques requises pour ce donjon :</h4>
+      <ul>
+        <li>{gameState.required_relics.relique_spherique ? "✅" : "❌"} Relique Sphérique</li>
+        <li>{gameState.required_relics.relique_cubique ? "✅" : "❌"} Relique Cubique</li>
+        <li>{gameState.required_relics.relique_triangulaire ? "✅" : "❌"} Relique Triangulaire</li>
+      </ul>
+    </div>
+  )}
+
+  {/* Modal paramètres de la partie */}
+  {showSettingsModal && (
+    <div className="modal-overlay" onClick={() => setShowSettingsModal(false)}>
+      <div className="modal-content settings-modal" onClick={(e) => e.stopPropagation()}>
+        <h2>⚙️ Paramètres de la partie</h2>
+        <p className="modal-subtitle">
+          Choisissez les reliques nécessaires pour débloquer le cristal.
+          Décocher une relique réduit la difficulté.
+        </p>
+
+        <div className="relic-setting">
+          <label>
+            <input
+              type="checkbox"
+              data-testid="toggle-relique-spherique"
+              checked={localRequiredRelics.relique_spherique}
+              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_spherique: e.target.checked }))}
+            />
+            <strong>🔮 Relique Sphérique</strong>
+          </label>
+          <p className="relic-desc">
+            Vaincre le <strong>Gobelin Fuyard</strong> caché dans une salle.
+            Initiative ≥ 10 recommandée. Augmentez-la avec des runes à la forge.
+          </p>
+        </div>
+
+        <div className="relic-setting">
+          <label>
+            <input
+              type="checkbox"
+              data-testid="toggle-relique-cubique"
+              checked={localRequiredRelics.relique_cubique}
+              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_cubique: e.target.checked }))}
+            />
+            <strong>🧊 Relique Cubique</strong>
+          </label>
+          <p className="relic-desc">
+            Trouver la <strong>Pierre d'Observation</strong> et l'apporter à sa salle de destination.
+            Attention : la pierre révèle votre position dès qu'elle est en inventaire.
+          </p>
+        </div>
+
+        <div className="relic-setting">
+          <label>
+            <input
+              type="checkbox"
+              data-testid="toggle-relique-triangulaire"
+              checked={localRequiredRelics.relique_triangulaire}
+              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_triangulaire: e.target.checked }))}
+            />
+            <strong>🔺 Relique Triangulaire</strong>
+          </label>
+          <p className="relic-desc">
+            Achat unique auprès du <strong>Marchand</strong> pour 1000 pièces d'or.
+            Revendez des objets précieux pour réunir la somme.
+          </p>
+        </div>
+
+        {!Object.values(localRequiredRelics).some(v => v) && (
+          <p className="warning-text">⚠️ Au moins une relique doit être requise</p>
+        )}
+
+        <div className="modal-actions">
+          <button
+            data-testid="cancel-settings-btn"
+            onClick={() => {
+              setLocalRequiredRelics(gameState.required_relics || localRequiredRelics);
+              setShowSettingsModal(false);
+            }}
+          >
+            Annuler
+          </button>
+          <button
+            data-testid="save-settings-btn"
+            disabled={!Object.values(localRequiredRelics).some(v => v)}
+            onClick={async () => {
+              try {
+                await axios.post(`${API}/game/${sessionId}/update_settings`, {
+                  required_relics: localRequiredRelics,
+                });
+                setShowSettingsModal(false);
+              } catch (err) {
+                const detail = err.response?.data?.detail;
+                const msg = Array.isArray(detail)
+                  ? detail.map(d => d.msg || JSON.stringify(d)).join(", ")
+                  : typeof detail === "string"
+                  ? detail
+                  : "Erreur lors de la sauvegarde";
+                toast.error(msg);
+              }
+            }}
+          >
+            Enregistrer
+          </button>
+        </div>
+      </div>
     </div>
   )}
 </CardContent>
@@ -7539,7 +7800,7 @@ const selectRoom = (roomName) => {
                           {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
                           {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
                           {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
-                          {room.merchant_discovered && (
+                          {(room.merchant_discovered || (room.merchant_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-player-avatar" title="Marchand">
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
@@ -7550,7 +7811,7 @@ const selectRoom = (roomName) => {
                                <img src="/avatars/cristal.png" alt="Cristal" style={{ width: '1.4rem', height: '1.4rem', objectFit: 'contain' }} />
                              </span>
                           ) : null}
-                          {room.cartographer_discovered && (
+                          {(room.cartographer_discovered || (room.cartographer_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-player-avatar" title="Cartographe">
                                  <img src="/avatars/Cartographe.png" alt="Cartographe" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
