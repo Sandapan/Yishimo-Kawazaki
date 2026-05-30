@@ -240,7 +240,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "conspiracy_mode": False,  # NEW: conspiracy mode flag
         "active_powers": {},  # NEW: {power_name: {used_by: [player_ids], data: {...}}}
         "pending_power_selections": {},  # NEW: {player_id: {selected_power: str, options: [str], action_data: {...}}}
-        "rooms_searched_this_key": [],  # NEW: track rooms searched since last key found (for vision power)
+
         "quests": [],  # NEW: list of all quests to complete
         "active_quest": None,  # NEW: current active quest {class: "Mage", room: "Les Cryptes"}
         "completed_quests": [],  # NEW: list of completed quest classes
@@ -720,7 +720,7 @@ async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
 POWERS = {
     "vision": {
         "name": "👁️ Vision",
-        "description": "Révèle en surbrillance les pièces que les aventuriers n'ont pas encore fouillé depuis l'obtention de la précédente clef",
+        "description": "Révèle la position des aventuriers qui se trouvent dans une salle contenant un évènement déjà découvert par les orcs (forge, marchand, cartographe, cristal).",
         "icon": "Vision.mp4",
         "requires_action": False
     },
@@ -912,9 +912,10 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
     if game_state and game_state.get("goliath_active", False):
         excluded.append("goliath")
 
-    # Exclude secousse if no event has been discovered yet by/visible to killers
+    # Exclude secousse and vision if no event has been discovered yet by/visible to killers
     if game_state and not get_discovered_events(game_state):
         excluded.append("secousse")
+        excluded.append("vision")
 
     available = [p for p in POWERS.keys() if p not in excluded]
     return random.sample(available, min(3, len(available)))
@@ -1009,68 +1010,47 @@ async def apply_powers(session_id: str):
         
         # Apply power-specific logic
         if power_name == "vision":
-            # Highlight rooms not searched since last key - distributed across floors
-            rooms_searched = game.get("rooms_searched_this_key", [])
-            
-            # Group unsearched rooms by floor for better distribution
-            unsearched_by_floor = {
-                "basement": [],
-                "ground_floor": [],
-                "upper_floor": []
-            }
-            
+            # Révèle les aventuriers dans des salles avec évènements découverts par les killers
+            vision_revealed = {}
+
+            # Construire la liste des salles avec évènements connus des killers
+            discovered_event_rooms = set()
             for room_name, room_data in game["rooms"].items():
-                if room_name not in rooms_searched:
-                    floor = room_data.get("floor", "ground_floor")
-                    unsearched_by_floor[floor].append(room_name)
-            
-            # Calculate total number to highlight (50% rounded down)
-            total_unsearched = sum(len(rooms) for rooms in unsearched_by_floor.values())
-            num_to_highlight = total_unsearched // 2
-            
-            # Select rooms with better distribution across floors
-            rooms_to_highlight = []
-            if num_to_highlight > 0 and total_unsearched > 0:
-                # Create a list of all unsearched rooms with their floor info
-                all_unsearched_with_floor = []
-                for floor, rooms in unsearched_by_floor.items():
-                    for room in rooms:
-                        all_unsearched_with_floor.append((room, floor))
-                
-                # Shuffle to randomize
-                random.shuffle(all_unsearched_with_floor)
-                
-                # Use round-robin selection to distribute across floors
-                selected_count = 0
-                floor_indices = {floor: 0 for floor in unsearched_by_floor.keys()}
-                
-                # Keep cycling through floors until we have enough selections
-                while selected_count < num_to_highlight:
-                    # Shuffle floor order for each round to add more randomness
-                    floors = [f for f in unsearched_by_floor.keys() if unsearched_by_floor[f]]
-                    random.shuffle(floors)
-                    
-                    for floor in floors:
-                        if selected_count >= num_to_highlight:
-                            break
-                        
-                        floor_rooms = unsearched_by_floor[floor]
-                        if floor_indices[floor] < len(floor_rooms):
-                            # Select next room from this floor
-                            room = floor_rooms[floor_indices[floor]]
-                            rooms_to_highlight.append(room)
-                            floor_indices[floor] += 1
-                            selected_count += 1
-                    
-                    # Safety check to avoid infinite loop
-                    if all(floor_indices[f] >= len(unsearched_by_floor[f]) for f in floors):
-                        break
-                
-                # Highlight selected rooms
-                for room_name in rooms_to_highlight:
-                    game["rooms"][room_name]["highlighted"] = True
-            
-            event_msg = f"👁️ {player['name']} utilise Vision !"
+                if (room_data.get("has_merchant") and (room_data.get("merchant_discovered") or room_data.get("merchant_killer_visible"))) or \
+                   (room_data.get("has_cartographer") and (room_data.get("cartographer_discovered") or room_data.get("cartographer_killer_visible"))) or \
+                   (room_data.get("has_forge") and (room_data.get("forge_discovered") or room_data.get("forge_killer_visible"))) or \
+                   room_data.get("has_crystal_event"):
+                    discovered_event_rooms.add(room_name)
+
+            # Trouver les survivants dans ces salles (depuis pending_actions = salle choisie ce tour)
+            for survivor_id, action in game.get("pending_actions", {}).items():
+                survivor = game["players"].get(survivor_id)
+                if not survivor or survivor["role"] != "survivor" or survivor["eliminated"]:
+                    continue
+                target_room = action.get("room")
+                if target_room and target_room in discovered_event_rooms:
+                    vision_revealed[survivor_id] = target_room
+
+            game["active_powers"]["vision"] = {
+                "used_by": [player_id],
+                "data": {"vision_revealed": vision_revealed}
+            }
+
+            # Injecter dans patrol_revealed_survivors pour l'affichage côté killers (même mécanique que Patrouille)
+            if "patrol_revealed_survivors" not in game:
+                game["patrol_revealed_survivors"] = {}
+            game["patrol_revealed_survivors"].update(vision_revealed)
+
+            if vision_revealed:
+                names = ", ".join(
+                    game["players"][sid]["name"]
+                    for sid in vision_revealed
+                    if sid in game["players"]
+                )
+                event_msg = f"👁️ Vision : {player['name']} localise des aventuriers dans des salles connues — {names} !"
+            else:
+                event_msg = f"👁️ Vision : {player['name']} scrute les salles connues mais aucun aventurier ne s'y trouve."
+
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
         
@@ -1297,7 +1277,7 @@ def filter_game_state(game_state: dict, player_role: str, player_id: Optional[st
     """
     Filter game state based on player role for visibility rules:
     - Survivors see: other survivors' positions + eliminated players
-    - Killers see: other killers' positions + eliminated players + highlighted rooms (Vision power)
+    - Killers see: other killers' positions + eliminated players
     - pending_actions are filtered to only show actions from same role
     - Blizzard: Players immobilized see all other rooms as locked (red cross)
     - Eboulement: Survivors see rooms on other floors as locked (red cross)
@@ -1610,10 +1590,6 @@ async def process_turn(session_id: str):
             event_msg = f"🔒 La pièce {room_name} est barricadée pour ce tour."
             game["events"].append({"message": event_msg, "type": "room_locked"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-    
-    # Clear vision highlights from rooms
-    for room_name, room_data in game["rooms"].items():
-        room_data["highlighted"] = False
     
     # NOTE: Traps are NOT cleared here anymore!
     # They need to persist until AFTER survivors make their selection in the next turn
@@ -2714,7 +2690,6 @@ async def reset_game(session_id: str):
     game["completed_quests"] = []
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
-    game["rooms_searched_this_key"] = []
     game["crystal_spawned"] = False
     game["crystal_destroyed"] = False
     game["merchant_placed"] = False
@@ -4741,12 +4716,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
                             continue
                     
-                    # Track rooms searched for Vision power
-                    if player["role"] == "survivor" and room_name not in game.get("rooms_searched_this_key", []):
-                        if "rooms_searched_this_key" not in game:
-                            game["rooms_searched_this_key"] = []
-                        game["rooms_searched_this_key"].append(room_name)
-                    
                     # NOUVEAU : Découvrir la pièce pour les survivants (fog of war)
                     newly_discovered = False
                     if player["role"] == "survivor" and room_name not in game.get("discovered_rooms", []):
@@ -4831,7 +4800,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                                     # Re-place the lucky search for this class in a new room so it stays continuous
                                     place_quest(game, quest_class)
-                                    game["rooms_searched_this_key"] = []
                             else:
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"

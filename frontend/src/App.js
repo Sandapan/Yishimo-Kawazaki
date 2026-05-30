@@ -7195,6 +7195,8 @@ const selectRoom = (roomName) => {
       })()}
 
       {/* NEW: Crystal Popup */}
+📋 FICHIER : /app/frontend/src/App.js (lignes 7198-7274)
+❌ AVANT :
       {showCrystalPopup && (() => {
         const placed = gameState?.crystal_placed_relics || {};
         const allPlaced = placed.relique_spherique && placed.relique_cubique && placed.relique_triangulaire;
@@ -7241,6 +7243,92 @@ const selectRoom = (roomName) => {
 
                 <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
                   {['relique_spherique','relique_cubique','relique_triangulaire'].map(r => (
+                    <span key={r} style={{
+                      padding: '0.3rem 0.6rem', borderRadius: '6px',
+                      backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
+                      color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
+                    }}>
+                      {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
+                    </span>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
+                    style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
+                    Placer une relique
+                  </Button>
+                  {allPlaced && (
+                    <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
+                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>
+                      ⚔️ Attaquer le cristal
+                    </Button>
+                  )}
+                  <Button data-testid="crystal-close-btn" onClick={closeCrystal}
+                    style={{ backgroundColor: '#555', color: '#fff' }}>
+                    Fermer
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
+✅ APRÈS :
+      {showCrystalPopup && (() => {
+        const placed = gameState?.crystal_placed_relics || {};
+        const requiredRelics = gameState?.required_relics || {
+          relique_spherique: true,
+          relique_cubique: true,
+          relique_triangulaire: true
+        };
+        
+        // Only check the relics that are required
+        const requiredRelicsList = Object.keys(requiredRelics).filter(r => requiredRelics[r]);
+        const allPlaced = requiredRelicsList.every(r => placed[r]);
+
+        const closeCrystal = async () => {
+          setShowCrystalPopup(false);
+          try { await axios.post(`${API}/game/${sessionId}/crystal_close`, { player_id: playerId }); } catch (e) {}
+          notifyEventCompleted();
+        };
+        const placeRelic = async () => {
+          try {
+            const res = await axios.post(`${API}/game/${sessionId}/crystal_place_relic`, { player_id: playerId });
+            toast.success(res.data.message);
+          } catch (e) {
+            toast.error(e.response?.data?.detail || "Erreur");
+          }
+        };
+        const attackCrystal = async () => {
+          try {
+            await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
+            // Close the crystal popup — the combat overlay will be opened by
+            // the `crystal_combat` WS event broadcasted by the backend.
+            setShowCrystalPopup(false);
+            toast.info("⚔️ Le combat contre le cristal commence !");
+          } catch (e) {
+            toast.error(e.response?.data?.detail || "Erreur");
+          }
+        };
+
+        return (
+          <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="crystal-popup">
+            <Card style={{ maxWidth: '700px', backgroundColor: '#0d1a26', borderColor: '#5fa8ff', border: '3px solid #5fa8ff' }}>
+              <CardHeader>
+                <CardTitle style={{ color: '#9fd0ff', textAlign: 'center' }}>
+                  💎 Le Cristal
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {crystalVideoPath && (
+                  <video src={crystalVideoPath} autoPlay loop muted
+                    style={{ width: '100%', maxHeight: '380px', borderRadius: '8px', marginBottom: '1rem' }} />
+                )}
+                <p style={{ color: '#fff', textAlign: 'center', marginBottom: '1rem' }}>{crystalMessage}</p>
+
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
+                  {requiredRelicsList.map(r => (
                     <span key={r} style={{
                       padding: '0.3rem 0.6rem', borderRadius: '6px',
                       backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
@@ -7986,7 +8074,6 @@ const selectRoom = (roomName) => {
                   const eliminatedInRoom = room.eliminated_players || [];
                   
                   // Check for power effects
-                  const isHighlighted = room.highlighted && currentPlayerRole === "killer";
                   const isTrapped = room.trapped && currentPlayerRole === "killer";
                   const isTrapTriggered = room.trap_triggered && currentPlayerRole === "survivor";
                   const isPoisoned = room.poisoned_turns_remaining > 0 && currentPlayerRole === "killer";
@@ -8012,7 +8099,7 @@ const selectRoom = (roomName) => {
                           selectedRoom === room.name ? 'selected' :
                           isPreSelected ? 'pre-selected' :
                           room.locked ? 'locked' : ''
-                         } ${isHighlighted ? 'room-highlighted' : ''} ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''} ${isAnimatingDiscovery ? 'room-discovery-animation' : ''}`}
+                         } ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''} ${isAnimatingDiscovery ? 'room-discovery-animation' : ''}`}
                         onClick={() => selectRoom(room.name)}
                         disabled={isEliminated || hasSelectedRoom || room.locked}
                       >
