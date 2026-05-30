@@ -88,6 +88,7 @@ class StartGameRequest(BaseModel):
 
 class UpdateGameSettingsRequest(BaseModel):  # NEW
     required_relics: dict  # {"relique_spherique": bool, "relique_cubique": bool, "relique_triangulaire": bool}
+    dungeon_size: int = 12  # 6, 9 ou 12 pièces (2, 3 ou 4 par étage)
 
 class PlayerAction(BaseModel):
     action: str  # "select_room", "use_medikit", "use_antidote"
@@ -140,60 +141,60 @@ def generate_short_code() -> str:
         if code not in game_sessions:
             return code
 
-def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role: str) -> dict:
-    """Initialize a new game state"""
-    # NOUVEAU : Générer aléatoirement l'ordre des pièces
+def generate_rooms_state() -> dict:
+    """Génère aléatoirement l'état initial des 12 pièces du donjon (3 étages × 4 pièces).
+    Utilisée à la création de partie et à chaque reset (puisque dungeon_size peut changer)."""
     all_rooms_names = []
     for floor, rooms in ROOMS_CONFIG.items():
         all_rooms_names.extend(rooms)
-    
+
     # Mélanger aléatoirement les noms des pièces
     random.shuffle(all_rooms_names)
-    
+
     # Répartir les pièces mélangées sur les 3 étages (4 par étage)
     # IMPORTANT : Utiliser les clés internes (basement, ground_floor, upper_floor)
     # et NON les noms d'affichage français, car le frontend et les autres
     # fonctions backend utilisent ces clés internes.
     floors = ["upper_floor", "ground_floor", "basement"]
-    all_rooms = []
-    for i, room_name in enumerate(all_rooms_names):
-        floor_index = i // 4  # 0-3 = upper_floor, 4-7 = ground_floor, 8-11 = basement
-        floor = floors[floor_index]
-        all_rooms.append({"name": room_name, "floor": floor})
-
-    # Initialize rooms WITHOUT any keys or medikit
     rooms_state = {}
-    for room_info in all_rooms:
-        room_name = room_info["name"]
+    for i, room_name in enumerate(all_rooms_names):
+        floor = floors[i // 4]  # 0-3 = upper_floor, 4-7 = ground_floor, 8-11 = basement
         rooms_state[room_name] = {
-            "floor": room_info["floor"],
+            "floor": floor,
             "has_key": False,
             "has_medikit": False,
             "locked": False,
             "eliminated_players": [],
-            "trapped": False,  # NEW: for piege power
-            "highlighted": False,  # NEW: for vision power
-            "has_quest": False,  # NEW: for quest system
-            "quest_class": None,  # NEW: class required for the quest
-            "poisoned_turns_remaining": 0,  # NEW: for toxine power (0-3 turns)
-            "has_mimic": False,  # NEW: for mimic power
-            "has_crystal": False,  # NEW: for crystal system
-            "teleportation_trap": False,  # NEW: for teleportation power (entrance trap ➡️🌀)
-            "teleportation_exit": False,  # NEW: for teleportation power (exit portal 🌀➡️)
-            "teleportation_target_room": None,  # NEW: destination room for teleportation
-            "has_merchant": False,  # NEW: for merchant system
-            "merchant_discovered": False,  # NOUVEAU: pour afficher l'avatar du marchand aux survivants
-            "has_cartographer": False,  # NEW: for cartographer system
-            "cartographer_discovered": False,  # NEW: to display cartographer icon to survivors
-            "has_patrol": False,  # NEW: for patrouille power - goblin patrol indicator
-            "has_forge": False,  # NEW: for forge event
-            "forge_discovered": False,  # NEW: to display forge icon to survivors after discovery
-            "has_crystal_event": False,        # NEW: crystal event (replaces old crystal system)
-            "crystal_discovered": False,        # NEW: revealed to survivors after first discovery
-            "has_observation_stone": False,  # NEW: for observation stone quest item
-            "has_trophy": None,  # NEW: trophy type ("chaussons"/"couronne"/"culotte") or None
-            "has_fleeing_goblin": False,  # NEW: for fleeing goblin event
+            "trapped": False,
+            "highlighted": False,
+            "has_quest": False,
+            "quest_class": None,
+            "poisoned_turns_remaining": 0,
+            "has_mimic": False,
+            "has_crystal": False,
+            "teleportation_trap": False,
+            "teleportation_exit": False,
+            "teleportation_target_room": None,
+            "has_merchant": False,
+            "merchant_discovered": False,
+            "has_cartographer": False,
+            "cartographer_discovered": False,
+            "has_patrol": False,
+            "has_forge": False,
+            "forge_discovered": False,
+            "has_crystal_event": False,
+            "crystal_discovered": False,
+            "has_observation_stone": False,
+            "has_trophy": None,
+            "has_fleeing_goblin": False,
         }
+    return rooms_state
+
+
+def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role: str) -> dict:
+    """Initialize a new game state"""
+    # Générer aléatoirement l'état initial des 12 pièces
+    rooms_state = generate_rooms_state()
 
     # Get character class from avatar
     character_class = get_avatar_class(host_avatar)
@@ -258,6 +259,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "relique_cubique": True,
             "relique_triangulaire": True,
         },
+        "dungeon_size": 12,                  # NEW: 6, 9 ou 12 pièces (paramètre lobby)
         "crystal_room": None,
         "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
         "crystal_room": None,                # NEW
@@ -2357,13 +2359,19 @@ async def update_game_settings(session_id: str, request: UpdateGameSettingsReque
         raise HTTPException(status_code=400, detail="Au moins une relique doit être requise")
     
     game["required_relics"] = new_settings
-    
+
+    # Valider et mettre à jour dungeon_size
+    new_dungeon_size = request.dungeon_size
+    if new_dungeon_size not in (6, 9, 12):
+        raise HTTPException(status_code=400, detail="dungeon_size doit être 6, 9 ou 12")
+    game["dungeon_size"] = new_dungeon_size
+
     await broadcast_to_session(session_id, {
         "type": "state_update",
         "game": game
     })
-    
-    return {"success": True, "required_relics": new_settings}
+
+    return {"success": True, "required_relics": new_settings, "dungeon_size": new_dungeon_size}
 
 @api_router.post("/game/{session_id}/select_role")
 async def select_role(session_id: str, request: SelectRoleRequest):
@@ -2523,9 +2531,27 @@ async def start_game(session_id: str):
     game["phase"] = "survivor_selection"  # Start with survivors
     game["turn"] = 1
     game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
-    
+
     # GOLIATH: Initialize kill flag for the game
     game["goliath_killed_this_turn"] = False
+
+    # Réduire le donjon selon dungeon_size (12 → 9 → 6 pièces)
+    dungeon_size = game.get("dungeon_size", 12)
+    if dungeon_size < 12:
+        rooms_per_floor = dungeon_size // 3  # 9→3 par étage, 6→2 par étage
+        floor_counts: dict = {}
+        rooms_to_keep: dict = {}
+        for room_name, room_data in game["rooms"].items():
+            floor = room_data["floor"]
+            floor_counts.setdefault(floor, 0)
+            if floor_counts[floor] < rooms_per_floor:
+                rooms_to_keep[room_name] = room_data
+                floor_counts[floor] += 1
+        game["rooms"] = rooms_to_keep
+        logger.info(
+            f"Donjon réduit à {dungeon_size} pièces "
+            f"({rooms_per_floor} par étage) : {list(rooms_to_keep.keys())}"
+        )
 
     # Generate quests for all survivors
     game["quests"] = generate_quests(survivors)
@@ -2671,33 +2697,9 @@ async def reset_game(session_id: str):
         
         logger.info(f"Reset player {player['name']} (id={player_id}), is_host={is_host}, hp={player.get('hp')}")
     
-    # Reset rooms
-    for room_name, room_data in game["rooms"].items():
-        room_data["has_key"] = False
-        room_data["has_medikit"] = False
-        room_data["locked"] = False
-        room_data["eliminated_players"] = []
-        room_data["trapped"] = False
-        room_data["highlighted"] = False
-        room_data.pop("trap_triggered", None)
-        room_data["poisoned_turns_remaining"] = 0
-        room_data["has_mimic"] = False
-        room_data["has_quest"] = False
-        room_data["quest_class"] = None
-        room_data["has_crystal"] = False
-        room_data["teleportation_trap"] = False
-        room_data["teleportation_exit"] = False
-        room_data["teleportation_target_room"] = None
-        room_data["has_merchant"] = False
-        room_data["has_forge"] = False
-        room_data["forge_discovered"] = False
-        room_data["has_crystal_event"] = False
-        room_data["crystal_discovered"] = False
-        room_data["merchant_discovered"] = False
-        room_data["has_observation_stone"] = False
-        room_data["has_trophy"] = None
-        room_data["has_fleeing_goblin"] = False
-    
+    # Régénérer les 12 pièces (dungeon_size peut avoir changé entre parties)
+    game["rooms"] = generate_rooms_state()
+
     # Reset game state
     game["keys_collected"] = 0
     game["keys_needed"] = 1
@@ -2724,7 +2726,8 @@ async def reset_game(session_id: str):
         "relique_cubique": False,
         "relique_triangulaire": False,
     }
-    # NEW: ne PAS réinitialiser required_relics ici (paramètre choisi par l'hôte avant la partie).
+    # NOTE : ne PAS réinitialiser required_relics ni dungeon_size ici
+    # (paramètres choisis par l'hôte dans le lobby — persistent entre les parties).
     game["observation_stone_placed"] = False
     game["fleeing_goblin_placed"] = False
     game["goliath_active"] = False

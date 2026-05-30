@@ -4020,6 +4020,7 @@ const Lobby = () => {
     relique_cubique: true,
     relique_triangulaire: true,
   });
+  const [localDungeonSize, setLocalDungeonSize] = useState(12);
 
   useEffect(() => {
 const storedPlayerId = sessionStorage.getItem('player_id');
@@ -4194,7 +4195,10 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
     if (gameState?.required_relics) {
       setLocalRequiredRelics(gameState.required_relics);
     }
-  }, [gameState?.required_relics]);
+    if (gameState?.dungeon_size !== undefined) {
+      setLocalDungeonSize(gameState.dungeon_size);
+    }
+  }, [gameState?.required_relics, gameState?.dungeon_size]);
 
   if (!gameState) {
     return <div className="loading">Chargement...</div>;
@@ -4432,6 +4436,7 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
         <li>{gameState.required_relics.relique_cubique ? "✅" : "❌"} Relique Cubique</li>
         <li>{gameState.required_relics.relique_triangulaire ? "✅" : "❌"} Relique Triangulaire</li>
       </ul>
+      <p><strong>Taille du donjon :</strong> {gameState.dungeon_size || 12} pièces</p>
     </div>
   )}
 
@@ -4493,6 +4498,25 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
           </p>
         </div>
 
+        {/* Sélecteur taille du donjon */}
+        <div className="relic-setting">
+          <label htmlFor="dungeon-size-select"><strong>Taille du donjon</strong></label>
+          <p className="relic-desc">
+            Nombre de pièces disponibles (3 étages). Réduit la taille de la carte.
+          </p>
+          <select
+            id="dungeon-size-select"
+            data-testid="dungeon-size-select"
+            value={localDungeonSize}
+            onChange={(e) => setLocalDungeonSize(Number(e.target.value))}
+            style={{ marginTop: '8px', padding: '6px 10px', borderRadius: '6px', width: '100%' }}
+          >
+            <option value={12}>12 pièces (4 par étage) — par défaut</option>
+            <option value={9}>9 pièces (3 par étage)</option>
+            <option value={6}>6 pièces (2 par étage)</option>
+          </select>
+        </div>
+
         {!Object.values(localRequiredRelics).some(v => v) && (
           <p className="warning-text">⚠️ Au moins une relique doit être requise</p>
         )}
@@ -4502,6 +4526,7 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
             data-testid="cancel-settings-btn"
             onClick={() => {
               setLocalRequiredRelics(gameState.required_relics || localRequiredRelics);
+              setLocalDungeonSize(gameState.dungeon_size || 12);
               setShowSettingsModal(false);
             }}
           >
@@ -4514,6 +4539,7 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
               try {
                 await axios.post(`${API}/game/${sessionId}/update_settings`, {
                   required_relics: localRequiredRelics,
+                  dungeon_size: localDungeonSize,
                 });
                 setShowSettingsModal(false);
               } catch (err) {
