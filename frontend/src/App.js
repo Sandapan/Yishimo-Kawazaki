@@ -3201,6 +3201,8 @@ const Home = () => {
   // Step: "menu" = create/join choice, "configure" = player setup
   const [step, setStep] = useState("menu");
   const [mode, setMode] = useState(null); // "create" or "join"
+  const [showNamePrompt, setShowNamePrompt] = useState(false); // Pour l'écran de demande de pseudo
+  const [tempJoinName, setTempJoinName] = useState(""); // Nom temporaire avant validation
   
   const [playerName, setPlayerName] = useState("");
   const [selectedRole, setSelectedRole] = useState("survivor");
@@ -3211,6 +3213,10 @@ const Home = () => {
   const [isJoining, setIsJoining] = useState(false);
   const [createdSessionId, setCreatedSessionId] = useState(null);
   const [showJoinInput, setShowJoinInput] = useState(false);
+  // True when the user comes back from the lobby to change their role/class.
+  // In that case the configure form must still expose role + avatar selection
+  // even though the mode is "join".
+  const [isUpdatingPlayer, setIsUpdatingPlayer] = useState(false);
   const navigate = useNavigate();
 
   const availableAvatars = selectedRole === "survivor" ? SURVIVOR_AVATARS : KILLER_AVATARS;
@@ -3227,6 +3233,7 @@ const Home = () => {
         setPlayerName(currentPlayerName);
       }
       sessionStorage.setItem('is_updating_player', 'true');
+      setIsUpdatingPlayer(true);
       toast.info("Choisissez un nouveau rôle et avatar pour rejoindre le lobby");
       sessionStorage.removeItem('returning_from_lobby');
       sessionStorage.removeItem('pending_session_id');
@@ -3250,20 +3257,51 @@ const Home = () => {
     setStep("configure");
   };
 
-  // Step 1: Join → validate session exists, then go to configure
+  // Step 1: Join → validate session exists, then show name prompt screen
   const handleJoinClick = async () => {
     if (!joinSessionId.trim()) {
       toast.error("Veuillez entrer un code de session");
       return;
     }
     
-    // Verify session exists
+    // Vérifier que la session existe
     try {
       await axios.get(`${API}/game/${joinSessionId}/state`);
-      setMode("join");
-      setStep("configure");
+      // Session valide, afficher l'écran de saisie du pseudo
+      setShowNamePrompt(true);
     } catch (error) {
       toast.error("Session introuvable. Vérifiez le code.");
+    }
+  };
+
+  // Nouvelle fonction pour confirmer le pseudo et rejoindre
+  const confirmJoinWithName = async () => {
+    if (!tempJoinName.trim()) {
+      toast.error("Veuillez entrer un pseudo");
+      return;
+    }
+    
+    setIsJoining(true);
+    try {
+      // Rejoindre sans avatar ni rôle (seront choisis dans le lobby)
+      const response = await axios.post(`${API}/game/${joinSessionId}/join`, {
+        player_name: tempJoinName.trim()
+      });
+
+      const { session_id, player_id } = response.data;
+      sessionStorage.setItem('player_id', player_id);
+      sessionStorage.setItem('player_name', tempJoinName.trim());
+      
+      // Réinitialiser et naviguer vers le lobby
+      setShowNamePrompt(false);
+      setTempJoinName("");
+      navigate(`/lobby/${session_id}`);
+      toast.success("Bienvenue ! Choisissez votre camp et votre classe.");
+    } catch (error) {
+      console.error("Error joining game:", error);
+      toast.error("Erreur : impossible de rejoindre la partie");
+    } finally {
+      setIsJoining(false);
     }
   };
 
@@ -3335,6 +3373,157 @@ const Home = () => {
       }
     }
   };
+
+  // ==================== NAME PROMPT SCREEN (for joining) ====================
+  if (showNamePrompt) {
+    return (
+      <div className="home-container" data-testid="join-name-prompt">
+        <div className="home-content">
+          <h1 className="game-title">VOTRE NOM</h1>
+
+          {/* Session code display */}
+          <div style={{
+            textAlign: 'center',
+            marginBottom: '2rem',
+            padding: '1rem',
+            background: 'rgba(212, 175, 55, 0.1)',
+            borderRadius: '8px',
+            border: '1px solid rgba(212, 175, 55, 0.3)'
+          }}>
+            <p style={{ color: '#d4af37', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+              Rejoindre la session
+            </p>
+            <p style={{ 
+              color: '#fff', 
+              fontSize: '1.5rem', 
+              fontWeight: 'bold',
+              letterSpacing: '0.1em'
+            }}>
+              {joinSessionId}
+            </p>
+          </div>
+
+          {/* Name input */}
+          <div style={{ marginBottom: '2rem' }}>
+            <label htmlFor="join-name-input" style={{
+              display: 'block',
+              marginBottom: '0.8rem',
+              fontSize: '1.1rem',
+              color: '#d4af37',
+              textAlign: 'center',
+              fontFamily: 'MedievalSharp, serif'
+            }}>
+              Entrez votre pseudo
+            </label>
+            <input
+              id="join-name-input"
+              type="text"
+              value={tempJoinName}
+              onChange={(e) => setTempJoinName(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter' && tempJoinName.trim() && !isJoining) {
+                  confirmJoinWithName();
+                }
+              }}
+              placeholder="Votre pseudo..."
+              maxLength={20}
+              autoFocus
+              style={{
+                width: '100%',
+                maxWidth: '400px',
+                padding: '1rem 1.5rem',
+                fontSize: '1.1rem',
+                background: 'rgba(30, 20, 10, 0.6)',
+                border: '2px solid rgba(212, 175, 55, 0.5)',
+                borderRadius: '8px',
+                color: '#fff',
+                outline: 'none',
+                transition: 'all 0.3s ease',
+                fontFamily: 'MedievalSharp, serif'
+              }}
+              onFocus={(e) => {
+                e.target.style.borderColor = '#d4af37';
+                e.target.style.boxShadow = '0 0 20px rgba(212, 175, 55, 0.3)';
+              }}
+              onBlur={(e) => {
+                e.target.style.borderColor = 'rgba(212, 175, 55, 0.5)';
+                e.target.style.boxShadow = 'none';
+              }}
+            />
+          </div>
+
+          {/* Buttons */}
+          <div style={{ 
+            display: 'flex', 
+            gap: '1rem', 
+            justifyContent: 'center',
+            flexWrap: 'wrap'
+          }}>
+            <Button
+              onClick={confirmJoinWithName}
+              disabled={!tempJoinName.trim() || isJoining}
+              className="menu-button primary"
+              style={{
+                minWidth: '200px',
+                padding: '1rem 2rem',
+                fontSize: '1.1rem',
+                background: tempJoinName.trim() && !isJoining
+                  ? 'linear-gradient(135deg, #d4af37 0%, #aa8929 100%)'
+                  : 'rgba(100, 100, 100, 0.3)',
+                border: '2px solid',
+                borderColor: tempJoinName.trim() && !isJoining ? '#d4af37' : '#555',
+                color: tempJoinName.trim() && !isJoining ? '#1a0f0a' : '#666',
+                cursor: tempJoinName.trim() && !isJoining ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                borderRadius: '8px',
+                transition: 'all 0.3s ease',
+                textTransform: 'uppercase',
+                fontFamily: 'MedievalSharp, serif'
+              }}
+            >
+              {isJoining ? '⏳ Connexion...' : '⚔️ Rejoindre le donjon'}
+            </Button>
+
+            <Button
+              onClick={() => {
+                setShowNamePrompt(false);
+                setTempJoinName("");
+                setSelectedRole(null);
+              }}
+              disabled={isJoining}
+              className="menu-button secondary"
+              style={{
+                minWidth: '150px',
+                padding: '1rem 2rem',
+                fontSize: '1.1rem',
+                background: 'rgba(100, 30, 30, 0.5)',
+                border: '2px solid rgba(200, 50, 50, 0.5)',
+                color: '#ff6b6b',
+                cursor: isJoining ? 'not-allowed' : 'pointer',
+                fontWeight: 'bold',
+                borderRadius: '8px',
+                transition: 'all 0.3s ease',
+                textTransform: 'uppercase',
+                fontFamily: 'MedievalSharp, serif'
+              }}
+            >
+              ❌ Annuler
+            </Button>
+          </div>
+
+          {/* Helper text */}
+          <p style={{
+            marginTop: '2rem',
+            fontSize: '0.9rem',
+            color: '#999',
+            textAlign: 'center'
+          }}>
+            Vous pourrez choisir votre camp et votre classe dans le lobby
+          </p>
+        </div>
+      </div>
+    );
+  }
 
    // ==================== MENU STEP ====================
   if (step === "menu") {
@@ -3589,6 +3778,12 @@ const Home = () => {
               />
             </div>
 
+            {/* Role + Avatar selection — shown when CREATING a session or
+                when an existing player came back from the lobby to update
+                their role/class. In a fresh JOIN flow the form only asks for
+                the pseudo; the player picks role + class inside the lobby. */}
+            {(mode === "create" || isUpdatingPlayer) && (
+            <>
             {/* Role Selection */}
             <div>
               <label className="input-label" style={{ textAlign: 'center', display: 'block' }}>Choisissez votre rôle</label>
@@ -3721,6 +3916,8 @@ const Home = () => {
                 </div>
               )}
             </div>
+            </>
+            )}
 
             {/* Conspiracy Mode - Only for create mode */}
             {mode === "create" && (
@@ -3763,16 +3960,40 @@ const Home = () => {
         </Card>
 
         {/* Confirm Button */}
-        <div style={{ marginTop: '1.5rem' }}>
+        <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.75rem' }}>
           <Button
             data-testid="confirm-config-btn"
             onClick={confirmConfiguration}
             disabled={isCreating || isJoining}
             className="primary-btn"
-            style={{ width: '100%', padding: '1rem', fontSize: '1.1em' }}
+            style={{ flex: 1, padding: '1rem', fontSize: '1.1em' }}
           >
-            {isCreating ? "Création..." : isJoining ? "Connexion..." : 
+            {isCreating ? "Création..." : isJoining ? "Connexion..." :
               mode === "create" ? "⚔️ Créer et entrer dans le donjon" : "🚪 Rejoindre le donjon"}
+          </Button>
+          <Button
+            data-testid="cancel-config-btn"
+            onClick={() => {
+              // Clear any "updating" flags so the home menu shows fresh state
+              sessionStorage.removeItem('is_updating_player');
+              sessionStorage.removeItem('updating_player_id');
+              setIsUpdatingPlayer(false);
+              setStep("menu");
+              setMode(null);
+              setJoinSessionId("");
+            }}
+            disabled={isCreating || isJoining}
+            className="secondary-btn"
+            style={{
+              flex: '0 0 auto',
+              padding: '1rem 1.5rem',
+              fontSize: '1.05em',
+              background: 'rgba(60, 60, 60, 0.7)',
+              border: '2px solid #555',
+              color: '#eee'
+            }}
+          >
+            Annuler
           </Button>
         </div>
       </div>
@@ -4104,30 +4325,9 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
                        killers > survivors + 1 ? "💡 Les Aventuriers ont besoin de renfort !" : null;
 
     if (!showRoleAvatarPicker) {
-      return (
-        <div style={{
-          marginTop: '1.5rem', padding: '1rem',
-          background: 'rgba(212, 175, 55, 0.08)',
-          border: '1px solid rgba(212, 175, 55, 0.35)',
-          borderRadius: '8px', textAlign: 'center'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '0.5rem', fontSize: '0.9em', color: '#aaa' }}>
-            <span>🛡️ Aventuriers : {survivors}</span>
-            <span>🗡️ Orcs : {killers}</span>
-          </div>
-          {suggestion && <p style={{ color: '#d4af37', fontSize: '0.85em', marginBottom: '0.75rem' }}>{suggestion}</p>}
-          <button
-            onClick={() => setShowRoleAvatarPicker(true)}
-            style={{
-              padding: '0.7rem 1.5rem', fontSize: '1em', fontWeight: 'bold',
-              backgroundColor: '#8b5e3c', color: '#fff',
-              border: '2px solid #d4af37', borderRadius: '8px', cursor: 'pointer'
-            }}
-          >
-            ⚔️ Choisir mon camp et ma classe
-          </button>
-        </div>
-      );
+      // Ouvrir automatiquement si le joueur n'a pas encore de rôle
+      setShowRoleAvatarPicker(true);
+      return null;
     }
 
     const lobbyAvatars = lobbySelectedRole === 'survivor' ? SURVIVOR_AVATARS : KILLER_AVATARS;
