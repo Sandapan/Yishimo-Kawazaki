@@ -790,19 +790,19 @@ body {
 
 /* Background images for each room */
 .room-card[data-room-name="L'Armurerie"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Armurerie.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/LArmurerie.png');
 }
 
 .room-card[data-room-name="La Chambre Cérémoniale"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Chambre Cérémoniale.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/La Chambre Cérémoniale.png');
 }
 
 .room-card[data-room-name="La Cour Intérieure"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Cour Intérieure.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/La Cour Intérieure.png');
 }
 
 .room-card[data-room-name="Le Hall Principal"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Hall Principal.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Le Hall Principal.png');
 }
 
 .room-card[data-room-name="La Cave"] {
@@ -810,7 +810,7 @@ body {
 }
 
 .room-card[data-room-name="Le Laboratoire"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Laboratoire.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Le Laboratoire.png');
 }
 
 .room-card[data-room-name="Les Cachots"] {
@@ -822,19 +822,19 @@ body {
 }
 
 .room-card[data-room-name="La Salle des Miroirs"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Salle des Miroirs.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/La Salle des Miroirs.png');
 }
 
 .room-card[data-room-name="La Salle des Ruines"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Salle des Ruines.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/La Salle des Ruines.png');
 }
 
 .room-card[data-room-name="La Salle du Banquet"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Salle du Banquet.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/La Salle du Banquet.png');
 }
 
 .room-card[data-room-name="Le Sanctuaire"] {
-  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Sanctuaire.png');
+  background-image: linear-gradient(145deg, rgba(30, 20, 15, 0.65), rgba(50, 35, 25, 0.65)), url('../public/pieces/Le Sanctuaire.png');
 }
 
 .room-card[data-room-name="undiscovered"] {
@@ -1489,27 +1489,27 @@ body {
 
 /* Background images for each mini room button */
 .room-mini-btn[data-room-name="L'Armurerie"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Armurerie.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/LArmurerie.png');
 }
 
 .room-mini-btn[data-room-name="La Chambre Cérémoniale"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Chambre Cérémoniale.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Chambre Cérémoniale.png');
 }
 
 .room-mini-btn[data-room-name="La Cour Intérieure"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Cour Intérieure.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Cour Intérieure.png');
 }
 
 .room-mini-btn[data-room-name="Le Hall Principal"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Hall Principal.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Le Hall Principal.png');
 }
 
 .room-mini-btn[data-room-name="La Cave"] {
   background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Cave.png');
 }
 
-.room-mini-btn[data-room-name="Laboratoire"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Laboratoire.png');
+.room-mini-btn[data-room-name="Le Laboratoire"] {
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Le Laboratoire.png');
 }
 
 .room-mini-btn[data-room-name="Les Cachots"] {
@@ -1520,20 +1520,20 @@ body {
   background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Les Cryptes.png');
 }
 
-.room-mini-btn[data-room-name="Salle des Miroirs"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Salle des Miroirs.png');
+.room-mini-btn[data-room-name="La Salle des Miroirs"] {
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Salle des Miroirs.png');
 }
 
 .room-mini-btn[data-room-name="La Salle des Ruines"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Salle des Ruines.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Salle des Ruines.png');
 }
 
 .room-mini-btn[data-room-name="La Salle du Banquet"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Salle du Banquet.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/La Salle du Banquet.png');
 }
 
 .room-mini-btn[data-room-name="Le Sanctuaire"] {
-  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Sanctuaire.png');
+  background-image: linear-gradient(rgba(30, 20, 15, 0.7), rgba(30, 20, 15, 0.7)), url('../public/pieces/Le Sanctuaire.png');
 }
 
 .room-mini-btn:hover:not(:disabled) {
@@ -3198,4 +3198,42 @@ body {
 }
 .settings-readonly li {
   padding: 0.3rem 0;
+}
+
+/* ========== MALÉDICTION — Cursed item effects ========== */
+
+/* Pulsing purple glow on cursed inventory slot */
+@keyframes cursedPulse {
+  0%, 100% {
+    box-shadow: 0 0 6px 2px rgba(124, 58, 237, 0.6), inset 0 0 8px rgba(124, 58, 237, 0.2);
+    border-color: rgba(124, 58, 237, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 18px 6px rgba(168, 85, 247, 0.9), inset 0 0 16px rgba(168, 85, 247, 0.35);
+    border-color: rgba(196, 181, 253, 1);
+  }
+}
+
+/* Small skull icon bobbing on cursed item */
+@keyframes cursedSkullBob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-3px) scale(1.15); }
+}
+
+/* Cursed slot base style */
+.cursed-slot {
+  border: 2px solid rgba(124, 58, 237, 0.8) !important;
+  border-radius: 8px;
+  background: rgba(76, 29, 149, 0.15) !important;
+  animation: cursedPulse 1.5s ease-in-out infinite !important;
+}
+
+/* Purple smoke overlay effect on cursed image */
+.cursed-slot img {
+  animation: cursedImageShimmer 2s ease-in-out infinite;
+}
+
+@keyframes cursedImageShimmer {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.78; }
 }

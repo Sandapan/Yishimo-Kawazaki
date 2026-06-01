@@ -2202,6 +2202,7 @@ const InventoryHUD = ({ player, onClick }) => {
   
   const inventory = player.inventory || [];
   const filledSlots = inventory.filter(slot => slot !== null).length;
+  const hasCursedItem = inventory.some(slot => slot && slot.cursed);
   
   return (
     <button
@@ -2211,11 +2212,11 @@ const InventoryHUD = ({ player, onClick }) => {
         position: 'fixed',
         top: '20px',
         right: '20px',
-        backgroundColor: 'rgba(42, 31, 23, 0.95)',
-        border: '2px solid #d4af37',
+        backgroundColor: hasCursedItem ? 'rgba(30, 10, 50, 0.97)' : 'rgba(42, 31, 23, 0.95)',
+        border: hasCursedItem ? '2px solid #7c3aed' : '2px solid #d4af37',
         borderRadius: '8px',
         padding: '12px 20px',
-        color: '#d4af37',
+        color: hasCursedItem ? '#c4b5fd' : '#d4af37',
         fontSize: '18px',
         fontWeight: 'bold',
         cursor: 'pointer',
@@ -2224,18 +2225,17 @@ const InventoryHUD = ({ player, onClick }) => {
         alignItems: 'center',
         gap: '8px',
         transition: 'all 0.2s ease',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)'
+        boxShadow: hasCursedItem ? '0 0 12px 3px rgba(124,58,237,0.5)' : '0 4px 12px rgba(0, 0, 0, 0.5)',
+        animation: hasCursedItem ? 'cursedPulse 1.5s ease-in-out infinite' : 'none',
       }}
       onMouseEnter={(e) => {
-        e.target.style.backgroundColor = 'rgba(52, 41, 33, 0.95)';
-        e.target.style.transform = 'scale(1.05)';
+        e.currentTarget.style.transform = 'scale(1.05)';
       }}
       onMouseLeave={(e) => {
-        e.target.style.backgroundColor = 'rgba(42, 31, 23, 0.95)';
-        e.target.style.transform = 'scale(1)';
+        e.currentTarget.style.transform = 'scale(1)';
       }}
     >
-      🎒 {filledSlots}/9
+      {hasCursedItem ? '🔮' : '🎒'} {filledSlots}/9{hasCursedItem ? ' ⚠️' : ''}
     </button>
   );
 };
@@ -2665,10 +2665,11 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           const item = inventory[index];
           const isHighlighted = deleteMode && item;
           const isSelectedForDeletion = pendingDeleteSlot && pendingDeleteSlot.index === index;
+          const isCursed = item && item.cursed;
           return (
             <div
               key={index}
-              className="inventory-slot"
+              className={`inventory-slot${isCursed ? ' cursed-slot' : ''}`}
               data-testid={`inventory-slot-${index}`}
               onClick={() => handleSlotClick(index, item)}
               style={{
@@ -2683,25 +2684,43 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
                 cursor: item ? 'pointer' : 'default',
                 outline: isSelectedForDeletion
                   ? '3px solid #fbbf24'
-                  : (isHighlighted ? '2px dashed #fca5a5' : 'none'),
+                  : (isCursed ? '2px solid #7c3aed' : (isHighlighted ? '2px dashed #fca5a5' : 'none')),
                 outlineOffset: '-2px',
                 borderRadius: '8px',
-                animation: isHighlighted && !isSelectedForDeletion ? 'pulse 1.2s ease-in-out infinite' : 'none',
+                animation: isCursed
+                  ? 'cursedPulse 1.5s ease-in-out infinite'
+                  : (isHighlighted && !isSelectedForDeletion ? 'pulse 1.2s ease-in-out infinite' : 'none'),
               }}
-              title={item ? ITEM_NAMES[item.type] || item.type : ''}
+              title={isCursed ? `⚠️ MAUDIT — ${ITEM_NAMES[item.type] || item.type}` : (item ? ITEM_NAMES[item.type] || item.type : '')}
             >
               {item && (
-                <img
-                  src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'}
-                  alt={ITEM_NAMES[item.type] || item.type}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5))',
-                    pointerEvents: 'none',
-                  }}
-                />              )}
+                <>
+                  <img
+                    src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'}
+                    alt={ITEM_NAMES[item.type] || item.type}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      filter: isCursed
+                        ? 'drop-shadow(0 0 8px #7c3aed) drop-shadow(0 0 16px #a855f7) sepia(0.3) hue-rotate(240deg)'
+                        : 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5))',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                  {isCursed && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '-6px',
+                      right: '-6px',
+                      fontSize: '14px',
+                      lineHeight: 1,
+                      pointerEvents: 'none',
+                      animation: 'cursedSkullBob 1s ease-in-out infinite',
+                    }}>💀</div>
+                  )}
+                </>
+              )}
             </div>
           );
         })}
@@ -4578,7 +4597,9 @@ const PowerSelectionOverlay = ({
   showPowerAction, 
   confirmPowerAction,
   powerActionData,
-  secousseEvents = []
+  secousseEvents = [],
+  maledictionSurvivors = [],
+  cursePowerItem
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
   const [selectedFloor, setSelectedFloor] = useState(null);
@@ -4587,6 +4608,9 @@ const PowerSelectionOverlay = ({
   // NEW: Secousse - currently picked event and confirmation modal toggle
   const [secousseSelected, setSecousseSelected] = useState(null);
   const [secousseConfirming, setSecousseConfirming] = useState(false);
+  // NEW: Malédiction - selected target player + item
+  const [maledictionTarget, setMaledictionTarget] = useState(null); // {player_id, player_name, slot_index, item_type}
+  const [maledictionConfirming, setMaledictionConfirming] = useState(false);
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
@@ -4794,6 +4818,104 @@ const PowerSelectionOverlay = ({
                   backgroundColor: secousseSelected ? '#8b5cf6' : '#555',
                   marginTop: '1.5rem'
                 }}
+              >
+                Suivant
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    // Malédiction: select a cursable item in a survivor's inventory
+    if (actionType === "select_cursed_item") {
+      // Confirmation step
+      if (maledictionConfirming && maledictionTarget) {
+        return (
+          <div className="power-selection-overlay" data-testid="malediction-confirm-overlay">
+            <Card className="power-action-card">
+              <CardHeader>
+                <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-center mb-4" style={{ fontSize: '1.1rem', lineHeight: '1.5' }}>
+                  Maudire <strong>{ITEM_NAMES[maledictionTarget.item_type] || maledictionTarget.item_type}</strong> de <strong>{maledictionTarget.player_name}</strong> ?
+                  <br/><span style={{ opacity: 0.8, fontSize: '0.95rem' }}>S'il ne s'en débarrasse pas avant la fin du tour, tous les survivants perdront 10 PV.</span>
+                </p>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+                  <Button
+                    data-testid="malediction-confirm-btn"
+                    onClick={() => {
+                      cursePowerItem(maledictionTarget.player_id, maledictionTarget.slot_index);
+                      setMaledictionConfirming(false);
+                    }}
+                    style={{ backgroundColor: '#7c3aed', padding: '0.75rem 1.5rem' }}
+                  >
+                    🔮 Maudire
+                  </Button>
+                  <Button
+                    data-testid="malediction-cancel-btn"
+                    onClick={() => { setMaledictionConfirming(false); setMaledictionTarget(null); }}
+                    style={{ backgroundColor: '#555', padding: '0.75rem 1.5rem' }}
+                  >
+                    Annuler
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      // Item selection list
+      return (
+        <div className="power-selection-overlay" data-testid="malediction-select-overlay">
+          <Card className="power-action-card">
+            <CardHeader>
+              <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
+              <CardDescription className="text-center">{selectedPowerDef.description}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {maledictionSurvivors.length === 0 ? (
+                <p className="text-center mb-4">Aucun aventurier ne possède d'objet maudissable.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+                  {maledictionSurvivors.map((survivor) => (
+                    <div key={survivor.player_id} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '10px', padding: '0.75rem 1rem', border: '1px solid rgba(124,58,237,0.4)' }}>
+                      <div style={{ fontWeight: 'bold', color: '#c4b5fd', marginBottom: '0.5rem' }}>🧙 {survivor.player_name}</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {survivor.items.map((item) => {
+                          const isSel = maledictionTarget && maledictionTarget.player_id === survivor.player_id && maledictionTarget.slot_index === item.slot_index;
+                          return (
+                            <button
+                              key={`${survivor.player_id}-${item.slot_index}`}
+                              data-testid={`malediction-item-${survivor.player_id}-${item.slot_index}`}
+                              onClick={() => setMaledictionTarget({ player_id: survivor.player_id, player_name: survivor.player_name, slot_index: item.slot_index, item_type: item.type })}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                                backgroundColor: isSel ? '#7c3aed' : '#3b2a5a',
+                                border: isSel ? '2px solid #c4b5fd' : '2px solid transparent',
+                                borderRadius: '8px', padding: '6px 12px',
+                                color: '#fff', cursor: 'pointer', fontSize: '0.95rem', transition: 'all 0.2s'
+                              }}
+                            >
+                              <img src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'} alt={ITEM_NAMES[item.type] || item.type} style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+                              {ITEM_NAMES[item.type] || item.type}
+                              {isSel && ' ✓'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button
+                data-testid="malediction-next-btn"
+                onClick={() => setMaledictionConfirming(true)}
+                disabled={!maledictionTarget}
+                className="w-full mt-4"
+                style={{ backgroundColor: maledictionTarget ? '#7c3aed' : '#555', marginTop: '1.5rem' }}
               >
                 Suivant
               </Button>
@@ -5269,6 +5391,18 @@ const prevPendingActionsRef = useRef('{}');
 
   // NEW: Forge popup + interface state
   const [showForgePopup, setShowForgePopup] = useState(false);
+  // Resurrection stele
+  const [showResurrectionPopup, setShowResurrectionPopup] = useState(false);
+  const [resurrectionMessage, setResurrectionMessage] = useState("");
+  const [resurrectionVideoPath, setResurrectionVideoPath] = useState("");
+  const [resurrectionEliminatedSurvivors, setResurrectionEliminatedSurvivors] = useState([]);
+  const [resurrectionSteleRoom, setResurrectionSteleRoom] = useState(null);
+  const [showRevivalConfirm, setShowRevivalConfirm] = useState(false);
+  const [revivalTargetId, setRevivalTargetId] = useState(null);
+  // Revived popup (for the player who was revived)
+  const [showYouWereRevivedPopup, setShowYouWereRevivedPopup] = useState(false);
+  const [youWereRevivedMessage, setYouWereRevivedMessage] = useState("");
+  const [youWereRevivedVideoPath, setYouWereRevivedVideoPath] = useState("");
   const [forgeVideoPath, setForgeVideoPath] = useState("");
   const [showForgeInterface, setShowForgeInterface] = useState(false);
   const [forgeAnimation, setForgeAnimation] = useState(null); // null | "forging" | "success" | "failure"
@@ -5313,6 +5447,15 @@ const prevPendingActionsRef = useRef('{}');
   const [showObservationStoneAlert, setShowObservationStoneAlert] = useState(false);
   const [observationStoneMessage, setObservationStoneMessage] = useState("");
   const [observationStoneVideoPath, setObservationStoneVideoPath] = useState("");
+
+  // NEW: Malédiction states
+  const [showMaledictionWarningPopup, setShowMaledictionWarningPopup] = useState(false);
+  const [maledictionWarningMessage, setMaledictionWarningMessage] = useState("");
+  const [maledictionVideoPath, setMaledictionVideoPath] = useState("");
+  const [showMaledictionPenaltyPopup, setShowMaledictionPenaltyPopup] = useState(false);
+  const [maledictionPenaltyMessage, setMaledictionPenaltyMessage] = useState("");
+  // Malediction killer selection state (passed to PowerSelectionOverlay)
+  const [maledictionSurvivors, setMaledictionSurvivors] = useState([]);
 
   // NEW: Active traps section state
   const [expandedTrap, setExpandedTrap] = useState(null);
@@ -5373,6 +5516,15 @@ const prevPendingActionsRef = useRef('{}');
 
       if (data.type === "state_update") {
         setGameState(data.game);
+
+        // Sync hasSelectedRoom from pending_actions — handles the case where
+        // this player was just revived mid-turn and already has a forced pending_action.
+        if (data.game && data.game.phase === "survivor_selection") {
+          const myAction = data.game.pending_actions?.[storedPlayerId];
+          if (myAction) {
+            setHasSelectedRoom(true);
+          }
+        }
 
         // Gérer l'événement de combat
         if (data.type === "state_update" && data.game) {
@@ -5498,6 +5650,16 @@ const prevPendingActionsRef = useRef('{}');
         setShowCartographerDialog(true);
         setCartographerDialogStep('initial');
         setCartographerVideoPath(data.video_path || '/event/Cartographe.mp4');
+      } else if (data.type === "resurrection_stele_encounter") {
+        setResurrectionMessage(data.message || "");
+        setResurrectionVideoPath(data.video_path || "/event/Revive.mp4");
+        setResurrectionEliminatedSurvivors(data.eliminated_survivors || []);
+        setResurrectionSteleRoom(data.stele_room || null);
+        setShowResurrectionPopup(true);
+      } else if (data.type === "you_were_revived") {
+        setYouWereRevivedMessage(data.message || "");
+        setYouWereRevivedVideoPath(data.video_path || "/event/Revive.mp4");
+        setShowYouWereRevivedPopup(true);
       } else if (data.type === "room_discovered") {
         // NEW: Show room discovery animation
         const roomName = data.room_name;
@@ -5712,6 +5874,12 @@ const prevPendingActionsRef = useRef('{}');
         } else {
           setSecousseEvents([]);
         }
+        // NEW: store cursable survivors list for Malédiction
+        if (data.power === "malediction" && Array.isArray(data.cursable_survivors)) {
+          setMaledictionSurvivors(data.cursable_survivors);
+        } else if (data.power !== "malediction") {
+          setMaledictionSurvivors([]);
+        }
         setShowPowerAction(true);
       } else if (data.type === "game_reset") {
         // Redirect all players back to lobby when game is reset
@@ -5719,6 +5887,18 @@ const prevPendingActionsRef = useRef('{}');
         setTimeout(() => {
           window.location.href = `/lobby/${sessionId}`;
         }, 1500); // Small delay to show the toast message
+      } else if (data.type === "malediction_warning") {
+        // Show curse warning popup for survivors
+        setMaledictionWarningMessage(data.message);
+        setMaledictionVideoPath(data.video_path || "/powers/Malediction.mp4");
+        setShowMaledictionWarningPopup(true);
+        // No auto-hide — user must click to close
+      } else if (data.type === "malediction_penalty") {
+        // Show curse penalty popup for survivors
+        setMaledictionPenaltyMessage(data.message);
+        setMaledictionVideoPath(data.video_path || "/powers/Malediction.mp4");
+        setShowMaledictionPenaltyPopup(true);
+        // No auto-hide — user must click to close
       } else if (data.type === "error") {
         toast.error(data.message);
         // Reset hasSelectedRoom to allow player to try again after error
@@ -5908,6 +6088,42 @@ const selectRoom = (roomName) => {
     // NEW: Show "Fouillez une pièce" popup for this orc after confirming power action
     setShowOrcSearchPopup(true);
     // Auto-hide after 3 seconds
+    setTimeout(() => {
+      setShowOrcSearchPopup(false);
+    }, 3000);
+  };
+
+  // Resurrection stele: revive an eliminated survivor
+  const useResurrectionStele = async (targetId) => {
+    if (!gameState || !targetId) return;
+    try {
+      await axios.post(`${API}/game/${sessionId}/use_resurrection_stele`, {
+        player_id: playerId,
+        target_id: targetId,
+      });
+      setShowResurrectionPopup(false);
+      setShowRevivalConfirm(false);
+      setRevivalTargetId(null);
+      notifyEventCompleted();
+    } catch (err) {
+      console.error("Resurrection failed:", err);
+      toast.error("Impossible de réanimer ce joueur.");
+    }
+  };
+
+  // NEW: Curse item function for Malédiction power
+  const cursePowerItem = (targetPlayerId, slotIndex) => {
+    if (!gameState || gameState.phase !== "killer_power_selection") return;
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "curse_item",
+        target_player_id: targetPlayerId,
+        slot_index: slotIndex
+      }));
+    }
+    // Show "Fouillez une pièce" popup
+    setShowPowerAction(false);
+    setShowOrcSearchPopup(true);
     setTimeout(() => {
       setShowOrcSearchPopup(false);
     }, 3000);
@@ -7195,8 +7411,6 @@ const selectRoom = (roomName) => {
       })()}
 
       {/* NEW: Crystal Popup */}
-📋 FICHIER : /app/frontend/src/App.js (lignes 7198-7274)
-❌ AVANT :
       {showCrystalPopup && (() => {
         const placed = gameState?.crystal_placed_relics || {};
         const allPlaced = placed.relique_spherique && placed.relique_cubique && placed.relique_triangulaire;
@@ -7274,7 +7488,6 @@ const selectRoom = (roomName) => {
           </div>
         );
       })()}
-✅ APRÈS :
       {showCrystalPopup && (() => {
         const placed = gameState?.crystal_placed_relics || {};
         const requiredRelics = gameState?.required_relics || {
@@ -7797,6 +8010,186 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* Resurrection Stele Encounter Popup */}
+      {showResurrectionPopup && (
+        <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="resurrection-popup">
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#0f1f0f', borderColor: '#22c55e' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ color: '#86efac', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                🪦 Stèle de Résurrection
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {resurrectionVideoPath && (
+                <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
+                  <source src={resurrectionVideoPath} type="video/mp4" />
+                </video>
+              )}
+              <p style={{ textAlign: 'center', fontSize: '1.05rem', color: '#dcfce7', marginBottom: '1.5rem', lineHeight: '1.6' }}>
+                {resurrectionMessage}
+              </p>
+              {!showRevivalConfirm ? (
+                <>
+                  {resurrectionEliminatedSurvivors.length === 0 ? (
+                    <p style={{ textAlign: 'center', color: '#a0aec0' }}>Aucun coéquipier à réanimer.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                      {resurrectionEliminatedSurvivors.map((s) => (
+                        <button
+                          key={s.id}
+                          data-testid={`revive-target-${s.id}`}
+                          onClick={() => { setRevivalTargetId(s.id); setShowRevivalConfirm(true); }}
+                          style={{
+                            backgroundColor: '#14532d', border: '2px solid #22c55e', borderRadius: '10px',
+                            padding: '0.75rem 1.5rem', color: '#dcfce7', fontSize: '1rem', cursor: 'pointer',
+                            transition: 'background 0.2s',
+                          }}
+                        >
+                          💀 Réanimer <strong>{s.name}</strong>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <Button
+                    data-testid="resurrection-skip-btn"
+                    onClick={() => { setShowResurrectionPopup(false); notifyEventCompleted(); }}
+                    className="w-full"
+                    style={{ backgroundColor: '#555', marginTop: '0.5rem' }}
+                  >
+                    Passer
+                  </Button>
+                </>
+              ) : (
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ color: '#fef9c3', marginBottom: '1.5rem', fontSize: '1.05rem' }}>
+                    Vous allez sacrifier <strong>¼ de vos PV</strong> pour réanimer{' '}
+                    <strong>{resurrectionEliminatedSurvivors.find(s => s.id === revivalTargetId)?.name}</strong>.
+                    <br/>Confirmer ?
+                  </p>
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                    <Button
+                      data-testid="revive-confirm-btn"
+                      onClick={() => useResurrectionStele(revivalTargetId)}
+                      style={{ backgroundColor: '#15803d', padding: '0.75rem 2rem', fontWeight: 'bold' }}
+                    >
+                      ✅ Confirmer
+                    </Button>
+                    <Button
+                      data-testid="revive-cancel-btn"
+                      onClick={() => { setShowRevivalConfirm(false); setRevivalTargetId(null); }}
+                      style={{ backgroundColor: '#555', padding: '0.75rem 2rem' }}
+                    >
+                      Annuler
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* You Were Revived Popup */}
+      {showYouWereRevivedPopup && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 2000 }}
+          onClick={() => setShowYouWereRevivedPopup(false)}
+          data-testid="you-were-revived-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#0f1f0f', borderColor: '#22c55e' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ color: '#86efac', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                🌟 Vous avez été réanimé !
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {youWereRevivedVideoPath && (
+                <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
+                  <source src={youWereRevivedVideoPath} type="video/mp4" />
+                </video>
+              )}
+              <p style={{ textAlign: 'center', fontSize: '1.1rem', color: '#dcfce7', lineHeight: '1.6' }}>
+                {youWereRevivedMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9rem', color: '#a0aec0', textAlign: 'center' }}>
+                Vous rejoignez la partie au prochain tour — Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Malédiction Warning Popup (for survivors) */}
+      {showMaledictionWarningPopup && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1002 }}
+          onClick={() => setShowMaledictionWarningPopup(false)}
+          data-testid="malediction-warning-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a0a2e', borderColor: '#7c3aed' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#c4b5fd', animation: 'cursedPulse 1.5s ease-in-out infinite' }}>
+                🔮 MALÉDICTION !
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {maledictionVideoPath && (
+                <video
+                  autoPlay
+                  muted
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                >
+                  <source src={maledictionVideoPath} type="video/mp4" />
+                </video>
+              )}
+              <p style={{ fontSize: '1.05em', textAlign: 'center', color: '#e9d5ff', lineHeight: '1.6' }}>
+                {maledictionWarningMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* NEW: Malédiction Penalty Popup (for survivors) */}
+      {showMaledictionPenaltyPopup && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1002 }}
+          onClick={() => setShowMaledictionPenaltyPopup(false)}
+          data-testid="malediction-penalty-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#2a0a0a', borderColor: '#dc2626' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#fca5a5', animation: 'bloodPulse 1.5s ease-in-out infinite' }}>
+                💀 MALÉDICTION — PUNITION !
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {maledictionVideoPath && (
+                <video
+                  autoPlay
+                  muted
+                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+                >
+                  <source src={maledictionVideoPath} type="video/mp4" />
+                </video>
+              )}
+              <p style={{ fontSize: '1.05em', textAlign: 'center', color: '#fca5a5', lineHeight: '1.6' }}>
+                {maledictionPenaltyMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Goliath Death Popup */}
       {showGoliathDeathPopup && (
         <div 
@@ -7947,6 +8340,8 @@ const selectRoom = (roomName) => {
           confirmPowerAction={confirmPowerAction}
           powerActionData={powerActionData}
           secousseEvents={secousseEvents}
+          maledictionSurvivors={maledictionSurvivors}
+          cursePowerItem={cursePowerItem}
         />
       )}
 
@@ -8113,7 +8508,7 @@ const selectRoom = (roomName) => {
                           {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
                           {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
                           {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
-                          {(room.merchant_discovered || (room.merchant_killer_visible && currentPlayerRole === "killer")) && (
+                          {((room.merchant_discovered && currentPlayerRole === "survivor") || (room.merchant_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-player-avatar" title="Marchand">
                                  <img src="/avatars/Merchant.png" alt="Marchand" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
@@ -8124,13 +8519,18 @@ const selectRoom = (roomName) => {
                                <img src="/avatars/cristal.png" alt="Cristal" style={{ width: '1.4rem', height: '1.4rem', objectFit: 'contain' }} />
                              </span>
                           ) : null}
-                          {(room.cartographer_discovered || (room.cartographer_killer_visible && currentPlayerRole === "killer")) && (
+                          {((room.cartographer_discovered && currentPlayerRole === "survivor") || (room.cartographer_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-player-avatar" title="Cartographe">
                                  <img src="/avatars/Cartographe.png" alt="Cartographe" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
                           )}
-                          {room.forge_discovered && currentPlayerRole === "survivor" && (
+                          {((room.forge_discovered && currentPlayerRole === "survivor") || (room.forge_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-icon" title="Forge" style={{ fontSize: '1.1rem' }}>🔥</span>
+                          )}
+                          {((room.resurrection_stele_discovered && currentPlayerRole === "survivor") || (room.resurrection_stele_killer_visible && currentPlayerRole === "killer")) && (
+                             <span className="room-player-avatar" title="Stèle de résurrection">
+                               <img src="/avatars/revive.png" alt="Stèle de résurrection" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
+                             </span>
                           )}
                           {hasPatrol && (
                              <span className="room-player-avatar" title="Gobelin de Patrouille">
@@ -8433,11 +8833,16 @@ const selectRoom = (roomName) => {
         />
       )}
 
-      {/* Pierre Quete Pickup Modal */}
+      {/* Pierre Quete Pickup Modal — n'apparaît pas si un combat est en cours */}
       {gameState.pending_events && 
        gameState.pending_events[playerId] && 
        typeof gameState.pending_events[playerId] === 'object' &&
-       gameState.pending_events[playerId].type === 'pierre_quete_found' && (
+       gameState.pending_events[playerId].type === 'pierre_quete_found' &&
+       !showMimicCombat &&
+       !showMultiplayerCombat &&
+       !showGoblinCombat &&
+       !showCrystalCombat &&
+       !showFleeingGoblinCombat && (
         <PierreQueteModal
           event={gameState.pending_events[playerId]}
           playerId={playerId}

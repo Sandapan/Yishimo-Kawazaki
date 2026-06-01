@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -185,6 +185,8 @@ def generate_rooms_state() -> dict:
             "has_crystal_event": False,
             "crystal_discovered": False,
             "has_observation_stone": False,
+            "has_resurrection_stele": False,
+            "resurrection_stele_discovered": False,
             "has_trophy": None,
             "has_fleeing_goblin": False,
         }
@@ -548,6 +550,33 @@ FORGE_RUNE_BONUSES = {
 # Forge: success rate per attempt index. 5+ attempts -> 30% (fixed)
 FORGE_SUCCESS_RATES = [1.0, 0.8, 0.6, 0.4, 0.3]
 
+def place_resurrection_stele(game_state: dict) -> Optional[str]:
+    """Place the resurrection stele in a random available room at game start (once per game)."""
+    rooms = list(game_state["rooms"].keys())
+    random.shuffle(rooms)
+    candidates = []
+    for room_name in rooms:
+        room_data = game_state["rooms"][room_name]
+        if (
+            not room_data.get("locked", False)
+            and not room_data.get("has_quest", False)
+            and not room_data.get("has_merchant", False)
+            and not room_data.get("has_cartographer", False)
+            and not room_data.get("has_forge", False)
+            and not room_data.get("has_observation_stone", False)
+            and not room_data.get("has_crystal_event", False)
+            and not room_data.get("has_crystal", False)
+            and not room_data.get("has_trophy")
+            and not room_data.get("has_resurrection_stele", False)
+        ):
+            candidates.append(room_name)
+    if not candidates:
+        return None
+    selected = random.choice(candidates)
+    game_state["rooms"][selected]["has_resurrection_stele"] = True
+    return selected
+
+
 def get_forge_success_rate(attempts: int) -> float:
     """Return success probability for the given attempt number (attempts already done so far)."""
     idx = min(attempts, len(FORGE_SUCCESS_RATES) - 1)
@@ -720,7 +749,7 @@ async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
 POWERS = {
     "vision": {
         "name": "👁️ Vision",
-        "description": "Révèle la position des aventuriers qui se trouvent dans une salle contenant un évènement déjà découvert par les orcs (forge, marchand, cartographe, cristal).",
+        "description": "Révèle la position des aventuriers qui se trouvent dans une salle contenant un évènement déjà découvert par les orcs (forge, marchand, cartographe, stèle de réanimation, cristal...).",
         "icon": "Vision.mp4",
         "requires_action": False
     },
@@ -799,6 +828,13 @@ POWERS = {
         "icon": "Patrouille.mp4",
         "requires_action": True,
         "action_type": "select_room"  # select one room
+    },
+    "malediction": {
+        "name": "🔮 Malédiction",
+        "description": "Maudissez un objet de l'inventaire d'un joueur survivant. S'il n'utilise ou ne supprime pas l'objet maudit avant la fin de son tour, tous les joueurs perdront 10 points de vie.",
+        "icon": "Malediction.mp4",
+        "requires_action": True,
+        "action_type": "select_cursed_item"
     }
 }
 def get_discovered_events(game_state: dict) -> list:
@@ -813,6 +849,8 @@ def get_discovered_events(game_state: dict) -> list:
     for room_name, room_data in game_state.get("rooms", {}).items():
         if room_data.get("has_merchant", False) and room_data.get("merchant_discovered", False):
             discovered.append({"room": room_name, "type": "merchant", "name": "🧙 Marchand"})
+        if room_data.get("has_resurrection_stele", False) and room_data.get("resurrection_stele_killer_visible", False):
+            discovered.append({"room": room_name, "type": "resurrection_stele", "name": "🪦 Stèle de résurrection"})
         if room_data.get("has_cartographer", False) and room_data.get("cartographer_discovered", False):
             discovered.append({"room": room_name, "type": "cartographer", "name": "🗺️ Cartographe"})
         if room_data.get("has_forge", False) and room_data.get("forge_discovered", False):
@@ -917,6 +955,21 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
         excluded.append("secousse")
         excluded.append("vision")
 
+    # Exclude malediction if no survivor has a cursable item
+    CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+    if game_state:
+        has_cursable = False
+        for p in game_state.get("players", {}).values():
+            if p.get("role") == "survivor" and not p.get("eliminated", False):
+                for slot in (p.get("inventory") or []):
+                    if slot and slot.get("type") in CURSABLE_TYPES:
+                        has_cursable = True
+                        break
+            if has_cursable:
+                break
+        if not has_cursable:
+            excluded.append("malediction")
+
     available = [p for p in POWERS.keys() if p not in excluded]
     return random.sample(available, min(3, len(available)))
 
@@ -984,6 +1037,7 @@ async def check_power_selection_complete(session_id: str):
 async def apply_powers(session_id: str):
     """Apply all selected powers"""
     game = game_sessions[session_id]
+
     game["active_powers"] = {}
     
     floor_names = {
@@ -1085,6 +1139,9 @@ async def apply_powers(session_id: str):
 
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+            # Broadcast updated state to killers immediately so the new event position is visible
+            if new_room:
+                await broadcast_to_session(session_id, {"type": "state_update", "game": game}, role_filter="killer")
         
         elif power_name == "piege":
             # Trap selected rooms
@@ -1270,6 +1327,40 @@ async def apply_powers(session_id: str):
             game["active_powers"][power_name]["data"]["patrol_room"] = patrol_room
             
             event_msg = f"🔍 {player['name']} utilise Patrouille !"
+            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+        elif power_name == "malediction":
+            # Build the list of survivors with cursable items and send to this killer
+            CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+            cursable_survivors = []
+            for pid, p in game["players"].items():
+                if p.get("role") == "survivor" and not p.get("eliminated", False):
+                    items = []
+                    for idx, slot in enumerate(p.get("inventory") or []):
+                        if slot and slot.get("type") in CURSABLE_TYPES:
+                            items.append({"slot_index": idx, "type": slot["type"]})
+                    if items:
+                        cursable_survivors.append({
+                            "player_id": pid,
+                            "player_name": p["name"],
+                            "items": items
+                        })
+
+            if cursable_survivors:
+                # Send inventory selection interface to this killer only
+                killer_ws = active_connections.get(session_id, {}).get(player_id)
+                if killer_ws:
+                    try:
+                        await killer_ws.send_json({
+                            "type": "power_action_required",
+                            "power": "malediction",
+                            "cursable_survivors": cursable_survivors
+                        })
+                    except Exception:
+                        pass
+            
+            event_msg = f"🔮 {player['name']} invoque la Malédiction !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
@@ -1461,6 +1552,61 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
         return False
 
     logger.info("All survivors ended their turn - transitioning to killer phase")
+
+    # MALÉDICTION: Les survivants viennent de terminer leur tour.
+    # Si l'item maudit est encore dans l'inventaire → pénalité 10 PV pour tous.
+    # Ce check doit se faire ICI (fin du tour survivants), PAS dans apply_powers
+    # qui s'exécute dès la phase killer_power_selection (trop tôt).
+    active_curse = game.get("active_curse")
+    if active_curse:
+        target_pid = active_curse.get("target_player_id")
+        slot_idx = active_curse.get("slot_index")
+        target_player = game["players"].get(target_pid)
+        curse_still_active = False
+
+        if target_player and not target_player.get("eliminated", False):
+            inv = target_player.get("inventory") or []
+            if slot_idx is not None and 0 <= slot_idx < len(inv):
+                slot = inv[slot_idx]
+                if slot and slot.get("cursed"):
+                    curse_still_active = True
+
+        if curse_still_active:
+            # Appliquer 10 PV de pénalité à tous les survivants en vie
+            alive_survivors_list = [
+                p for p in game["players"].values()
+                if p["role"] == "survivor" and not p.get("eliminated", False)
+            ]
+            for sp in alive_survivors_list:
+                sp["hp"] = max(0, (sp.get("hp") or 0) - 10)
+                if sp["hp"] <= 0 and not sp.get("eliminated", False):
+                    sp["eliminated"] = True
+
+            penalty_msg = "L'objet maudit est encore dans l'inventaire, vous perdez tous 10 points de vie : débarrassez vous en !"
+            game["events"].append({"message": f"🔮 {penalty_msg}", "type": "malediction_penalty"})
+
+            await broadcast_to_session(session_id, {
+                "type": "malediction_penalty",
+                "message": penalty_msg,
+                "video_path": "/powers/Malediction.mp4"
+            }, role_filter="survivor")
+
+            await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+            logger.info("Malédiction penalty applied: 10 HP removed from all survivors")
+            # Renvoyer aussi le popup d'avertissement pour le prochain tour
+            warning_msg = "L'un de vous a son inventaire maudit ! Utilisez ou débarrassez vous de l'objet maudit avant la fin de votre tour pour lever la malédiction , sous peine de perdre 10 points de vie vous et vos coéquipiers !"
+            await broadcast_to_session(session_id, {
+                "type": "malediction_warning",
+                "message": warning_msg,
+                "video_path": "/powers/Malediction.mp4"
+            }, role_filter="survivor")
+        else:
+            # Item supprimé/utilisé pendant le tour — malédiction levée, pas de pénalité
+            logger.info("Malédiction: cursed item was removed, no penalty")
+            # On efface la malédiction seulement si l'item a été retiré
+            game.pop("active_curse", None)
+        # Si l'item est ENCORE là (curse_still_active), on NE PAS effacer active_curse :
+        # la malédiction persiste et sera réévaluée au tour suivant.
 
     # Broadcast latest state before phase change
     await broadcast_to_session(session_id, {
@@ -1934,6 +2080,8 @@ async def process_turn(session_id: str):
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
+    # NOTE: active_curse is NOT cleared here — it is checked and cleared in try_advance_to_killer_phase
+    # at the start of the next killer power selection phase.
     
     # GOLIATH: Reset kill flag for new turn
     game["goliath_killed_this_turn"] = False
@@ -2189,6 +2337,8 @@ async def process_rage_second_selections(session_id: str):
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
+    # NOTE: active_curse is NOT cleared here — it is checked and cleared in try_advance_to_killer_phase
+    # at the start of the next killer power selection phase.
     
     # GOLIATH: Reset kill flag for new turn
     game["goliath_killed_this_turn"] = False
@@ -2595,6 +2745,13 @@ async def start_game(session_id: str):
             logger.warning("Could not place observation stone - no available rooms")
     else:
         logger.info("Observation stone NOT placed (Relique Cubique disabled by host)")
+
+    # Place the resurrection stele at game start (once per game)
+    stele_room = place_resurrection_stele(game)
+    if stele_room:
+        logger.info(f"Resurrection stele placed in: {stele_room}")
+    else:
+        logger.warning("Could not place resurrection stele - no available rooms")
 
     # Place the 3 trophy items at game start (once per game)
     placed_trophies = place_trophies(game)
@@ -3481,6 +3638,11 @@ async def use_item(session_id: str, request: UseItemRequest):
         inventory[request.slot_index] = None
         logger.info(f"Player {request.player_id} used medikit from slot {request.slot_index}")
         
+        # MALÉDICTION: Lift the curse if this was the cursed item
+        active_curse = game.get("active_curse")
+        if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
+            game.pop("active_curse", None)
+        
         # Broadcast state update
         await broadcast_to_session(session_id, {
             "type": "state_update",
@@ -3496,6 +3658,11 @@ async def use_item(session_id: str, request: UseItemRequest):
         
         player["poisoned_countdown"] = 0
         inventory[request.slot_index] = None
+        
+        # MALÉDICTION: Lift the curse if this was the cursed item
+        active_curse = game.get("active_curse")
+        if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
+            game.pop("active_curse", None)
         
         event_msg = f"💊 {player['name']} utilise un antidote et est guéri du poison !"
         game["events"].append({"message": event_msg, "type": "antidote_used"})
@@ -3518,6 +3685,103 @@ async def use_item(session_id: str, request: UseItemRequest):
     
     else:
         raise HTTPException(status_code=400, detail="Cet item ne peut pas être utilisé directement")
+
+@api_router.post("/game/{session_id}/use_resurrection_stele")
+async def use_resurrection_stele(session_id: str, request: Request):
+    """Revive an eliminated survivor via the resurrection stele."""
+    data = await request.json()
+    player_id = data.get("player_id")
+    target_id = data.get("target_id")
+
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+    if player_id not in game["players"] or target_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    reviver = game["players"][player_id]
+    target = game["players"][target_id]
+
+    if reviver["role"] != "survivor" or reviver.get("eliminated", False):
+        raise HTTPException(status_code=400, detail="Reviver must be an alive survivor")
+
+    if target["role"] != "survivor" or not target.get("eliminated", False):
+        raise HTTPException(status_code=400, detail="Target must be an eliminated survivor")
+
+    # Find the stele room: check pending_actions first (selected this turn),
+    # then fall back to current_room (position from previous turn).
+    pending_action = game.get("pending_actions", {}).get(player_id, {})
+    stele_room = pending_action.get("room") or reviver.get("current_room")
+    if not stele_room or not game["rooms"].get(stele_room, {}).get("has_resurrection_stele", False):
+        raise HTTPException(status_code=400, detail="No resurrection stele in current room")
+
+    # Calculate sacrifice: quarter of reviver's current HP (minimum 1)
+    sacrifice_hp = max(1, reviver["hp"] // 4)
+    revived_hp = sacrifice_hp  # Target receives the sacrificed HP
+
+    # Apply to reviver
+    reviver["hp"] = max(1, reviver["hp"] - sacrifice_hp)  # Reviver keeps at least 1 HP
+
+    # Revive target: keep only quest items (relics, pierre_quete), no gold
+    QUEST_ITEM_TYPES = {"relique_spherique", "relique_cubique", "relique_triangulaire", "pierre_quete"}
+    old_inventory = target.get("inventory") or [None] * 9
+    new_inventory = [None] * 9
+    slot = 0
+    for item in old_inventory:
+        if item and item.get("type") in QUEST_ITEM_TYPES and slot < 9:
+            new_inventory[slot] = item
+            slot += 1
+
+    target["eliminated"] = False
+    target["hp"] = revived_hp
+    target["gold"] = 0
+    target["inventory"] = new_inventory
+    target["current_room"] = stele_room  # Revived in the stele room
+    target["immobilized_next_turn"] = False
+    target["poisoned_countdown"] = 0
+
+    # Lock the revived player's turn this round:
+    # 1) Add a pending_action so all_selected stays satisfied
+    game.setdefault("pending_actions", {})[target_id] = {
+        "action": "select_room",
+        "room": stele_room
+    }
+    # 2) Add to survivors_ended_turn so all_ended stays satisfied
+    if target_id not in game.get("survivors_ended_turn", []):
+        game.setdefault("survivors_ended_turn", []).append(target_id)
+
+    reviver_name = reviver["name"]
+    target_name = target["name"]
+
+    event_msg = f"🪦 {reviver_name} a sacrifié {sacrifice_hp} PV pour réanimer {target_name} !"
+    game["events"].append({"message": event_msg, "type": "resurrection"})
+
+    logger.info(f"Resurrection: {reviver_name} revived {target_name} — sacrifice: {sacrifice_hp} HP, target HP: {revived_hp}")
+
+    # Notify the revived player
+    revived_ws = active_connections.get(session_id, {}).get(target_id)
+    if revived_ws:
+        try:
+            await revived_ws.send_json({
+                "type": "you_were_revived",
+                "message": f"{reviver_name} vous a réanimé en sacrifiant le quart de ses points de vie !",
+                "video_path": "/event/Revive.mp4",
+                "hp": revived_hp,
+                "room": stele_room,
+            })
+        except Exception:
+            pass
+
+    # Broadcast state update to all
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+    # Check if all survivors have ended their turn (revived player counts as ended)
+    if game["phase"] == "survivor_selection":
+        await try_advance_to_killer_phase(session_id)
+
+    return {"status": "success", "sacrifice_hp": sacrifice_hp, "revived_hp": revived_hp}
+
 
 @api_router.post("/game/{session_id}/delete_item")
 async def delete_item(session_id: str, request: DeleteItemRequest):
@@ -3562,6 +3826,12 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
     inventory[request.slot_index] = None
 
     logger.info(f"Player {request.player_id} deleted item {item_type} from slot {request.slot_index}")
+
+    # MALÉDICTION: If the deleted item was cursed, lift the curse
+    active_curse = game.get("active_curse")
+    if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
+        game.pop("active_curse", None)
+        logger.info(f"Curse lifted: player {request.player_id} deleted the cursed item")
 
     # Broadcast state update
     await broadcast_to_session(session_id, {
@@ -3615,6 +3885,11 @@ async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
 
     # Consume the rune regardless of outcome
     inventory[request.slot_index] = None
+
+    # MALÉDICTION: Lift the curse if this was the cursed item
+    active_curse = game.get("active_curse")
+    if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
+        game.pop("active_curse", None)
 
     # Determine success via mini-game result from client, fallback to random
     attempts_done = player.get("weapon_forge_attempts", 0)
@@ -4253,9 +4528,11 @@ async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatReque
     if survivor_id in game.get("pending_events", {}):
         del game["pending_events"][survivor_id]
 
-    # Dispatch any event queued behind the mimic combat (e.g. forge/merchant/cartographer
-    # in the same room fouille). Without this, those popups would never show.
-    await dispatch_next_player_event(session_id, survivor_id)
+    # NOTE: We intentionally do NOT call dispatch_next_player_event here.
+    # The frontend MimicCombat.onClose calls notifyEventCompleted() which sends
+    # an "event_completed" WS message, triggering dispatch_next_player_event
+    # server-side. This prevents queued popups (e.g. pierre_quete_found) from
+    # appearing while the combat modal is still open on the client.
 
     # Check if all survivors are done so we can advance to killer phase
     await try_advance_to_killer_phase(session_id)
@@ -5113,6 +5390,53 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             }, None)
                             logger.info(f"Player {player_id} ({player['name']}) found trophy '{trophy_type}' in {room_name}")
 
+                    # Check for resurrection stele
+                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_resurrection_stele", False):
+                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
+                        if not is_trapped:
+                            eliminated_survivors = [
+                                {"id": pid, "name": p["name"]}
+                                for pid, p in game["players"].items()
+                                if p["role"] == "survivor" and p.get("eliminated", False)
+                            ]
+                            game["rooms"][room_name]["resurrection_stele_discovered"] = True
+                            game["rooms"][room_name]["resurrection_stele_killer_visible"] = True
+                            await enqueue_player_event(session_id, player_id, "resurrection_stele", {
+                                "type": "resurrection_stele_encounter",
+                                "message": "Vous avez découvert la stèle de résurrection ! Vous pouvez ramener à la vie un coéquipier, en sacrifiant le quart de vos pdv.",
+                                "video_path": "/event/Revive.mp4",
+                                "eliminated_survivors": eliminated_survivors,
+                                "stele_room": room_name,
+                            })
+                            logger.info(f"Player {player_id} ({player['name']}) discovered resurrection stele in {room_name}")
+
+                    # Killer discovers events in the room they select (visible to killers only)
+                    if player["role"] == "killer":
+                        room_data = game["rooms"][room_name]
+                        killer_event_discovered = False
+                        if room_data.get("has_merchant") and not room_data.get("merchant_discovered") and not room_data.get("merchant_killer_visible"):
+                            room_data["merchant_killer_visible"] = True
+                            killer_event_discovered = True
+                            logger.info(f"Killer {player['name']} discovered merchant in {room_name} (killer-only)")
+                        if room_data.get("has_cartographer") and not room_data.get("cartographer_discovered") and not room_data.get("cartographer_killer_visible"):
+                            room_data["cartographer_killer_visible"] = True
+                            killer_event_discovered = True
+                            logger.info(f"Killer {player['name']} discovered cartographer in {room_name} (killer-only)")
+                        if room_data.get("has_forge") and not room_data.get("forge_discovered") and not room_data.get("forge_killer_visible"):
+                            room_data["forge_killer_visible"] = True
+                            killer_event_discovered = True
+                            logger.info(f"Killer {player['name']} discovered forge in {room_name} (killer-only)")
+                        if room_data.get("has_resurrection_stele") and not room_data.get("resurrection_stele_discovered") and not room_data.get("resurrection_stele_killer_visible"):
+                            room_data["resurrection_stele_killer_visible"] = True
+                            killer_event_discovered = True
+                            logger.info(f"Killer {player['name']} discovered resurrection stele in {room_name} (killer-only)")
+                        if killer_event_discovered:
+                            # Broadcast updated state to killers so they see the new event icon
+                            await broadcast_to_session(session_id, {
+                                "type": "state_update",
+                                "game": game_sessions[session_id]
+                            }, role_filter="killer")
+
                     # Notify all players
                     await broadcast_to_session(session_id, {
                         "type": "player_action",
@@ -5163,6 +5487,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if power_name == "secousse":
                         payload["events"] = get_discovered_events(game)
 
+                    # NEW: For Malediction, send the list of survivors with cursable items
+                    if power_name == "malediction":
+                        CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+                        cursable_survivors = []
+                        for pid, p in game["players"].items():
+                            if p.get("role") == "survivor" and not p.get("eliminated", False):
+                                items = []
+                                for idx, slot in enumerate(p.get("inventory") or []):
+                                    if slot and slot.get("type") in CURSABLE_TYPES:
+                                        items.append({"slot_index": idx, "type": slot["type"]})
+                                if items:
+                                    cursable_survivors.append({
+                                        "player_id": pid,
+                                        "player_name": p["name"],
+                                        "items": items
+                                    })
+                        payload["cursable_survivors"] = cursable_survivors
+
                     await websocket.send_json(payload)
                 else:
                     game["pending_power_selections"][player_id]["action_complete"] = True
@@ -5196,6 +5538,68 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     "message": f"✅ {game['players'][player_id]['name']} a configuré son pouvoir"
                 })
                 
+                await check_power_selection_complete(session_id)
+
+            elif data["type"] == "curse_item":
+                # Killer applies curse on a specific item in a survivor's inventory
+                if player["role"] != "killer" or game["phase"] != "killer_power_selection":
+                    continue
+
+                target_player_id = data.get("target_player_id")
+                slot_index = data.get("slot_index")
+
+                if target_player_id not in game["players"]:
+                    continue
+
+                target = game["players"][target_player_id]
+                if target.get("role") != "survivor" or target.get("eliminated", False):
+                    continue
+
+                inventory = target.get("inventory") or []
+                if slot_index is None or slot_index < 0 or slot_index >= len(inventory):
+                    continue
+
+                item = inventory[slot_index]
+                if not item:
+                    continue
+
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+                if item.get("type") not in CURSABLE_TYPES:
+                    continue
+
+                # Mark the item as cursed
+                item["cursed"] = True
+                # Store curse info in game state
+                game["active_curse"] = {
+                    "target_player_id": target_player_id,
+                    "slot_index": slot_index,
+                    "item_type": item["type"],
+                    "cursed_by": player_id
+                }
+
+                # Mark power action as complete
+                if player_id in game["pending_power_selections"]:
+                    game["pending_power_selections"][player_id]["action_complete"] = True
+                    game["pending_power_selections"][player_id]["action_data"] = {
+                        "target_player_id": target_player_id,
+                        "slot_index": slot_index
+                    }
+
+                event_msg = f"🔮 {player['name']} maudit un objet !"
+                game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+                # Broadcast state update so the cursed item renders in inventory
+                await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+                # Warn all survivors with video + message
+                curse_warning_msg = "L'un de vous a son inventaire maudit ! Utilisez ou débarrassez vous de l'objet maudit avant la fin de votre tour pour lever la malédiction , sous peine de perdre 10 points de vie vous et vos coéquipiers !"
+                await broadcast_to_session(session_id, {
+                    "type": "malediction_warning",
+                    "message": curse_warning_msg,
+                    "video_path": "/powers/Malediction.mp4"
+                }, role_filter="survivor")
+
                 await check_power_selection_complete(session_id)
 
             elif data["type"] == "use_medikit":
