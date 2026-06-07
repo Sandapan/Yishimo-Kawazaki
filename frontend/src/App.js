@@ -1084,8 +1084,14 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     event.survivors.forEach((survivor, idx) => {
       // NEW: récupérer les bonus individuels de cet aventurier
       const initiativeBonus = survivor.initiative_bonus || 0;
-      const damageBonus = survivor.damage_bonus || 0;
+      let damageBonus = survivor.damage_bonus || 0;
       const baseInitiative = Math.floor((hashCode(survivor.id + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1);
+
+      // NEW: Toxine incapacitante — réduction de 50% des dégâts si le survivant est empoisonné
+      let poisonDamageMalus = false;
+      if (event.toxine_incapacitante_active && (survivor.poisoned_countdown || 0) > 0) {
+        poisonDamageMalus = true;
+      }
 
       fighters.push({
         id: survivor.id,
@@ -1096,6 +1102,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         maxHp: survivor.max_hp || survivor.hp, // NEW: utilise max_hp pour la barre de vie
         initiative: baseInitiative + initiativeBonus, // NEW: + bonus d'initiative individuel
         damageBonus: damageBonus, // NEW: stocké sur le combattant pour le calcul des dégâts
+        poisonDamageMalus: poisonDamageMalus, // NEW: toxine incapacitante malus
         position: idx, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -1267,7 +1274,11 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         const baseDamage = rng.nextInt(1, 6);
         // NEW: si l'attaquant est un aventurier, on ajoute son bonus de dégâts individuel
         const bonusDamage = (attacker.type === 'survivor' && attacker.damageBonus) ? attacker.damageBonus : 0;
-        const damage = baseDamage + bonusDamage;
+        let damage = baseDamage + bonusDamage;
+        // NEW: Toxine incapacitante — dégâts réduits de moitié (arrondi supérieur)
+        if (attacker.type === 'survivor' && attacker.poisonDamageMalus) {
+          damage = Math.ceil(damage / 2);
+        }
         target.hp = Math.max(0, target.hp - damage);
         
         if (target.hp <= 0) {
@@ -1908,12 +1919,15 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       const baseInitiative = Math.floor(
         (hashCode(survivor.id + 'crystal' + (event.combat_id || event.turn || Date.now())) % 20) + 1
       );
+      // NEW: Toxine incapacitante malus
+      const poisonDamageMalus = !!(event.toxine_incapacitante_active && (survivor.poisoned_countdown || 0) > 0);
       fighters.push({
         id: survivor.id, name: survivor.name, class: survivor.class,
         type: 'survivor',
         hp: survivor.hp, maxHp: survivor.max_hp || survivor.hp,
         initiative: baseInitiative + (survivor.initiative_bonus || 0),
         damageBonus: survivor.damage_bonus || 0,
+        poisonDamageMalus: poisonDamageMalus,
         position: idx, alive: true, currentAnimation: 'idle',
       });
     });
@@ -1983,10 +1997,12 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           setAnimatingEntity({ id: attacker.id, type: 'attack' });
           await new Promise(resolve => setTimeout(resolve, 1700));
           const damage = rng.nextInt(1, 6) + (attacker.damageBonus || 0);
-          crystal.hp = Math.max(0, crystal.hp - damage);
+          // NEW: Toxine incapacitante — dégâts réduits de moitié (arrondi supérieur)
+          const finalDamage = attacker.poisonDamageMalus ? Math.ceil(damage / 2) : damage;
+          crystal.hp = Math.max(0, crystal.hp - finalDamage);
           if (crystal.hp <= 0) crystal.alive = false;
 
-          setDamageIndicators(prev => ({ ...prev, [crystal.id]: { damage, timestamp: Date.now() } }));
+          setDamageIndicators(prev => ({ ...prev, [crystal.id]: { damage: finalDamage, timestamp: Date.now() } }));
           setTimeout(() => setDamageIndicators(prev => {
             const n = { ...prev }; delete n[crystal.id]; return n;
           }), 1500);
@@ -1995,7 +2011,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           await new Promise(resolve => setTimeout(resolve, 1000));
           setAnimatingEntity(null);
 
-          setCombatLog(prev => [...prev, `${attacker.name} attaque ${crystal.name} : ${damage} dégâts ! (${crystal.hp}/${crystal.maxHp} PV)`]);
+          setCombatLog(prev => [...prev, `${attacker.name} attaque ${crystal.name} : ${finalDamage} dégâts${attacker.poisonDamageMalus ? ' (Toxine -50%)' : ''} ! (${crystal.hp}/${crystal.maxHp} PV)`]);
           setCombatants([...fighters]);
           await new Promise(resolve => setTimeout(resolve, 1500));
         } else {
@@ -2546,6 +2562,8 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
 
         if (response.data.status === 'success') {
           toast.success(response.data.message);
+        } else if (response.data.status === 'not_poisoned') {
+          toast.info(response.data.message); // "Vous n'êtes pas empoisonné."
         }
       } catch (error) {
         const errorMsg = error.response?.data?.detail || "Erreur lors de l'utilisation de l'item";
@@ -2601,7 +2619,7 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 2000,
+        zIndex: 3100,
       }}
       onClick={handleClose}
     >
@@ -2811,11 +2829,13 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
 };
 
 // ========== RUNE PICKUP MODAL COMPONENT ==========
-const RunePickupModal = ({ event, playerId, sessionId }) => {
+const RunePickupModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
   if (!event || event.type !== 'rune_found') return null;
   
   const runeType = event.rune_type;
-  const inventoryFull = event.inventory_full;
+  // Recalculate live from actual inventory so freeing a slot immediately unlocks the button
+  const inventory = player?.inventory || [];
+  const inventoryFull = inventory.filter(Boolean).length >= 9;
   
   const handlePickup = async () => {
     try {
@@ -2911,18 +2931,17 @@ const RunePickupModal = ({ event, playerId, sessionId }) => {
           
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
             <Button
-              onClick={handlePickup}
-              disabled={inventoryFull}
+              onClick={inventoryFull ? onOpenInventory : handlePickup}
               style={{
-                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
                 color: '#fff',
                 padding: '12px 24px',
                 fontSize: '16px',
                 fontWeight: 'bold',
-                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
               }}
             >
-              🎒 Ramasser
+              {inventoryFull ? '🎒 Gérer l\'inventaire' : '🎒 Ramasser'}
             </Button>
             <Button
               onClick={handleDismiss}
@@ -2944,10 +2963,11 @@ const RunePickupModal = ({ event, playerId, sessionId }) => {
 };
 
 // ========== PIERRE QUETE PICKUP MODAL COMPONENT ==========
-const PierreQueteModal = ({ event, playerId, sessionId, targetRoom }) => {
+const PierreQueteModal = ({ event, playerId, sessionId, targetRoom, onOpenInventory, player }) => {
   if (!event || event.type !== 'pierre_quete_found') return null;
 
-  const inventoryFull = event.inventory_full;
+  const inventory = player?.inventory || [];
+  const inventoryFull = inventory.filter(Boolean).length >= 9;
 
   const handlePickup = async () => {
     try {
@@ -3046,19 +3066,18 @@ const PierreQueteModal = ({ event, playerId, sessionId, targetRoom }) => {
 
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
             <Button
-              onClick={handlePickup}
-              disabled={inventoryFull}
+              onClick={inventoryFull ? onOpenInventory : handlePickup}
               data-testid="pierre-quete-pickup-btn"
               style={{
-                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
                 color: '#fff',
                 padding: '12px 24px',
                 fontSize: '16px',
                 fontWeight: 'bold',
-                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
               }}
             >
-              🎒 Ramasser
+              {inventoryFull ? '🎒 Gérer l\'inventaire' : '🎒 Ramasser'}
             </Button>
             <Button
               onClick={handleDismiss}
@@ -3081,11 +3100,12 @@ const PierreQueteModal = ({ event, playerId, sessionId, targetRoom }) => {
 };
 
 // ========== TROPHY PICKUP MODAL COMPONENT (Chaussons / Couronne / Culotte) ==========
-const TrophyModal = ({ event, playerId, sessionId }) => {
+const TrophyModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
   if (!event || event.type !== 'trophy_found') return null;
 
   const trophyType = event.trophy_type;
-  const inventoryFull = event.inventory_full;
+  const inventory = player?.inventory || [];
+  const inventoryFull = inventory.filter(Boolean).length >= 9;
   const trophyName = ITEM_NAMES[trophyType] || 'Trophée';
   const trophySprite = ITEM_SPRITES[trophyType];
   const trophyDescription = TROPHY_DESCRIPTIONS[trophyType] || '';
@@ -3182,19 +3202,18 @@ const TrophyModal = ({ event, playerId, sessionId }) => {
 
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
             <Button
-              onClick={handlePickup}
-              disabled={inventoryFull}
+              onClick={inventoryFull ? onOpenInventory : handlePickup}
               data-testid="trophy-pickup-btn"
               style={{
-                backgroundColor: inventoryFull ? '#666' : '#10b981',
+                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
                 color: '#fff',
                 padding: '12px 24px',
                 fontSize: '16px',
                 fontWeight: 'bold',
-                cursor: inventoryFull ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
               }}
             >
-              🎒 Ramasser
+              {inventoryFull ? '🎒 Gérer l\'inventaire' : '🎒 Ramasser'}
             </Button>
             <Button
               onClick={handleDismiss}
@@ -4041,6 +4060,25 @@ const Lobby = () => {
   });
   const [localDungeonSize, setLocalDungeonSize] = useState(12);
 
+  const ALL_POWERS = [
+    { key: "vision",         label: "👁️ Vision" },
+    { key: "secousse",       label: "↩️ Secousse" },
+    { key: "piege",          label: "🥶 Blizzard" },
+    { key: "toxine",         label: "😷 Toxine" },
+    { key: "traque",         label: "🔊 Traque" },
+    { key: "barricade",      label: "🔒 Barricade" },
+    { key: "rage",           label: "😡 Rage" },
+    { key: "mimic",          label: "💰 Mimic" },
+    { key: "teleportation",  label: "🌀 Piège de Téléportation" },
+    { key: "goliath",        label: "🕷️ La Goliath" },
+    { key: "eboulement",     label: "⛰️ Eboulement" },
+    { key: "patrouille",     label: "🔍 Espionnage" },
+    { key: "malediction",    label: "🔮 Malédiction" },
+  ];
+  const [localEnabledPowers, setLocalEnabledPowers] = useState(
+    Object.fromEntries(ALL_POWERS.map(p => [p.key, true]))
+  );
+
   useEffect(() => {
 const storedPlayerId = sessionStorage.getItem('player_id');
     setPlayerId(storedPlayerId);
@@ -4156,6 +4194,15 @@ const storedPlayerId = sessionStorage.getItem('player_id');
   };
 
   const startGame = async () => {
+    // Vérification côté client : au moins un pouvoir doit être activé
+    const enabledPowers = gameState.enabled_powers;
+    if (enabledPowers && enabledPowers.length === 0) {
+      toast.error("⚠️ Au moins un pouvoir doit être activé", {
+        duration: 4000,
+        style: { maxWidth: '400px' }
+      });
+      return;
+    }
     try {
       await axios.post(`${API}/game/${sessionId}/start`);
     } catch (error) {
@@ -4217,7 +4264,12 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
     if (gameState?.dungeon_size !== undefined) {
       setLocalDungeonSize(gameState.dungeon_size);
     }
-  }, [gameState?.required_relics, gameState?.dungeon_size]);
+    if (gameState?.enabled_powers) {
+      setLocalEnabledPowers(
+        Object.fromEntries(ALL_POWERS.map(p => [p.key, gameState.enabled_powers.includes(p.key)]))
+      );
+    }
+  }, [gameState?.required_relics, gameState?.dungeon_size, gameState?.enabled_powers]);
 
   if (!gameState) {
     return <div className="loading">Chargement...</div>;
@@ -4456,6 +4508,16 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
         <li>{gameState.required_relics.relique_triangulaire ? "✅" : "❌"} Relique Triangulaire</li>
       </ul>
       <p><strong>Taille du donjon :</strong> {gameState.dungeon_size || 12} pièces</p>
+      {gameState.enabled_powers && gameState.enabled_powers.length < ALL_POWERS.length && (
+        <div>
+          <p><strong>Pouvoirs disponibles :</strong></p>
+          <ul>
+            {ALL_POWERS.map(p => (
+              <li key={p.key}>{gameState.enabled_powers.includes(p.key) ? "✅" : "❌"} {p.label}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )}
 
@@ -4536,6 +4598,38 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
           </select>
         </div>
 
+        {/* Sélecteur pouvoirs disponibles */}
+        <div className="relic-setting">
+          <label><strong>⚔️ Pouvoirs des killers disponibles</strong></label>
+          <p className="relic-desc">
+            Décochez les pouvoirs que vous souhaitez exclure du tirage aléatoire en partie.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '8px' }}>
+            {ALL_POWERS.map(p => (
+              <label key={p.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.9rem' }}>
+                <input
+                  type="checkbox"
+                  checked={localEnabledPowers[p.key] ?? true}
+                  onChange={(e) => setLocalEnabledPowers(prev => ({ ...prev, [p.key]: e.target.checked }))}
+                />
+                {p.label}
+              </label>
+            ))}
+          </div>
+          {!Object.values(localEnabledPowers).some(v => v) && (
+            <p className="warning-text">⚠️ Au moins un pouvoir doit être activé</p>
+          )}
+          <button
+            style={{ marginTop: '8px', padding: '4px 10px', fontSize: '0.8rem', cursor: 'pointer', borderRadius: '4px', border: '1px solid #555', background: '#333', color: '#ccc' }}
+            onClick={() => {
+              const allSelected = ALL_POWERS.every(p => localEnabledPowers[p.key] ?? true);
+              setLocalEnabledPowers(Object.fromEntries(ALL_POWERS.map(p => [p.key, !allSelected])));
+            }}
+          >
+            {ALL_POWERS.every(p => localEnabledPowers[p.key] ?? true) ? 'Tout décocher' : 'Tout sélectionner'}
+          </button>
+        </div>
+
         {!Object.values(localRequiredRelics).some(v => v) && (
           <p className="warning-text">⚠️ Au moins une relique doit être requise</p>
         )}
@@ -4546,6 +4640,11 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
             onClick={() => {
               setLocalRequiredRelics(gameState.required_relics || localRequiredRelics);
               setLocalDungeonSize(gameState.dungeon_size || 12);
+              if (gameState.enabled_powers) {
+                setLocalEnabledPowers(Object.fromEntries(ALL_POWERS.map(p => [p.key, gameState.enabled_powers.includes(p.key)])));
+              } else {
+                setLocalEnabledPowers(Object.fromEntries(ALL_POWERS.map(p => [p.key, true])));
+              }
               setShowSettingsModal(false);
             }}
           >
@@ -4556,9 +4655,11 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
             disabled={!Object.values(localRequiredRelics).some(v => v)}
             onClick={async () => {
               try {
+                const enabledPowersList = ALL_POWERS.filter(p => localEnabledPowers[p.key]).map(p => p.key);
                 await axios.post(`${API}/game/${sessionId}/update_settings`, {
                   required_relics: localRequiredRelics,
                   dungeon_size: localDungeonSize,
+                  enabled_powers: enabledPowersList,
                 });
                 setShowSettingsModal(false);
               } catch (err) {
@@ -4605,6 +4706,8 @@ const PowerSelectionOverlay = ({
   const [selectedFloor, setSelectedFloor] = useState(null);
   const [teleportationStep, setTeleportationStep] = useState(1); // 1 = trap room, 2 = exit room
   const [trapRoom, setTrapRoom] = useState(null);
+  // Variant "masse": multiple trap rooms (up to 3) before choosing exit
+  const [masseTrapRooms, setMasseTrapRooms] = useState([]);
   // NEW: Secousse - currently picked event and confirmation modal toggle
   const [secousseSelected, setSecousseSelected] = useState(null);
   const [secousseConfirming, setSecousseConfirming] = useState(false);
@@ -4614,18 +4717,75 @@ const PowerSelectionOverlay = ({
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
+
+  const currentPlayer = gameState.players[playerId];
+
   
   const powerOptions = myPowerSelection.options || [];
   const hasCompletedSelection = myPowerSelection.action_complete;
   
   // Room selection for powers that require it
-  const selectedPowerDef = powerDefinitions[selectedPower];
+  const _basePowerDef = powerDefinitions[selectedPower];
+  const _powerEvolution = selectedPower ? currentPlayer?.powers_evolution?.[selectedPower] : null;
+  const selectedPowerDef = _basePowerDef ? {
+    ..._basePowerDef,
+    // Si niveau 2 : surcharger nom, description et rooms_count selon la variante
+    ...(_powerEvolution?.level === 2 && _powerEvolution.variant === "invasive" ? {
+      name: _powerEvolution.variant_name || _basePowerDef.name,
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      rooms_count: 5,
+    } : _powerEvolution?.level === 2 && _powerEvolution.variant === "masse" && selectedPower === "teleportation" ? {
+      name: _powerEvolution.variant_name || _basePowerDef.name,
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      masse_trap_count: 3,
+    } : _powerEvolution?.level === 2 && selectedPower === "traque" && _powerEvolution.variant === "masse" ? {
+      // Traque de masse : pas de sélection d'étage, le pouvoir s'active directement
+      name: _powerEvolution.variant_name || "🔊 Traque de masse",
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      requires_action: false,
+      action_type: null,
+    } : _powerEvolution?.level === 2 && selectedPower === "traque" && _powerEvolution.variant === "precision" ? {
+      // Traque de précision : toujours sélection d'étage, libellé mis à jour
+      name: _powerEvolution.variant_name || "🔍 Traque de précision",
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      requires_action: true,
+      action_type: "select_floor",
+    } : _powerEvolution?.level === 2 && selectedPower === "piege" && _powerEvolution.variant === "masse" ? {
+      // Blizzard de masse : sélection étendue selon dungeon_size + tours écoulés
+      name: _powerEvolution.variant_name || "🥶 Blizzard de masse",
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      requires_action: true,
+      action_type: "select_rooms_blizzard",
+      blizzard_masse: true,
+    } : _powerEvolution?.level === 2 && selectedPower === "piege" && _powerEvolution.variant === "precision" ? {
+      // Blizzard de précision : même sélection, alerte si quelqu'un tombe dedans
+      name: _powerEvolution.variant_name || "🎯 Blizzard de précision",
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      requires_action: true,
+      action_type: "select_rooms_blizzard",
+    } : _powerEvolution?.level === 2 && _powerEvolution.variant_name ? {
+      name: _powerEvolution.variant_name,
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+    } : {})
+  } : _basePowerDef;
   const requiresAction = selectedPowerDef?.requires_action;
   const actionType = selectedPowerDef?.action_type;
   
   const handleRoomSelection = (roomName) => {
-    if (actionType === "select_rooms_per_floor") {
-      // Blizzard: 1 room per floor
+    if (actionType === "select_rooms_blizzard") {
+      // Blizzard (base + masse + precision) : N pièces selon dungeon_size (+ tours pour masse)
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      const isMasse = selectedPowerDef?.blizzard_masse;
+      const turnsPassed = isMasse ? Math.max(0, (gameState?.turn || 1) - 1) : 0;
+      const maxRooms = isMasse ? Math.min(baseCount * 2, baseCount + turnsPassed) : baseCount;
+      if (tempRoomSelections.includes(roomName)) {
+        setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
+      } else if (tempRoomSelections.length < maxRooms) {
+        setTempRoomSelections([...tempRoomSelections, roomName]);
+      }
+    } else if (actionType === "select_rooms_per_floor") {
+      // Blizzard legacy fallback: 1 room per floor
       const room = gameState.rooms[roomName];
       const floor = room.floor;
       
@@ -4650,8 +4810,20 @@ const PowerSelectionOverlay = ({
       }
     } else if (actionType === "select_two_rooms") {
       // Teleportation: 2 rooms in sequence (trap then exit)
+      // Variant "masse": up to 3 trap rooms then exit
+      const isMasse = selectedPowerDef?.masse_trap_count > 0;
       if (teleportationStep === 1) {
-        setTrapRoom(roomName);
+        if (isMasse) {
+          // Toggle trap room in masseTrapRooms list (max 3)
+          const maxTraps = selectedPowerDef.masse_trap_count || 3;
+          if (masseTrapRooms.includes(roomName)) {
+            setMasseTrapRooms(masseTrapRooms.filter(r => r !== roomName));
+          } else if (masseTrapRooms.length < maxTraps) {
+            setMasseTrapRooms([...masseTrapRooms, roomName]);
+          }
+        } else {
+          setTrapRoom(roomName);
+        }
       } else {
         setTempRoomSelections([roomName]);
       }
@@ -4663,7 +4835,11 @@ const PowerSelectionOverlay = ({
   };
   
   const canConfirmAction = () => {
-    if (actionType === "select_rooms_per_floor") {
+    if (actionType === "select_rooms_blizzard") {
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      return tempRoomSelections.length >= 1 && tempRoomSelections.length <= baseCount * 2;
+    } else if (actionType === "select_rooms_per_floor") {
       // Must select from at least one floor
       return tempRoomSelections.length > 0;
     } else if (actionType === "select_rooms") {
@@ -4677,8 +4853,9 @@ const PowerSelectionOverlay = ({
       return selectedFloor !== null;
     } else if (actionType === "select_two_rooms") {
       // Teleportation: step 1 needs trap room, step 2 needs exit room
+      const isMasse = selectedPowerDef?.masse_trap_count > 0;
       if (teleportationStep === 1) {
-        return trapRoom !== null;
+        return isMasse ? masseTrapRooms.length > 0 : trapRoom !== null;
       } else {
         return tempRoomSelections.length === 1;
       }
@@ -4969,10 +5146,19 @@ const PowerSelectionOverlay = ({
             ) : (
               <>
                 <p className="text-center mb-4">
+                  {actionType === "select_rooms_blizzard" && (() => {
+                    const dungeonSize = gameState?.dungeon_size || 12;
+                    const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+                    const isMasse = selectedPowerDef?.blizzard_masse;
+                    const turnsPassed = isMasse ? Math.max(0, (gameState?.turn || 1) - 1) : 0;
+                    const maxRooms = isMasse ? Math.min(baseCount * 2, baseCount + turnsPassed) : baseCount;
+                    return `Sélectionnez jusqu'à ${maxRooms} pièce${maxRooms > 1 ? "s" : ""} à piéger par le blizzard (${tempRoomSelections.length}/${maxRooms}) :`;
+                  })()}
                   {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
                   {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
                   {actionType === "select_room" && "Sélectionnez une pièce à empoisonner:"}
-                  {actionType === "select_two_rooms" && teleportationStep === 1 && "Posez votre piège de téléportation dans la pièce que vous souhaitez ➡️🌀"}
+                  {actionType === "select_two_rooms" && teleportationStep === 1 && !selectedPowerDef?.masse_trap_count && "Posez votre piège de téléportation dans la pièce que vous souhaitez ➡️🌀"}
+                  {actionType === "select_two_rooms" && teleportationStep === 1 && selectedPowerDef?.masse_trap_count > 0 && `Sélectionnez jusqu'à ${selectedPowerDef.masse_trap_count} pièces d'entrée ➡️🌀 (${masseTrapRooms.length}/${selectedPowerDef.masse_trap_count} choisies)`}
                   {actionType === "select_two_rooms" && teleportationStep === 2 && "Posez votre portail de sortie dans la pièce que vous souhaitez. Les joueurs téléportés arriveront dans cette pièce 🌀➡️"}
                 </p>
                 
@@ -4984,13 +5170,13 @@ const PowerSelectionOverlay = ({
                         {Object.entries(gameState.rooms)
                           .filter(([_, data]) => data.floor === floor)
                           .map(([roomName, roomData]) => {
-                            const isSelected = actionType === "select_two_rooms" && teleportationStep === 1 
-                              ? trapRoom === roomName 
+                            const isSelected = actionType === "select_two_rooms" && teleportationStep === 1
+                              ? (selectedPowerDef?.masse_trap_count > 0 ? masseTrapRooms.includes(roomName) : trapRoom === roomName)
                               : tempRoomSelections.includes(roomName);
                             const isLocked = roomData.locked;
                             const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
                             
-                            // PATROUILLE: Highlight selected room in red, other rooms on same floor in orange
+                            // ESPIONNAGE: Highlight selected room in red, other rooms on same floor in orange
                             let highlightStyle = {};
                             if (actionType === "select_room" && selectedPower === "patrouille" && tempRoomSelections.length > 0) {
                               if (tempRoomSelections[0] === roomName) {
@@ -5032,8 +5218,19 @@ const PowerSelectionOverlay = ({
                         setTeleportationStep(2);
                         setTempRoomSelections([]);
                       } else {
-                        // Confirm both rooms
-                        confirmPowerAction({ trap_room: trapRoom, exit_room: tempRoomSelections[0] });
+                        // Confirm: masse variant sends multiple trap rooms, standard sends single
+                        const isMasse = selectedPowerDef?.masse_trap_count > 0;
+                        if (isMasse) {
+                          confirmPowerAction({ trap_rooms: masseTrapRooms, exit_room: tempRoomSelections[0] });
+                        } else {
+                          confirmPowerAction({ trap_room: trapRoom, exit_room: tempRoomSelections[0] });
+                        }
+                        // Reset teleportation internal state so it's clean if the component
+                        // re-renders before being unmounted (e.g. during the specialization flow)
+                        setTeleportationStep(1);
+                        setTrapRoom(null);
+                        setMasseTrapRooms([]);
+                        setTempRoomSelections([]);
                       }
                     } else {
                       confirmPowerAction({ rooms: tempRoomSelections });
@@ -5043,7 +5240,11 @@ const PowerSelectionOverlay = ({
                   className="w-full mt-4"
                   style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
                 >
-                  {actionType === "select_two_rooms" && teleportationStep === 1 ? "Suivant" : "Confirmer"}
+                  {actionType === "select_two_rooms" && teleportationStep === 1
+                    ? (selectedPowerDef?.masse_trap_count > 0
+                        ? `Suivant (${masseTrapRooms.length} piège${masseTrapRooms.length > 1 ? "s" : ""})`
+                        : "Suivant")
+                    : "Confirmer"}
                 </Button>
               </>
             )}
@@ -5078,7 +5279,12 @@ const PowerSelectionOverlay = ({
                 >
                   <div className="power-card-image">
                     <video 
-                      src={`/powers/${power.icon}`} 
+                      src={
+                        currentPlayer?.powers_evolution?.[powerName]?.level === 2 &&
+                        currentPlayer.powers_evolution[powerName].variant_video_path
+                          ? currentPlayer.powers_evolution[powerName].variant_video_path
+                          : `/powers/${power.icon}`
+                      }
                       autoPlay
                       loop
                       muted
@@ -5087,8 +5293,28 @@ const PowerSelectionOverlay = ({
                     />
                   </div>
                   <div className="power-card-content">
-                    <h3 className="power-card-name">{power.name}</h3>
-                    <p className="power-card-description">{power.description}</p>
+                    <h3 className="power-card-name" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>
+                        {currentPlayer?.powers_evolution?.[powerName]?.level === 2 && currentPlayer.powers_evolution[powerName].variant_name
+                          ? currentPlayer.powers_evolution[powerName].variant_name
+                          : power.name}
+                      </span>
+                      {currentPlayer && currentPlayer.powers_evolution && currentPlayer.powers_evolution[powerName] && (
+                        <span style={{
+                          fontSize: '0.75rem',
+                          color: currentPlayer.powers_evolution[powerName].level === 2 ? '#10b981' : '#d4af37',
+                          fontWeight: 'normal',
+                          marginLeft: '0.5rem'
+                        }}>
+                          Niv.{currentPlayer.powers_evolution[powerName].level}
+                        </span>
+                      )}
+                    </h3>
+                    <p className="power-card-description">
+                      {currentPlayer?.powers_evolution?.[powerName]?.level === 2 && currentPlayer.powers_evolution[powerName].variant_description
+                        ? currentPlayer.powers_evolution[powerName].variant_description
+                        : power.description}
+                    </p>
                   </div>
                   {isSelected && (
                     <div className="power-card-selected-badge">✓</div>
@@ -5097,6 +5323,112 @@ const PowerSelectionOverlay = ({
               );
             })}
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+// ========== POWER SPECIALIZATION MODAL ==========
+const PowerSpecializationModal = ({ data, onClose, wsRef }) => {
+  const [selectedVariant, setSelectedVariant] = useState(null);
+  
+  if (!data) return null;
+  
+  const { power, specializations } = data;
+  const variants = Object.entries(specializations);
+  
+  const handleSelectVariant = (variantKey) => {
+    if (!wsRef || !wsRef.current) return;
+    
+    wsRef.current.send(JSON.stringify({
+      type: "select_power_specialization",
+      power: power,
+      variant: variantKey
+    }));
+    
+    setSelectedVariant(variantKey);
+    setTimeout(() => { onClose(); }, 1500);
+  };
+  
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.95)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 4000,
+      }}
+    >
+      <Card style={{
+        maxWidth: '1100px',
+        width: '95%',
+        backgroundColor: '#2a1f17',
+        border: '3px solid #d4af37',
+      }}>
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            🔮 Spécialisation — {power.charAt(0).toUpperCase() + power.slice(1)}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p style={{ color: '#e8dcc4', textAlign: 'center', marginBottom: '1.5rem' }}>
+            Choisissez une amélioration pour votre pouvoir :
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1rem' }}>
+            {variants.map(([variantKey, variantData]) => (
+              <div
+                key={variantKey}
+                style={{
+                  backgroundColor: 'rgba(0,0,0,0.4)',
+                  border: selectedVariant === variantKey ? '3px solid #10b981' : '2px solid rgba(212,175,55,0.3)',
+                  borderRadius: '12px',
+                  padding: '1.25rem',
+                  transition: 'all 0.3s ease',
+                }}
+              >
+                <h3 style={{ color: '#d4af37', fontSize: '1.3rem', marginBottom: '0.75rem', textAlign: 'center' }}>
+                  {variantData.name}
+                </h3>
+                <div
+                  style={{
+                    width: '100%', height: '200px', backgroundColor: '#000',
+                    borderRadius: '8px', marginBottom: '0.75rem',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <video src={variantData.video_path} autoPlay loop muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                <p style={{ color: '#e8dcc4', fontSize: '0.95rem', marginBottom: '1rem', textAlign: 'center', minHeight: '50px' }}>
+                  {variantData.description}
+                </p>
+                <button
+                  onClick={() => handleSelectVariant(variantKey)}
+                  disabled={selectedVariant !== null}
+                  style={{
+                    width: '100%', padding: '10px',
+                    backgroundColor: selectedVariant === variantKey ? '#10b981' : '#d4af37',
+                    border: 'none', borderRadius: '8px',
+                    color: '#1a1410', fontSize: '1rem', fontWeight: 'bold',
+                    cursor: selectedVariant !== null ? 'not-allowed' : 'pointer',
+                    opacity: selectedVariant !== null && selectedVariant !== variantKey ? 0.5 : 1,
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  {selectedVariant === variantKey ? '✓ Sélectionné' : 'Choisir'}
+                </button>
+              </div>
+            ))}
+          </div>
+          {selectedVariant && (
+            <p style={{ color: '#10b981', textAlign: 'center', fontSize: '1.1rem', fontWeight: 'bold' }}>
+              ✨ Amélioration confirmée !
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -5313,6 +5645,10 @@ const prevPendingActionsRef = useRef('{}');
   // NEW: Discovered events list for the Secousse power (provided by backend)
   const [secousseEvents, setSecousseEvents] = useState([]);
   
+  // NEW: Power specialization modal
+  const [showPowerSpecialization, setShowPowerSpecialization] = useState(false);
+  const [powerSpecializationData, setPowerSpecializationData] = useState(null);
+
   // NEW: Key found popup state
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
   const [keyFoundMessage, setKeyFoundMessage] = useState("");
@@ -5432,6 +5768,10 @@ const prevPendingActionsRef = useRef('{}');
   const [showGoliathDeathPopup, setShowGoliathDeathPopup] = useState(false);
   const [goliathDeathMessage, setGoliathDeathMessage] = useState("");
   const [goliathDeathVideoPath, setGoliathDeathVideoPath] = useState("");
+  const [showTraquePopup, setShowTraquePopup] = useState(false);
+  const [traqueMessage, setTraqueMessage] = useState("");
+  const [traqueVideoPath, setTraqueVideoPath] = useState("/powers/Traque.mp4");
+  const [traqueAvatars, setTraqueAvatars] = useState([]);
 
   // NEW: Eboulement popup state
   const [showEboulementPopup, setShowEboulementPopup] = useState(false);
@@ -5447,6 +5787,13 @@ const prevPendingActionsRef = useRef('{}');
   const [showObservationStoneAlert, setShowObservationStoneAlert] = useState(false);
   const [observationStoneMessage, setObservationStoneMessage] = useState("");
   const [observationStoneVideoPath, setObservationStoneVideoPath] = useState("");
+
+  // NEW: Patrol killer alert popup (gobelin détecte un survivant)
+  const [showPatrolKillerAlert, setShowPatrolKillerAlert] = useState(false);
+  const [patrolKillerMessage, setPatrolKillerMessage] = useState("");
+  const [patrolKillerVideoPath, setPatrolKillerVideoPath] = useState("");
+  const [showSuffocantAlert, setShowSuffocantAlert] = useState(false);
+  const [suffocantMessage, setSuffocantMessage] = useState("");
 
   // NEW: Malédiction states
   const [showMaledictionWarningPopup, setShowMaledictionWarningPopup] = useState(false);
@@ -5548,6 +5895,10 @@ const prevPendingActionsRef = useRef('{}');
             } else if (event.type === "fleeing_goblin_combat") {
               setFleeingGoblinCombatEvent(event);
               setShowFleeingGoblinCombat(true);
+            } else if (event.type === "power_specialization") {
+              // Show power specialization modal
+              setPowerSpecializationData(event);
+              setShowPowerSpecialization(true);
             }
           }
         }
@@ -5710,23 +6061,46 @@ const prevPendingActionsRef = useRef('{}');
         setObservationStoneVideoPath(data.video_path);
         setShowObservationStoneAlert(true);
         // NOTE: No notifyEventCompleted needed — non-blocking for killers
+      } else if (data.type === "blizzard_precision_alert") {
+        // Blizzard de précision : alerter le killer qu'un aventurier est pris dans son blizzard
+        setPatrolKillerMessage(`🥶 ${data.player_name} est pris dans votre blizzard (${data.room}) !`);
+        setPatrolKillerVideoPath("/powers/blizzard.mp4");
+        setShowPatrolKillerAlert(true);
       } else if (data.type === "patrol_reveal") {
-        // Killers get notified that a survivor has been revealed by the patrol goblin
-        toast.info(`🔍 ${data.player_name} a été repéré par le gobelin de Patrouille dans ${data.room} !`, {
-          duration: 5000
-        });
+        // Killers: exact position revealed by Patrouille variant → popup with video
+        setPatrolKillerMessage(`🔍 Gobelin de Patrouille : ${data.player_name} est dans "${data.room}" !`);
+        setPatrolKillerVideoPath("/powers/Patrouille.mp4");
+        setShowPatrolKillerAlert(true);
+      } else if (data.type === "patrol_presence") {
+        // Killers: floor presence revealed by Espionnage or Vadrouille → popup with video
+        const _floorLabels = { upper_floor: "Étage supérieur", ground_floor: "Rez-de-chaussée", basement: "Sous-sol" };
+        const _varLabel = data.variant === "vadrouille" ? "Vadrouille" : "Espion";
+        setPatrolKillerMessage(`🔍 Gobelin ${_varLabel} : ${data.player_name} détecté au ${_floorLabels[data.floor] || data.floor} !`);
+        setPatrolKillerVideoPath(data.variant === "vadrouille" ? "/powers/Vadrouille.mp4" : "/powers/Espionnage.mp4");
+        setShowPatrolKillerAlert(true);
       } else if (data.type === "goliath_death_popup") {
         // Show Goliath death popup with video
         setGoliathDeathMessage(data.message);
         setGoliathDeathVideoPath(data.video_path);
         setShowGoliathDeathPopup(true);
         // NOTE: No auto-hide — user must click to close
+      } else if (data.type === "traque_result") {
+        // Show Traque popup with video (video_path and avatars vary by variant)
+        setTraqueMessage(data.message);
+        setTraqueVideoPath(data.video_path || "/powers/Traque.mp4");
+        setTraqueAvatars(data.avatars || []);
+        setShowTraquePopup(true);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
         toast.warning(data.message, {
           duration: 4000,
           icon: '😷'
         });
+      } else if (data.type === "toxic_cough_popup") {
+        // Toxine suffocante — notify killers of poisoned survivor's floor
+        // Server sends this only to killers (role_filter="killer")
+        setSuffocantMessage(data.message);
+        setShowSuffocantAlert(true);
       } else if (data.type === "event") {
         toast.info(data.message);
       } else if (data.type === "new_turn") {
@@ -5760,6 +6134,14 @@ const prevPendingActionsRef = useRef('{}');
         setPreSelectedRoom(null); // Reset pre-selection
         setFlashingRooms(new Set());
     prevPendingActionsRef.current = '{}';
+
+    // Sync gameState immediately when the payload includes the full game object.
+    // Without this, gameState.phase stays "killer_power_selection" for one render
+    // after the phase_change arrives, causing PowerSelectionOverlay to flash
+    // "En attente des autres Orcs..." even though action_complete is already True.
+    if (data.game) {
+      setGameState(data.game);
+    }
     
     // NEW: Show adventurer turn popup when entering survivor_selection phase
     if (data.phase === "survivor_selection") {
@@ -6062,13 +6444,35 @@ const selectRoom = (roomName) => {
     }
 
     // NEW: For powers that don't require action, show "Fouillez une pièce" popup immediately
+    // Tenir compte des évolutions de pouvoir (ex: Traque de masse niveau 2 n'a pas besoin d'action)
     const powerDef = powerDefinitions[powerName];
-    if (powerDef && !powerDef.requires_action) {
+    const currentPlayer = gameState.players[playerId];
+    const evolution = currentPlayer?.powers_evolution?.[powerName];
+
+    // Calculer si le pouvoir effectivement sélectionné requiert une action,
+    // en appliquant les surcharges de variante niveau 2 (comme dans selectedPowerDef)
+    let effectiveRequiresAction = powerDef?.requires_action;
+    if (evolution?.level === 2) {
+      if (powerName === "traque" && evolution.variant === "masse") {
+        // Traque de masse : s'active directement, pas de sélection d'étage
+        effectiveRequiresAction = false;
+      } else if (powerName === "traque" && evolution.variant === "precision") {
+        effectiveRequiresAction = true;
+      }
+      // Les autres variantes niveau 2 conservent le comportement de base
+    }
+
+    if (powerDef && !effectiveRequiresAction) {
       setShowOrcSearchPopup(true);
       // Auto-hide after 3 seconds
       setTimeout(() => {
         setShowOrcSearchPopup(false);
       }, 3000);
+    } else if (powerDef && effectiveRequiresAction) {
+      // Afficher immédiatement l'interface d'action sans attendre le message WebSocket
+      // power_action_required. Cela évite le flash du popup de sélection de pouvoir
+      // pendant le round-trip réseau (visible notamment pour le Piège de Téléportation).
+      setShowPowerAction(true);
     }
   };
   
@@ -8010,6 +8414,62 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* Patrol Killer Alert Popup */}
+      {showPatrolKillerAlert && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowPatrolKillerAlert(false)}
+          data-testid="patrol-killer-alert-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#f59e0b' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#fbbf24' }}>
+                🔍 <span>Gobelin de Patrouille !</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {patrolKillerVideoPath && (
+                <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
+                  <source src={patrolKillerVideoPath} type="video/mp4" />
+                </video>
+              )}
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {patrolKillerMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>Cliquez pour continuer</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Toxine suffocante : popup pour les killers indiquant l'étage du survivant empoisonné */}
+      {showSuffocantAlert && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowSuffocantAlert(false)}
+          data-testid="suffocant-alert-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#84cc16' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#bef264' }}>
+                😷 <span>Toxine suffocante</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
+                <source src="/powers/Toxine suffocante.mp4" type="video/mp4" />
+              </video>
+              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
+                {suffocantMessage}
+              </p>
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>Cliquez pour continuer</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* Resurrection Stele Encounter Popup */}
       {showResurrectionPopup && (
         <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="resurrection-popup">
@@ -8227,6 +8687,54 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
+      {/* Traque Result Popup */}
+      {showTraquePopup && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1001 }}
+          onClick={() => setShowTraquePopup(false)}
+          data-testid="traque-popup"
+        >
+          <Card className="game-over-card" style={{ maxWidth: '600px', backgroundColor: '#1a1a2e', borderColor: '#8b5cf6' }}>
+            <CardHeader>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#8b5cf6' }}>
+                🔊 Traque
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <video
+                key={traqueVideoPath}
+                autoPlay
+                muted
+                style={{ width: '100%', maxHeight: '320px', borderRadius: '8px', marginBottom: '1rem' }}
+                onEnded={() => {/* keep popup open until clicked */}}
+              >
+                <source src={traqueVideoPath} type="video/mp4" />
+                Votre navigateur ne supporte pas la vidéo.
+              </video>
+              <p style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', fontWeight: 'bold' }}>
+                {traqueMessage}
+              </p>
+              {traqueAvatars.length > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+                  {traqueAvatars.map((avatarPath, idx) => (
+                    <img
+                      key={idx}
+                      src={avatarPath}
+                      alt="Aventurier détecté"
+                      style={{ width: '64px', height: '64px', borderRadius: '50%', border: '2px solid #8b5cf6', objectFit: 'cover' }}
+                    />
+                  ))}
+                </div>
+              )}
+              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
+                Cliquez pour continuer
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* NEW: Adventurer Turn Announcement Popup - Flashing */}
       {showAdventurerTurnPopup && (
         <div 
@@ -8331,6 +8839,7 @@ const selectRoom = (roomName) => {
       {/* Power Selection Screen */}
       {gameState.phase === "killer_power_selection" && currentPlayerRole === "killer" && !isEliminated && (
         <PowerSelectionOverlay 
+          key={gameState.turn}
           gameState={gameState}
           playerId={playerId}
           powerDefinitions={powerDefinitions}
@@ -8436,11 +8945,15 @@ const selectRoom = (roomName) => {
                         });
                     }
 
-                    // 3. Pour les orcs : afficher les aventuriers révélés par le gobelin de patrouille pour ce tour
+                    // 3. Pour les orcs : afficher les aventuriers révélés par le gobelin espion pour ce tour
+                    // Variant "patrouille" → position exacte (afficher avatar dans la salle)
+                    // Variant base/vadrouille → présence seulement (floor toast uniquement, pas d'avatar)
                     let patrolRevealedInRoom = [];
                     if (currentPlayerRole === "killer" && gameState.patrol_revealed_survivors) {
                       patrolRevealedInRoom = Object.entries(gameState.patrol_revealed_survivors)
                         .filter(([pid, revealedRoom]) => {
+                          // "__floor__X" entries are presence-only (espionnage/vadrouille) — no avatar
+                          if (!revealedRoom || revealedRoom.startsWith("__floor__")) return false;
                           if (revealedRoom !== room.name) return false;
                           const player = gameState.players[pid];
                           return player && !player.eliminated && player.role === "survivor";
@@ -8649,6 +9162,11 @@ const selectRoom = (roomName) => {
                     <p className="no-events">Aucun événement pour le moment...</p>
                   ) : (
                     gameState.events.map((event, idx) => {
+                      // sound_clue events are now shown as a popup — hide from journal
+                      if (event.type === "sound_clue") {
+                        return null;
+                      }
+
                       // Filter sound clues based on role
                       if (event.type === "sound_clue" && event.for_role && event.for_role !== currentPlayerRole) {
                         return null; // Don't show sound clues meant for other role
@@ -8830,6 +9348,8 @@ const selectRoom = (roomName) => {
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}
+          onOpenInventory={() => setShowInventory(true)}
+          player={currentPlayer}
         />
       )}
 
@@ -8848,6 +9368,8 @@ const selectRoom = (roomName) => {
           playerId={playerId}
           sessionId={sessionId}
           targetRoom={gameState.observation_stone_target_room}
+          onOpenInventory={() => setShowInventory(true)}
+          player={currentPlayer}
         />
       )}
 
@@ -8860,12 +9382,26 @@ const selectRoom = (roomName) => {
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}
+          onOpenInventory={() => setShowInventory(true)}
+          player={currentPlayer}
         />
       )}
 
       {/* Crystal Combat — handled by the dedicated <CrystalCombat /> component
           (see render block above). The previous server-driven overlay was
           replaced by an event-broadcast model identical to GoblinCombat. */}
+
+      {/* Power Specialization Modal */}
+      {showPowerSpecialization && powerSpecializationData && (
+        <PowerSpecializationModal
+          data={powerSpecializationData}
+          onClose={() => {
+            setShowPowerSpecialization(false);
+            setPowerSpecializationData(null);
+          }}
+          wsRef={ws}
+        />
+      )}
     </div>
   );
 };

@@ -11,6 +11,7 @@ import uuid
 import random
 import asyncio
 import string
+import math
 import time
 from datetime import datetime, timezone
 
@@ -89,6 +90,7 @@ class StartGameRequest(BaseModel):
 class UpdateGameSettingsRequest(BaseModel):  # NEW
     required_relics: dict  # {"relique_spherique": bool, "relique_cubique": bool, "relique_triangulaire": bool}
     dungeon_size: int = 12  # 6, 9 ou 12 pièces (2, 3 ou 4 par étage)
+    enabled_powers: Optional[List[str]] = None  # liste des pouvoirs activés (None = tous)
 
 class PlayerAction(BaseModel):
     action: str  # "select_room", "use_medikit", "use_antidote"
@@ -224,7 +226,19 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "weapon_forge_attempts": 0 if host_role == "survivor" else 0,  # NEW: forge attempts on weapon
                 "weapon_bonuses": [] if host_role == "survivor" else None,  # NEW: list of {stat, value, rune_type, label}
                 "pending_forge_room": None,  # NEW: room name where a forge is waiting after a rune event
-                "inventory": [None] * 9 if host_role == "survivor" else None
+                "inventory": [None] * 9 if host_role == "survivor" else None,
+                "powers_evolution": {
+                    "mimic": {"level": 1, "variant": None},
+                    "rage": {"level": 1, "variant": None},
+                    "piege": {"level": 1, "variant": None},
+                    "toxine": {"level": 1, "variant": None},
+                    "vision": {"level": 1, "variant": None},
+                    "teleportation": {"level": 1, "variant": None},
+                    "goliath": {"level": 1, "variant": None},
+                    "eboulement": {"level": 1, "variant": None},
+                    "patrouille": {"level": 1, "variant": None},
+                    "traque": {"level": 1, "variant": None}
+                } if host_role == "killer" else None,
             }
         },
         "rooms": rooms_state,
@@ -262,6 +276,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             "relique_triangulaire": True,
         },
         "dungeon_size": 12,                  # NEW: 6, 9 ou 12 pièces (paramètre lobby)
+        "enabled_powers": list(POWERS.keys()),  # NEW: liste des pouvoirs disponibles (tous par défaut)
         "crystal_room": None,
         "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
         "crystal_room": None,                # NEW
@@ -282,6 +297,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "patrouille_patrol": None,  # NEW: {room: str, floor: str, active: bool} - gobelin de patrouille
         "patrol_revealed_survivors": {},  # NEW: {player_id: room_name} - survivants revealed by patrol goblin during this turn
         "discovered_rooms": [],  # NEW: List of room names discovered by survivors (fog of war)
+        "pending_specializations": {},  # NEW: Pending power specializations
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -762,10 +778,10 @@ POWERS = {
     },
     "piege": {
         "name": "🥶 Blizzard",
-        "description": "Déployez un blizzard dans une pièce par étage, immobilisant pour un tour l'aventurier qui choisit prochainement cette pièce",
+        "description": "Déployez un blizzard dans des pièces au choix. Les aventuriers pris dans un blizzard sont immobilisés et perdent ~20% de leurs PV. (2 pièces pour 6 salles, 3 pour 9, 4 pour 12)",
         "icon": "blizzard.mp4",
         "requires_action": True,
-        "action_type": "select_rooms_per_floor"  # select one room per floor
+        "action_type": "select_rooms_blizzard"  # select N rooms based on dungeon_size
     },
     "toxine": {
         "name": "😷 Toxine",
@@ -823,9 +839,9 @@ POWERS = {
         "requires_action": False
     },
     "patrouille": {
-        "name": "🔍 Patrouille",
-        "description": "Placez un gobelin de patrouille dans une pièce. Tant qu'il n'est pas trouvé, il révèle la position des aventuriers présent dans son étage.",
-        "icon": "Patrouille.mp4",
+        "name": "🔍 Espionnage",
+        "description": "Révèle la présence de joueurs dans l'étage tant que le gobelin n'est pas trouvé.",
+        "icon": "Espionnage.mp4",
         "requires_action": True,
         "action_type": "select_room"  # select one room
     },
@@ -946,6 +962,11 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
     excluding secousse if no events have been discovered yet."""
     excluded = list(exclude_powers)
 
+    # Restrict to enabled powers if configured
+    enabled_powers = game_state.get("enabled_powers") if game_state else None
+    if enabled_powers is None:
+        enabled_powers = list(POWERS.keys())
+
     # Exclude goliath if already active
     if game_state and game_state.get("goliath_active", False):
         excluded.append("goliath")
@@ -970,7 +991,7 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
         if not has_cursable:
             excluded.append("malediction")
 
-    available = [p for p in POWERS.keys() if p not in excluded]
+    available = [p for p in enabled_powers if p not in excluded and p in POWERS]
     return random.sample(available, min(3, len(available)))
 
 def validate_game_start(game: dict) -> tuple[bool, Optional[str]]:
@@ -1027,6 +1048,9 @@ async def check_power_selection_complete(session_id: str):
         
         # Move to killer selection phase
         game["phase"] = "killer_selection"
+        # Clear pending_power_selections before broadcast so the frontend never sees
+        # action_complete=True while still on killer_power_selection phase.
+        game["pending_power_selections"] = {}
         await broadcast_to_session(session_id, {
             "type": "phase_change",
             "phase": "killer_selection",
@@ -1067,6 +1091,10 @@ async def apply_powers(session_id: str):
             # Révèle les aventuriers dans des salles avec évènements découverts par les killers
             vision_revealed = {}
 
+            # Lire le variant (None = base, "vigilante", "accumulative")
+            killer_player = game["players"].get(player_id)
+            vision_variant = (killer_player or {}).get("powers_evolution", {}).get("vision", {}).get("variant")
+
             # Construire la liste des salles avec évènements connus des killers
             discovered_event_rooms = set()
             for room_name, room_data in game["rooms"].items():
@@ -1084,6 +1112,24 @@ async def apply_powers(session_id: str):
                 target_room = action.get("room")
                 if target_room and target_room in discovered_event_rooms:
                     vision_revealed[survivor_id] = target_room
+
+            # VIGILANTE: also reveal survivors who picked up an item this turn
+            if vision_variant == "vigilante":
+                items_gained_this_turn = game.get("turn_survivors_items_gained", {})
+                for survivor_id, room_name in items_gained_this_turn.items():
+                    survivor = game["players"].get(survivor_id)
+                    if survivor and not survivor.get("eliminated") and survivor_id not in vision_revealed:
+                        vision_revealed[survivor_id] = room_name
+
+            # ACCUMULATIVE: also reveal survivors who triggered a trap, fought, or lost HP this turn
+            if vision_variant == "accumulative":
+                damaged_this_turn = game.get("turn_survivors_damaged", {})
+                for survivor_id, room_name in damaged_this_turn.items():
+                    survivor = game["players"].get(survivor_id)
+                    if survivor and not survivor.get("eliminated"):
+                        # Use current room (most up-to-date) if available
+                        actual_room = survivor.get("current_room") or room_name
+                        vision_revealed[survivor_id] = actual_room
 
             game["active_powers"]["vision"] = {
                 "used_by": [player_id],
@@ -1107,6 +1153,33 @@ async def apply_powers(session_id: str):
 
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # ── Specialization trigger (level 1 only) ──
+            killer_player = game["players"].get(player_id)
+            power_data = game["pending_power_selections"].get(player_id, {})
+            if killer_player and "powers_evolution" in killer_player:
+                power_evolution_check = killer_player["powers_evolution"].get("vision", {})
+                current_level = power_evolution_check.get("level", 1)
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    if player_id in game["pending_power_selections"]:
+                        game["pending_power_selections"][player_id]["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "vision",
+                        "specializations": {
+                            "vigilante": {
+                                "name": "👁️ Vision Vigilante",
+                                "description": "Révèle également la position des aventuriers ayant obtenu un objet durant le tour (runes, reliques, potions…).",
+                                "video_path": "/powers/vision vigilante.mp4"
+                            },
+                            "accumulative": {
+                                "name": "👁️ Vision Accumulative",
+                                "description": "Révèle également la position des aventuriers ayant déclenché un piège, un combat ou perdu des points de vie durant ce tour.",
+                                "video_path": "/powers/vision accumulative.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"🔮 Spécialisation Vision disponible pour {killer_player['name']}")
         
         elif power_name == "secousse":
             # NEW behavior: relocate a previously discovered event chosen by the killer
@@ -1144,19 +1217,50 @@ async def apply_powers(session_id: str):
                 await broadcast_to_session(session_id, {"type": "state_update", "game": game}, role_filter="killer")
         
         elif power_name == "piege":
-            # Trap selected rooms
+            # Trap selected rooms (Blizzard)
+            killer_player = game["players"].get(player_id)
+            power_evolution = (killer_player or {}).get("powers_evolution", {}).get("piege", {})
+            variant = power_evolution.get("variant")
+
             action_data = selection.get("action_data", {})
             trapped_rooms = action_data.get("rooms", [])
-            
+
             for room_name in trapped_rooms:
                 if room_name in game["rooms"]:
                     game["rooms"][room_name]["trapped"] = True
-            
+                    # Store which killer (and variant) set this trap for precision alert
+                    game["rooms"][room_name]["blizzard_killer_id"] = player_id
+                    game["rooms"][room_name]["blizzard_variant"] = variant
+
             game["active_powers"][power_name]["data"]["trapped_rooms"] = trapped_rooms
-            
+
             event_msg = f"🥶 {player['name']} utilise Blizzard !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # Trigger specialization choice at level 1
+            if killer_player and "powers_evolution" in killer_player:
+                power_data = killer_player["powers_evolution"].get("piege", {})
+                current_level = power_data.get("level", 1)
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    power_data["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "piege",
+                        "specializations": {
+                            "masse": {
+                                "name": "Blizzard de masse",
+                                "description": "Sélectionnez 1 pièce supplémentaire pour chaque tour écoulé (jusqu'au double de la valeur de base).",
+                                "video_path": "/powers/Blizzard de masse.mp4"
+                            },
+                            "precision": {
+                                "name": "Blizzard de précision",
+                                "description": "Vous êtes alerté dès qu'un aventurier tombe dans votre blizzard.",
+                                "video_path": "/powers/Blizzard de précision.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"🥶 Spécialisation Blizzard disponible pour {killer_player['name']}")
         
         elif power_name == "toxine":
             # Poison selected room for 3 turns
@@ -1171,31 +1275,151 @@ async def apply_powers(session_id: str):
             event_msg = f"😷 {player['name']} utilise Toxine !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # Trigger specialization choice at level 1 (first use)
+            killer_player = game["players"].get(player_id)
+            power_data = game["pending_power_selections"].get(player_id, {})
+            if killer_player and "powers_evolution" in killer_player:
+                power_evolution_check = killer_player["powers_evolution"].get("toxine", {})
+                current_level = power_evolution_check.get("level", 1)
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    power_data["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "toxine",
+                        "specializations": {
+                            "suffocante": {
+                                "name": "Toxine suffocante",
+                                "description": "Vous entendez désormais tousser bruyamment dans l'étage du joueur contaminé.",
+                                "video_path": "/powers/Toxine suffocante.mp4"
+                            },
+                            "incapacitante": {
+                                "name": "Toxine incapacitante",
+                                "description": "Un joueur atteint de la toxine reçoit un malus de 50 % de dégâts.",
+                                "video_path": "/powers/Toxine incapacitante.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"😷 Spécialisation Toxine disponible pour {killer_player['name']}")
         
         elif power_name == "traque":
-            # Get selected floor from action_data
+            killer_player = game["players"].get(player_id)
+            power_evolution = (killer_player or {}).get("powers_evolution", {}).get("traque", {})
+            variant = power_evolution.get("variant")
+
             action_data = selection.get("action_data", {})
-            selected_floor = action_data.get("floor")
-            
-            if selected_floor:
-                # Get floor hints for all survivors
-                floor_hints = get_survivor_floor_hints(game)
-                
-                # Check if any survivors are on the selected floor
-                if selected_floor in floor_hints:
-                    floor_name_fr = floor_names.get(selected_floor, selected_floor)
-                    sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}... Des aventuriers sont présents !"
-                    game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
-                    await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
+
+            if variant == "masse":
+                # ── Traque de masse : révèle tous les aventuriers, étage par étage ──
+                # Build a mapping floor → list of player names
+                floor_to_players = {}
+                for pid, p in game["players"].items():
+                    if p.get("role") == "survivor" and not p.get("eliminated", False):
+                        pending = game.get("pending_actions", {}).get(pid)
+                        room_name = (pending or {}).get("room") or p.get("current_room")
+                        if room_name and room_name in game["rooms"]:
+                            floor_key = game["rooms"][room_name]["floor"]
+                            floor_to_players.setdefault(floor_key, []).append(p["name"])
+
+                floor_order = ["upper_floor", "ground_floor", "basement"]
+                if floor_to_players:
+                    parts = []
+                    for fl in floor_order:
+                        if fl in floor_to_players:
+                            names = " et ".join(floor_to_players[fl])
+                            parts.append(f"{names} {'se trouve' if len(floor_to_players[fl]) == 1 else 'se trouvent'} {floor_names.get(fl, fl)}")
+                    sound_event_msg = "👥 " + ", ".join(parts) + "."
                 else:
+                    sound_event_msg = "🤫 Aucun aventurier détecté dans le donjon."
+
+                game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                await broadcast_to_session(session_id, {
+                    "type": "traque_result",
+                    "message": sound_event_msg,
+                    "video_path": "/powers/Traque de masse.mp4"
+                }, role_filter="killer")
+
+            elif variant == "precision":
+                # ── Traque de précision : révèle les salles précises + avatars ──
+                selected_floor = action_data.get("floor")
+                if selected_floor:
                     floor_name_fr = floor_names.get(selected_floor, selected_floor)
-                    sound_event_msg = f"🤫 Aucun bruit {floor_name_fr}... Aucun aventurier détecté."
+                    detected = []
+                    for pid, p in game["players"].items():
+                        if p.get("role") == "survivor" and not p.get("eliminated", False):
+                            pending = game.get("pending_actions", {}).get(pid)
+                            room_name = (pending or {}).get("room") or p.get("current_room")
+                            if room_name and room_name in game["rooms"]:
+                                if game["rooms"][room_name]["floor"] == selected_floor:
+                                    detected.append({
+                                        "name": p["name"],
+                                        "room": room_name,
+                                        "avatar": p.get("avatar", "")
+                                    })
+
+                    if detected:
+                        parts = [f"{d['name']} dans {d['room']}" for d in detected]
+                        sound_event_msg = f"🔍 {floor_name_fr} — " + ", ".join(parts) + "."
+                    else:
+                        sound_event_msg = f"🤫 Aucun aventurier détecté {floor_name_fr}."
+
                     game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
-                    await broadcast_to_session(session_id, {"type": "event", "message": sound_event_msg}, role_filter="killer")
-            
+                    await broadcast_to_session(session_id, {
+                        "type": "traque_result",
+                        "message": sound_event_msg,
+                        "video_path": "/powers/Traque de précision.mp4",
+                        "avatars": [d["avatar"] for d in detected] if detected else []
+                    }, role_filter="killer")
+
+            else:
+                # ── Traque de base (niveau 1) : révèle présence par étage ──
+                selected_floor = action_data.get("floor")
+                if selected_floor:
+                    floor_hints = get_survivor_floor_hints(game)
+                    floor_name_fr = floor_names.get(selected_floor, selected_floor)
+                    if selected_floor in floor_hints:
+                        sound_event_msg = f"👂 Vous entendez du bruit {floor_name_fr}... Des aventuriers sont présents !"
+                    else:
+                        sound_event_msg = f"🤫 Aucun bruit {floor_name_fr}... Aucun aventurier détecté."
+                    game["events"].append({"message": sound_event_msg, "type": "sound_clue", "for_role": "killer"})
+                    await broadcast_to_session(session_id, {
+                        "type": "traque_result",
+                        "message": sound_event_msg,
+                        "video_path": "/powers/Traque.mp4"
+                    }, role_filter="killer")
+
             event_msg = f"🔊 {player['name']} utilise Traque !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # Mark action complete
+            if player_id in game["pending_power_selections"]:
+                game["pending_power_selections"][player_id]["action_complete"] = True
+
+            # Trigger specialization if level 1
+            power_data = game["pending_power_selections"].get(player_id, {})
+            if killer_player and "powers_evolution" in killer_player:
+                power_evolution_check = killer_player["powers_evolution"].get("traque", {})
+                current_level = power_evolution_check.get("level", 1)
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    power_data["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "traque",
+                        "specializations": {
+                            "precision": {
+                                "name": "Traque de précision",
+                                "description": "Révèle les salles précises des aventuriers sur l'étage sélectionné, ainsi que leurs avatars.",
+                                "video_path": "/powers/Traque de précision.mp4"
+                            },
+                            "masse": {
+                                "name": "Traque de masse",
+                                "description": "Révèle la position de tous les aventuriers, étage par étage, sans sélectionner d'étage.",
+                                "video_path": "/powers/Traque de masse.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"🔮 Spécialisation Traque disponible pour {killer_player['name']}")
         
         elif power_name == "barricade":
             # Lock selected rooms for next turn
@@ -1224,33 +1448,160 @@ async def apply_powers(session_id: str):
             action_data = selection.get("action_data", {})
             mimic_rooms = action_data.get("rooms", [])
             
+            # Check for specialization variant
+            killer_player = game["players"].get(player_id)
+            power_evolution = (killer_player or {}).get("powers_evolution", {}).get("mimic", {})
+            variant = power_evolution.get("variant")
+            
+            # Apply variant effects
+            mimic_hp_multiplier = 2 if variant == "robuste" else 1
+            mimic_duration_extra = 0
+            
+            if variant == "invasive":
+                # Expand to 5 mimics if fewer selected
+                if len(mimic_rooms) < 5:
+                    available_rooms = [r for r in game["rooms"].keys()
+                                       if not game["rooms"][r].get("has_mimic")
+                                       and r not in mimic_rooms]
+                    additional = min(5 - len(mimic_rooms), len(available_rooms))
+                    mimic_rooms = list(mimic_rooms) + available_rooms[:additional]
+                mimic_duration_extra = 1
+                logger.info(f"🔮 Variant Invasive: {len(mimic_rooms)} mimics, durée +1 tour")
+            elif variant == "robuste":
+                logger.info(f"🔮 Variant Robuste: Mimics ont 2× HP et initiative")
+            
             for room_name in mimic_rooms:
                 if room_name in game["rooms"]:
                     game["rooms"][room_name]["has_mimic"] = True
+                    game["rooms"][room_name]["mimic_hp_multiplier"] = mimic_hp_multiplier
+                    game["rooms"][room_name]["mimic_has_initiative"] = (variant == "robuste")
+                    game["rooms"][room_name]["mimic_duration_extra"] = mimic_duration_extra
             
             game["active_powers"][power_name]["data"]["mimic_rooms"] = mimic_rooms
             
-            event_msg = f"💰 {player['name']} utilise Mimic !"
+            variant_text = ""
+            if variant == "robuste":
+                variant_text = " (Robuste - 2× HP)"
+            elif variant == "invasive":
+                variant_text = f" (Invasive - {len(mimic_rooms)} mimics, +1 tour)"
+            
+            event_msg = f"💰 {player['name']} utilise Mimic{variant_text} !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+            
+            # Mark power as used
+            power_data = game["pending_power_selections"].get(player_id, {})
+            power_data["action_complete"] = True
+
+            # NEW: Check if power can be specialized (level 1 only, and not already triggered)
+            if killer_player and "powers_evolution" in killer_player:
+                power_evolution_check = killer_player["powers_evolution"].get("mimic", {})
+                current_level = power_evolution_check.get("level", 1)
+
+                # Only trigger specialization if level 1 and not already triggered this turn
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    # Mark as triggered to avoid re-triggering
+                    power_data["specialization_triggered"] = True
+
+                    # Trigger specialization phase AFTER resolution
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "mimic",
+                        "specializations": {
+                            "robuste": {
+                                "name": "Mimic Robuste",
+                                "description": "Les mimics ont 2× plus de points de vie et ont l'initiative en combat",
+                                "video_path": "/powers/Mimic Robuste.mp4"
+                            },
+                            "invasive": {
+                                "name": "Mimic Invasive",
+                                "description": "Place 5 mimics qui restent un tour supplémentaire",
+                                "video_path": "/powers/Mimic Invasive.mp4"
+                            }
+                        }
+                    }
+
+                    logger.info(f"🔮 Spécialisation Mimic disponible pour {killer_player['name']}")
         
         elif power_name == "teleportation":
             # Set teleportation trap (entrance) and exit portal in selected rooms
             action_data = selection.get("action_data", {})
             trap_room = action_data.get("trap_room")
             exit_room = action_data.get("exit_room")
-            
-            if trap_room and trap_room in game["rooms"] and exit_room and exit_room in game["rooms"]:
+            # Variant "masse" supports multiple trap rooms
+            trap_rooms = action_data.get("trap_rooms", [])
+
+            # Check for specialization variant
+            killer_player = game["players"].get(player_id)
+            power_evolution = (killer_player or {}).get("powers_evolution", {}).get("teleportation", {})
+            variant = power_evolution.get("variant")
+
+            if variant == "masse" and trap_rooms and exit_room and exit_room in game["rooms"]:
+                # Mass variant: up to 3 entrance traps → same exit
+                for tr in trap_rooms:
+                    if tr and tr in game["rooms"]:
+                        game["rooms"][tr]["teleportation_trap"] = True
+                        game["rooms"][tr]["teleportation_target_room"] = exit_room
+                        # Mark duration flag for durable stacking (durable + masse would still work)
+                        game["rooms"][tr]["teleportation_duration_extra"] = 0
+                game["rooms"][exit_room]["teleportation_exit"] = True
+                game["active_powers"][power_name]["data"]["trap_rooms"] = trap_rooms
+                game["active_powers"][power_name]["data"]["trap_room"] = trap_rooms[0] if trap_rooms else None
+                game["active_powers"][power_name]["data"]["exit_room"] = exit_room
+            elif trap_room and trap_room in game["rooms"] and exit_room and exit_room in game["rooms"]:
+                # Standard variant (or "durable")
                 game["rooms"][trap_room]["teleportation_trap"] = True
                 game["rooms"][trap_room]["teleportation_target_room"] = exit_room
+                # Durable variant: trap stays 1 extra turn
+                if variant == "durable":
+                    game["rooms"][trap_room]["teleportation_duration_extra"] = 1
+                else:
+                    game["rooms"][trap_room]["teleportation_duration_extra"] = 0
                 game["rooms"][exit_room]["teleportation_exit"] = True
-            
-            game["active_powers"][power_name]["data"]["trap_room"] = trap_room
-            game["active_powers"][power_name]["data"]["exit_room"] = exit_room
-            
-            event_msg = f"🌀 {player['name']} utilise Piège de Téléportation !"
+                game["active_powers"][power_name]["data"]["trap_room"] = trap_room
+                game["active_powers"][power_name]["data"]["exit_room"] = exit_room
+
+            variant_text = ""
+            if variant == "durable":
+                variant_text = " (Durable - +1 tour)"
+            elif variant == "masse":
+                count = len(trap_rooms) if trap_rooms else 1
+                variant_text = f" (Masse - {count} pièges → 1 sortie)"
+
+            event_msg = f"🌀 {player['name']} utilise Piège de Téléportation{variant_text} !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # Mark power as used (identical to Mimic block)
+            power_data = game["pending_power_selections"].get(player_id, {})
+            power_data["action_complete"] = True
+
+            # NEW: Check if power can be specialized (level 1 only, not already triggered)
+            if killer_player and "powers_evolution" in killer_player:
+                power_evolution_check = killer_player["powers_evolution"].get("teleportation", {})
+                current_level = power_evolution_check.get("level", 1)
+
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    power_data["specialization_triggered"] = True
+
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "teleportation",
+                        "specializations": {
+                            "durable": {
+                                "name": "Téléportation durable",
+                                "description": "Le piège de téléportation reste un tour supplémentaire.",
+                                "video_path": "/powers/Teleportation durable.mp4"
+                            },
+                            "masse": {
+                                "name": "Téléportation de masse",
+                                "description": "Vous placez désormais 3 pièges ➡️🌀 pour téléporter vers une seule pièce.",
+                                "video_path": "/powers/Teleportation de masse.mp4"
+                            }
+                        }
+                    }
+
+                    logger.info(f"🔮 Spécialisation Téléportation disponible pour {killer_player['name']}")
         
         elif power_name == "goliath":
             # Activate the Goliath for 7-10 turns
@@ -1309,26 +1660,94 @@ async def apply_powers(session_id: str):
             }, role_filter="survivor")
         
         elif power_name == "patrouille":
-            # Place patrol goblin in selected room
-            action_data = selection.get("action_data", {})
-            patrol_room = action_data.get("room")
-            
-            if patrol_room and patrol_room in game["rooms"]:
-                patrol_floor = game["rooms"][patrol_room]["floor"]
-                game["patrouille_patrol"] = {
-                    "room": patrol_room,
-                    "floor": patrol_floor,
-                    "active": True
-                }
-                
-                # Mark room with patrol for killers only
-                game["rooms"][patrol_room]["has_patrol"] = True
-            
-            game["active_powers"][power_name]["data"]["patrol_room"] = patrol_room
-            
-            event_msg = f"🔍 {player['name']} utilise Patrouille !"
-            game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+            killer_player = game["players"].get(player_id)
+            power_evolution = (killer_player or {}).get("powers_evolution", {}).get("patrouille", {})
+            variant = power_evolution.get("variant")  # None | "patrouille" | "vadrouille"
+
+            patrol = game.get("patrouille_patrol")
+            gobelin_actif = patrol and patrol.get("active", False)
+
+            if variant is None:
+                # ── BASE: Espionnage ──
+                # Place gobelin in selected room (new position)
+                action_data = selection.get("action_data", {})
+                patrol_room = action_data.get("room")
+
+                if patrol_room and patrol_room in game["rooms"]:
+                    # Clear previous patrol room flag if any
+                    if patrol and patrol.get("room") and patrol["room"] in game["rooms"]:
+                        game["rooms"][patrol["room"]]["has_patrol"] = False
+                    patrol_floor = game["rooms"][patrol_room]["floor"]
+                    game["patrouille_patrol"] = {
+                        "room": patrol_room,
+                        "floor": patrol_floor,
+                        "active": True,
+                        "variant": None  # base: presence only
+                    }
+                    game["rooms"][patrol_room]["has_patrol"] = True
+
+                game["active_powers"][power_name]["data"]["patrol_room"] = patrol_room if patrol_room else None
+
+                event_msg = f"🔍 {player['name']} utilise Espionnage !"
+                game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+                # Propose specialization only if level 1, gobelin NOW active (evaluated after placement), not triggered yet
+                gobelin_now_active = (
+                    game.get("patrouille_patrol") is not None
+                    and game["patrouille_patrol"].get("active", False)
+                )
+                power_data = game["pending_power_selections"].get(player_id, {})
+                if (killer_player and
+                        power_evolution.get("level", 1) == 1 and
+                        gobelin_now_active and
+                        not power_data.get("specialization_triggered", False)):
+                    power_data["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "patrouille",
+                        "specializations": {
+                            "patrouille": {
+                                "name": "Patrouille",
+                                "description": "Révèle la position des joueurs dans son étage tant qu'il n'est pas trouvé.",
+                                "video_path": "/powers/Patrouille.mp4"
+                            },
+                            "vadrouille": {
+                                "name": "Vadrouille",
+                                "description": "Révèle la présence de joueurs sur chaque étage tant qu'il n'est pas trouvé.",
+                                "video_path": "/powers/Vadrouille.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"🔮 Spécialisation Espionnage disponible pour {killer_player['name']} (gobelin actif)")
+
+            else:
+                # ── SPECIALISÉ: Patrouille ou Vadrouille ──
+                # No new placement — apply variant effect to the existing gobelin
+                if gobelin_actif:
+                    game["patrouille_patrol"]["variant"] = variant
+                    variant_label = "Patrouille" if variant == "patrouille" else "Vadrouille"
+                    event_msg = f"🔍 {player['name']} utilise {variant_label} !"
+                else:
+                    # Gobelin was found — fallback: place a new one (Espionnage behaviour)
+                    action_data = selection.get("action_data", {})
+                    patrol_room = action_data.get("room")
+                    if patrol_room and patrol_room in game["rooms"]:
+                        patrol_floor = game["rooms"][patrol_room]["floor"]
+                        game["patrouille_patrol"] = {
+                            "room": patrol_room,
+                            "floor": patrol_floor,
+                            "active": True,
+                            "variant": variant
+                        }
+                        game["rooms"][patrol_room]["has_patrol"] = True
+                    variant_label = "Patrouille" if variant == "patrouille" else "Vadrouille"
+                    event_msg = f"🔍 {player['name']} utilise {variant_label} (nouveau gobelin) !"
+
+                game["active_powers"][power_name]["data"]["patrol_room"] = game["patrouille_patrol"].get("room") if game.get("patrouille_patrol") else None
+
+                game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
         elif power_name == "malediction":
             # Build the list of survivors with cursable items and send to this killer
@@ -1581,6 +2000,12 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
                 sp["hp"] = max(0, (sp.get("hp") or 0) - 10)
                 if sp["hp"] <= 0 and not sp.get("eliminated", False):
                     sp["eliminated"] = True
+                # Track for Vision Accumulative
+                sp_id = next((pid for pid, p in game["players"].items() if p is sp), None)
+                if sp_id:
+                    if "turn_survivors_damaged" not in game:
+                        game["turn_survivors_damaged"] = {}
+                    game["turn_survivors_damaged"][sp_id] = sp.get("current_room")
 
             penalty_msg = "L'objet maudit est encore dans l'inventaire, vous perdez tous 10 points de vie : débarrassez vous en !"
             game["events"].append({"message": f"🔮 {penalty_msg}", "type": "malediction_penalty"})
@@ -1616,18 +2041,39 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
     await asyncio.sleep(2)
 
     # Clear traps, teleportation, and untriggered mimics from previous survivor turn.
-    # Mimics not triggered (survivor didn't enter their room) disappear here.
-    # Mimics that WERE triggered are already cleared in the select_room handler.
+    # Mimics not triggered (survivor didn't enter their room) disappear here,
+    # UNLESS mimic_duration_extra > 0 (Invasive variant: stays 1 extra turn).
     mimics_cleared = 0
     for room_data in game["rooms"].values():
         room_data["trapped"] = False
         room_data.pop("trap_triggered", None)
-        room_data["teleportation_trap"] = False
-        room_data["teleportation_exit"] = False
-        room_data["teleportation_target_room"] = None
+        # Teleportation: handle "durable" variant (stays 1 extra turn)
+        if room_data.get("teleportation_trap", False):
+            extra = room_data.get("teleportation_duration_extra", 0)
+            if extra > 0:
+                room_data["teleportation_duration_extra"] = extra - 1
+                logger.info(f"Téléportation Durable: durée restante {extra - 1} tour(s), conservé")
+            else:
+                room_data["teleportation_trap"] = False
+                room_data["teleportation_exit"] = False
+                room_data["teleportation_target_room"] = None
+                room_data.pop("teleportation_duration_extra", None)
+        else:
+            room_data["teleportation_exit"] = False
+            room_data["teleportation_target_room"] = None
+            room_data.pop("teleportation_duration_extra", None)
         if room_data.get("has_mimic", False):
-            room_data["has_mimic"] = False
-            mimics_cleared += 1
+            extra = room_data.get("mimic_duration_extra", 0)
+            if extra > 0:
+                # Décrémenter le compteur — le mimic reste ce tour
+                room_data["mimic_duration_extra"] = extra - 1
+                logger.info(f"Mimic Invasive: durée restante {extra - 1} tour(s), conservé")
+            else:
+                room_data["has_mimic"] = False
+                room_data.pop("mimic_hp_multiplier", None)
+                room_data.pop("mimic_has_initiative", None)
+                room_data.pop("mimic_duration_extra", None)
+                mimics_cleared += 1
     if mimics_cleared > 0:
         logger.info(f"Cleared {mimics_cleared} untriggered mimic(s) after survivor turn")
 
@@ -1845,7 +2291,8 @@ async def process_turn(session_id: str):
                                 "max_hp": surv_player.get("max_hp", 36),  # NEW: pour la barre de vie
                                 "initiative_bonus": surv_player.get("initiative_bonus", 0),  # NEW: bonus initiative
                                 "damage_bonus": surv_player.get("damage_bonus", 0),  # NEW: bonus dégâts
-                                "avatar": surv_player.get("avatar", "")
+                                "avatar": surv_player.get("avatar", ""),
+                                "poisoned_countdown": surv_player.get("poisoned_countdown", 0),  # NEW: pour toxine incapacitante
                             })
 
                 if survivors_in_room:
@@ -1853,6 +2300,14 @@ async def process_turn(session_id: str):
                     # Pour l'instant : N survivants vs 1 gobelin (hardcodé)
                     num_goblins = 1  # TODO: rendre ce paramètre variable plus tard
                     
+                    # Determine if toxine incapacitante is active (damage malus for poisoned survivors)
+                    _tox_incap = False
+                    for _kp in game["players"].values():
+                        if _kp.get("role") == "killer":
+                            if (_kp.get("powers_evolution") or {}).get("toxine", {}).get("variant") == "incapacitante":
+                                _tox_incap = True
+                                break
+
                     combat_event = {
                         "type": "multiplayer_combat",
                         "attacker_id": killer_id,
@@ -1862,7 +2317,8 @@ async def process_turn(session_id: str):
                         "num_goblins": num_goblins,
                         "goblin_hp": 6,  # HP par gobelin
                         "turn": game["turn"],  # NOUVEAU : numéro du tour pour seed unique
-                        "combat_id": f"{killer_id}_{killer_room}_{game['turn']}"  # NOUVEAU : ID unique du combat
+                        "combat_id": f"{killer_id}_{killer_room}_{game['turn']}",  # NOUVEAU : ID unique du combat
+                        "toxine_incapacitante_active": _tox_incap  # NEW: malus dégâts sur survivants empoisonnés
                     }
 
                     # Ajouter l'event au killer ET à tous les survivants
@@ -1998,18 +2454,38 @@ async def process_turn(session_id: str):
             poison_countdown = player.get("poisoned_countdown", 0)
             if poison_countdown > 0:
                 player["poisoned_countdown"] -= 1
+                # Apply 3 HP damage per tick (new behaviour)
+                if player.get("hp") is not None:
+                    player["hp"] = max(0, player["hp"] - 3)
+                # Track poison tick for Vision Accumulative
+                if "turn_survivors_damaged" not in game:
+                    game["turn_survivors_damaged"] = {}
+                game["turn_survivors_damaged"][player_id] = player.get("current_room")
                 
                 # Check if player suffocates
                 if player["poisoned_countdown"] == 0:
                     players_to_eliminate.append(player_id)
                 else:
+                    # Determine active toxine variant for message
+                    _toxine_var = None
+                    for _k in game["players"].values():
+                        if _k.get("role") == "killer":
+                            _toxine_var = (_k.get("powers_evolution") or {}).get("toxine", {}).get("variant")
+                            if _toxine_var:
+                                break
+                    if _toxine_var == "suffocante":
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour. Votre étouffement révèle également l'étage où vous vous trouvez."
+                    elif _toxine_var == "incapacitante":
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour. Vos dégâts sont réduits de moitié tant que vous ne trouvez pas d'antidote."
+                    else:
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour."
                     # Send notification to poisoned survivor about remaining turns
                     if player_id in active_connections.get(session_id, {}):
                         try:
                             await active_connections[session_id][player_id].send_json({
                                 "type": "poison_countdown",
                                 "countdown": player["poisoned_countdown"],
-                                "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                                "message": _pmsg
                             })
                         except:
                             pass
@@ -2068,11 +2544,39 @@ async def process_turn(session_id: str):
     # Killers place mimics during killer_power_selection (this turn), then process_turn runs.
     # Survivors will encounter them at the START of the next turn (survivor_selection).
     # Untriggered mimics are cleared in try_advance_to_killer_phase after survivor actions.
-    
+
+    # NEW: Trigger pending specializations before starting new turn
+    if "pending_specializations" in game and len(game["pending_specializations"]) > 0:
+        for spec_killer_id, specialization_data in game["pending_specializations"].items():
+            game["pending_events"][spec_killer_id] = {
+                "type": "power_specialization",
+                **specialization_data
+            }
+
+        # Clear pending specializations
+        game["pending_specializations"] = {}
+
+        # Passer en phase "killer_specialization" pour que le frontend affiche
+        # la modale sans bloquer sur "Traitement en cours..."
+        game["phase"] = "killer_specialization"
+
+        # Broadcast state to trigger modals
+        await broadcast_to_session(session_id, {
+            "type": "state_update",
+            "game": game_sessions[session_id]
+        })
+
+        logger.info("🔮 Spécialisations envoyées, attente de sélection...")
+
+        # Don't start new turn yet, wait for specialization
+        return
+
     # Next turn - Start with survivors selection
     game["turn"] += 1
     game["phase"] = "survivor_selection"
     game["pending_actions"] = {}
+    game["turn_survivors_damaged"] = {}   # Reset for Vision Accumulative tracking
+    game["turn_survivors_items_gained"] = {}  # Reset for Vision Vigilante tracking
     # NE PAS vider pending_events ici : il contient les combat_events qui viennent
     # juste d'être créés et qui doivent être livrés au frontend pour déclencher les
     # modales de combat killer ↔ survivants.
@@ -2261,18 +2765,38 @@ async def process_rage_second_selections(session_id: str):
             poison_countdown = player.get("poisoned_countdown", 0)
             if poison_countdown > 0:
                 player["poisoned_countdown"] -= 1
+                # Apply 3 HP damage per tick (new behaviour)
+                if player.get("hp") is not None:
+                    player["hp"] = max(0, player["hp"] - 3)
+                # Track poison tick for Vision Accumulative
+                if "turn_survivors_damaged" not in game:
+                    game["turn_survivors_damaged"] = {}
+                game["turn_survivors_damaged"][player_id] = player.get("current_room")
                 
                 # Check if player suffocates
                 if player["poisoned_countdown"] == 0:
                     players_to_eliminate.append(player_id)
                 else:
+                    # Determine active toxine variant for message
+                    _toxine_var = None
+                    for _k in game["players"].values():
+                        if _k.get("role") == "killer":
+                            _toxine_var = (_k.get("powers_evolution") or {}).get("toxine", {}).get("variant")
+                            if _toxine_var:
+                                break
+                    if _toxine_var == "suffocante":
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour. Votre étouffement révèle également l'étage où vous vous trouvez."
+                    elif _toxine_var == "incapacitante":
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour. Vos dégâts sont réduits de moitié tant que vous ne trouvez pas d'antidote."
+                    else:
+                        _pmsg = f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer. Vous perdez 3 PV à chaque tour."
                     # Send notification to poisoned survivor about remaining turns
                     if player_id in active_connections.get(session_id, {}):
                         try:
                             await active_connections[session_id][player_id].send_json({
                                 "type": "poison_countdown",
                                 "countdown": player["poisoned_countdown"],
-                                "message": f"😷 Vous êtes empoisonné ! Il vous reste {player['poisoned_countdown']} tour(s) avant de suffoquer."
+                                "message": _pmsg
                             })
                         except:
                             pass
@@ -2334,6 +2858,8 @@ async def process_rage_second_selections(session_id: str):
     game["pending_events"] = {}
     game["pending_events_queue"] = {}  # NEW: reset queued events as well
     game["survivors_ended_turn"] = []  # Reset end-turn flag for new turn
+    game["turn_survivors_damaged"] = {}   # Reset for Vision Accumulative tracking
+    game["turn_survivors_items_gained"] = {}  # Reset for Vision Vigilante tracking
     # Clear active powers
     game["active_powers"] = {}
     game["pending_power_selections"] = {}
@@ -2440,7 +2966,19 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "max_hp": 36 if request.role == "survivor" else None,
         "initiative_bonus": 0,
         "damage_bonus": 0,
-        "inventory": [None] * 9 if request.role == "survivor" else None
+        "inventory": [None] * 9 if request.role == "survivor" else None,
+        "powers_evolution": {
+            "mimic": {"level": 1, "variant": None},
+            "rage": {"level": 1, "variant": None},
+            "piege": {"level": 1, "variant": None},
+            "toxine": {"level": 1, "variant": None},
+            "vision": {"level": 1, "variant": None},
+            "teleportation": {"level": 1, "variant": None},
+            "goliath": {"level": 1, "variant": None},
+            "eboulement": {"level": 1, "variant": None},
+            "patrouille": {"level": 1, "variant": None},
+            "traque": {"level": 1, "variant": None}
+        } if request.role == "killer" else None,
     }
 
     # Broadcast new player joined
@@ -2492,12 +3030,22 @@ async def update_game_settings(session_id: str, request: UpdateGameSettingsReque
         raise HTTPException(status_code=400, detail="dungeon_size doit être 6, 9 ou 12")
     game["dungeon_size"] = new_dungeon_size
 
+    # Valider et mettre à jour enabled_powers
+    if request.enabled_powers is not None:
+        valid_power_keys = set(POWERS.keys())
+        new_enabled = [p for p in request.enabled_powers if p in valid_power_keys]
+        if len(new_enabled) == 0:
+            raise HTTPException(status_code=400, detail="Au moins un pouvoir doit être activé")
+        game["enabled_powers"] = new_enabled
+    else:
+        game["enabled_powers"] = list(POWERS.keys())
+
     await broadcast_to_session(session_id, {
         "type": "state_update",
         "game": game
     })
 
-    return {"success": True, "required_relics": new_settings, "dungeon_size": new_dungeon_size}
+    return {"success": True, "required_relics": new_settings, "dungeon_size": new_dungeon_size, "enabled_powers": game["enabled_powers"]}
 
 @api_router.post("/game/{session_id}/select_role")
 async def select_role(session_id: str, request: SelectRoleRequest):
@@ -2533,6 +3081,20 @@ async def select_role(session_id: str, request: SelectRoleRequest):
         player["hp"] = None
         player["max_hp"] = None
         player["inventory"] = None
+        # Initialize powers_evolution for killers
+        if not player.get("powers_evolution"):
+            player["powers_evolution"] = {
+                "mimic": {"level": 1, "variant": None},
+                "rage": {"level": 1, "variant": None},
+                "piege": {"level": 1, "variant": None},
+                "toxine": {"level": 1, "variant": None},
+                "vision": {"level": 1, "variant": None},
+                "teleportation": {"level": 1, "variant": None},
+                "goliath": {"level": 1, "variant": None},
+                "eboulement": {"level": 1, "variant": None},
+                "patrouille": {"level": 1, "variant": None},
+                "traque": {"level": 1, "variant": None}
+            }
 
     await broadcast_to_session(matching_session, {
         "type": "state_update",
@@ -3041,8 +3603,8 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     if item_name == "relique_triangulaire" and not game.get("required_relics", {}).get("relique_triangulaire", True):
         raise HTTPException(status_code=400, detail="La Relique Triangulaire n'est pas requise dans cette partie")
     
-    # Check if player already has this item
-    if has_item(player, item["item_type"]):
+    # Check if player already has this item (antidote is stackable — skip duplicate check)
+    if item_name != "antidote" and has_item(player, item["item_type"]):
         raise HTTPException(status_code=400, detail=f"Vous possédez déjà {item['name']}")
     
     # Check if player has enough gold
@@ -3056,38 +3618,13 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     # Deduct gold
     player["gold"] -= item["price"]
     
-    # Special handling for antidote - auto-consume if poisoned
-    if item_name == "antidote":
-        if player.get("poisoned_countdown", 0) > 0:
-            # Player is poisoned - consume antidote immediately
-            player["poisoned_countdown"] = 0
-            logger.info(f"Player {player_id} bought antidote and was cured of poison immediately")
-            
-            # Broadcast cure notification to all players
-            await broadcast_to_session(session_id, {
-                "type": "antidote_used",
-                "message": f"💊 {player['name']} utilise un antidote et est guéri du poison !"
-            })
-            
-            # Broadcast state update so UI reflects cure
-            await broadcast_to_session(session_id, {
-                "type": "state_update",
-                "game": game
-            })
-            
-            return {"status": "success", "message": f"{item['name']} acheté et utilisé immédiatement !"}
-        else:
-            # Player is not poisoned - give antidote for future use
-            add_item(player, item["item_type"])
-            logger.info(f"Player {player_id} bought antidote for future use")
-    else:
-        # For other items (resurrection potion, relique), just add to inventory
-        add_item(player, item["item_type"])
-        logger.info(f"Player {player_id} bought {item_name}")
-        # Mark relique as sold globally
-        if item_name == "relique_triangulaire":
-            game["relique_triangulaire_sold"] = True
-            logger.info(f"Relique Triangulaire marked as sold (bought by {player_id})")
+    # Add item to inventory — antidote is never auto-consumed on purchase
+    add_item(player, item["item_type"])
+    logger.info(f"Player {player_id} bought {item_name}")
+    # Mark relique as sold globally
+    if item_name == "relique_triangulaire":
+        game["relique_triangulaire_sold"] = True
+        logger.info(f"Relique Triangulaire marked as sold (bought by {player_id})")
     
     # Broadcast state update
     await broadcast_to_session(session_id, {
@@ -3654,9 +4191,17 @@ async def use_item(session_id: str, request: UseItemRequest):
     # Handle antidote usage
     elif item_type == "antidote":
         if player.get("poisoned_countdown", 0) <= 0:
-            raise HTTPException(status_code=400, detail="Vous n'êtes pas empoisonné !")
+            # Player is not poisoned — do NOT consume the item
+            return {"status": "not_poisoned", "message": "Vous n'êtes pas empoisonné."}
         
+        # Cure all toxine variants: reset countdown and clear any specialization state
         player["poisoned_countdown"] = 0
+        # Clear toxine suffocante / incapacitante flags stored on the player (if any)
+        player.pop("toxine_suffocante_active", None)
+        player.pop("toxine_incapacitante_active", None)
+        player.pop("poison_type", None)
+        player.pop("toxine_variant", None)
+
         inventory[request.slot_index] = None
         
         # MALÉDICTION: Lift the curse if this was the cursed item
@@ -4203,6 +4748,10 @@ async def resolve_combat(session_id: str, request: CombatResultRequest):
     if defender.get("hp") is not None and request.damage_dealt > 0:
         defender["hp"] = max(0, defender["hp"] - request.damage_dealt)
         logger.info(f"❤️ PV de {defender['name']} mis à jour: {defender['hp']} (dégâts subis: {request.damage_dealt})")
+        # Track for Vision Accumulative
+        if "turn_survivors_damaged" not in game:
+            game["turn_survivors_damaged"] = {}
+        game["turn_survivors_damaged"][defender_id] = defender.get("current_room")
    
     # Handle combat result
     if result == "attacker_win":
@@ -4309,6 +4858,10 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
             if survivor.get("hp") is not None and damage_dealt > 0:
                 survivor["hp"] = max(0, survivor["hp"] - damage_dealt)
                 logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {damage_dealt})")
+                # Track for Vision Accumulative
+                if "turn_survivors_damaged" not in game:
+                    game["turn_survivors_damaged"] = {}
+                game["turn_survivors_damaged"][survivor_id] = survivor.get("current_room")
             
             # Gérer l'élimination
             if is_eliminated or (survivor.get("hp") is not None and survivor["hp"] <= 0):
@@ -4496,6 +5049,10 @@ async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatReque
     if survivor.get("hp") is not None and request.damage_dealt_to_survivor > 0:
         survivor["hp"] = max(0, survivor["hp"] - request.damage_dealt_to_survivor)
         logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {request.damage_dealt_to_survivor})")
+        # Track for Vision Accumulative
+        if "turn_survivors_damaged" not in game:
+            game["turn_survivors_damaged"] = {}
+        game["turn_survivors_damaged"][survivor_id] = survivor.get("current_room")
     
     # Apply gold loss
     if request.gold_stolen > 0:
@@ -4842,50 +5399,94 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     original_room_name = room_name
                     logger.info(f"🎯 {player['name']}, {player['character_class']}, {player['role']} a choisi la pièce '{room_name}'")
 
-                    # PATROUILLE CHECK: Reveal survivors on same floor
+                    # PATROUILLE CHECK: Reveal survivors based on gobelin variant
                     if player["role"] == "survivor" and game.get("patrouille_patrol") and game["patrouille_patrol"].get("active"):
                         patrol_data = game["patrouille_patrol"]
+                        patrol_variant = patrol_data.get("variant")  # None=espionnage, "patrouille", "vadrouille"
                         selected_floor = game["rooms"][room_name]["floor"]
-                        
-                        # If survivor is on the same floor as the patrol
-                        if selected_floor == patrol_data["floor"]:
-                            # Track revealed survivor so killers see their avatar for this turn
+                        patrol_floor = patrol_data["floor"]
+
+                        # Determine if this survivor is in detection range
+                        same_floor = selected_floor == patrol_floor
+                        in_range = same_floor or patrol_variant == "vadrouille"
+
+                        if in_range:
                             if "patrol_revealed_survivors" not in game:
                                 game["patrol_revealed_survivors"] = {}
-                            game["patrol_revealed_survivors"][player_id] = room_name
 
-                            # If survivor found the exact room with patrol, deactivate it
+                            # "patrouille" variant: reveal exact position (original mechanic)
+                            # "vadrouille" or base: reveal only presence (no room in state)
+                            if patrol_variant == "patrouille":
+                                game["patrol_revealed_survivors"][player_id] = room_name
+                            else:
+                                # Presence only — store floor so killers know the floor but not exact room
+                                game["patrol_revealed_survivors"][player_id] = f"__floor__{selected_floor}"
+
+                            # If survivor found the exact patrol room, deactivate gobelin
                             if room_name == patrol_data["room"]:
                                 game["patrouille_patrol"]["active"] = False
                                 if patrol_data["room"] in game["rooms"]:
                                     game["rooms"][patrol_data["room"]]["has_patrol"] = False
 
-                                # Notify survivor they found the patrol (queued popup)
+                                # Gobelin détruit → rétrograder la spécialisation de tous les killers
+                                # Le pouvoir redevient Espionnage niveau 1, ils pourront re-spécialiser
+                                for _pid, _p in game["players"].items():
+                                    if _p.get("role") == "killer":
+                                        _pevo = _p.get("powers_evolution", {}).get("patrouille", {})
+                                        if _pevo.get("variant") in ("patrouille", "vadrouille"):
+                                            _p["powers_evolution"]["patrouille"] = {
+                                                "level": 1,
+                                                "variant": None,
+                                                "variant_name": None,
+                                                "variant_description": None,
+                                                "variant_video_path": None
+                                            }
+                                            logger.info(f"🔍 Spécialisation patrouille réinitialisée pour {_p['name']} (gobelin trouvé)")
+
                                 await enqueue_player_event(session_id, player_id, "patrol_found", {
                                     "type": "patrol_found",
-                                    "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
-                                    "video_path": "/powers/Patrouille.mp4"
+                                    "message": "Vous avez trouvé le gobelin espion ! Il se trouvait dans cette pièce.",
+                                    "video_path": "/powers/Espionnage.mp4"
                                 })
-
-                                logger.info(f"🔍 {player['name']} a trouvé le gobelin de patrouille dans {room_name}")
+                                logger.info(f"🔍 {player['name']} a trouvé le gobelin espion dans {room_name}")
                             else:
-                                # Survivor is on same floor but not in patrol room - just reveal position (queued popup)
+                                if patrol_variant == "patrouille":
+                                    msg = "Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage."
+                                    vid = "/powers/Patrouille.mp4"
+                                elif patrol_variant == "vadrouille":
+                                    msg = "Un gobelin Vadrouille a signalé votre présence dans l'étage !"
+                                    vid = "/powers/Vadrouille.mp4"
+                                else:
+                                    msg = "Un gobelin Espion a détecté votre présence dans l'étage !"
+                                    vid = "/powers/Espionnage.mp4"
+
                                 await enqueue_player_event(session_id, player_id, "patrol_detected", {
                                     "type": "patrol_detected",
-                                    "message": f"Un gobelin de Patrouille a révélé votre position ! Il se trouve dans une pièce de l'étage.",
-                                    "video_path": "/powers/Patrouille.mp4"
+                                    "message": msg,
+                                    "video_path": vid
                                 })
+                                logger.info(f"🔍 {player['name']} a été détecté par le gobelin (variant={patrol_variant})")
 
-                                logger.info(f"🔍 {player['name']} a été détecté par le gobelin de patrouille")
+                            # Notify killers
+                            if patrol_variant == "patrouille":
+                                # Exact room revealed
+                                await broadcast_to_session(session_id, {
+                                    "type": "patrol_reveal",
+                                    "player_id": player_id,
+                                    "player_name": player["name"],
+                                    "room": room_name,
+                                    "floor": selected_floor
+                                }, role_filter="killer")
+                            else:
+                                # Presence only — reveal floor but not room
+                                await broadcast_to_session(session_id, {
+                                    "type": "patrol_presence",
+                                    "player_id": player_id,
+                                    "player_name": player["name"],
+                                    "floor": selected_floor,
+                                    "variant": patrol_variant or "espionnage"
+                                }, role_filter="killer")
 
-                            # Notify killers that a survivor has been revealed (show avatar in the room)
-                            await broadcast_to_session(session_id, {
-                                "type": "patrol_reveal",
-                                "player_id": player_id,
-                                "player_name": player["name"],
-                                "room": room_name,
-                                "floor": selected_floor
-                            }, role_filter="killer")
                             # Push full state so killer UI re-renders with patrol_revealed_survivors
                             await broadcast_to_session(session_id, {
                                 "type": "state_update",
@@ -4898,6 +5499,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         target_room = game["rooms"][room_name].get("teleportation_target_room")
 
                         if target_room and target_room in game["rooms"]:
+                            # Track for Vision Accumulative
+                            if "turn_survivors_damaged" not in game:
+                                game["turn_survivors_damaged"] = {}
+                            game["turn_survivors_damaged"][player_id] = target_room  # destination after teleport
                             player_class = player.get("character_class", "Mage")
                             video_path = f"/death/{player_class}_teleportation.mp4"
 
@@ -5014,31 +5619,88 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     if player["role"] == "survivor" and game["rooms"][room_name].get("trapped", False):
                         player["immobilized_next_turn"] = True
                         game["rooms"][room_name]["trap_triggered"] = True
+                        # Track for Vision Accumulative
+                        if "turn_survivors_damaged" not in game:
+                            game["turn_survivors_damaged"] = {}
+                        game["turn_survivors_damaged"][player_id] = room_name
+
+                        # Infliger ~20% des PV max au survivant
+                        max_hp = player.get("max_hp") or 36
+                        blizzard_dmg = max(1, round(max_hp * 0.20))
+                        player["hp"] = max(0, (player.get("hp") or 0) - blizzard_dmg)
 
                         player_class = player.get("character_class", "Mage").lower()
                         video_path = f"/death/Blizzard_{player_class}.mp4"
 
                         await enqueue_player_event(session_id, player_id, "trap", {
                             "type": "trapped_notification",
-                            "message": "🥶 C'est un blizzard ! Vous n'avez pas d'autre choix que de vous cacher ce tour-ci.",
+                            "message": f"🥶 C'est un blizzard ! Vous perdez {blizzard_dmg} PV et êtes immobilisé ce tour-ci.",
                             "video_path": video_path
                         })
+
+                        # Spécialisation Précision : alerter le killer concerné
+                        blizzard_killer_id = game["rooms"][room_name].get("blizzard_killer_id")
+                        blizzard_variant = game["rooms"][room_name].get("blizzard_variant")
+                        if blizzard_variant == "precision" and blizzard_killer_id:
+                            killer_ws = active_connections.get(session_id, {}).get(blizzard_killer_id)
+                            if killer_ws:
+                                try:
+                                    await killer_ws.send_json({
+                                        "type": "blizzard_precision_alert",
+                                        "message": f"🥶 {player['name']} est pris dans votre blizzard !",
+                                        "player_name": player["name"],
+                                        "room": room_name
+                                    })
+                                except Exception:
+                                    pass
                     
                     # Check if survivor enters poisoned room
                     if player["role"] == "survivor" and game["rooms"][room_name].get("poisoned_turns_remaining", 0) > 0:
                         if player.get("poisoned_countdown", 0) == 0:
                             player["poisoned_countdown"] = 10
+                            # Track for Vision Accumulative
+                            if "turn_survivors_damaged" not in game:
+                                game["turn_survivors_damaged"] = {}
+                            game["turn_survivors_damaged"][player_id] = room_name
 
                             player_class = player.get("character_class", "Assassin")
                             video_path = f"/death/{player_class}_toxine.mp4"
 
                             await enqueue_player_event(session_id, player_id, "poison", {
                                 "type": "poisoned_notification",
-                                "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer.",
+                                "message": "😷 Vous avez été empoisonné par un gaz toxique ! Il vous reste 10 tours avant de suffoquer. Vous perdez 3 PV à chaque tour.",
                                 "countdown": 10,
                                 "video_path": video_path
                             })
-                    
+
+                    # TOXINE SUFFOCANTE: Notify killers of poisoned survivor's floor
+                    # Checked AFTER poisoned_countdown may have just been set to 10
+                    if player["role"] == "survivor" and player.get("poisoned_countdown", 0) > 0:
+                        _suff_variant = None
+                        for _sk in game["players"].values():
+                            if _sk.get("role") == "killer":
+                                _v = (_sk.get("powers_evolution") or {}).get("toxine", {}).get("variant")
+                                logger.info(f"[SUFFOCANTE] killer={_sk.get('name')} powers_evolution={_sk.get('powers_evolution')} toxine_variant={_v!r}")
+                                if _v:
+                                    _suff_variant = _v
+                                    break
+                        logger.info(f"[SUFFOCANTE] survivor={player.get('name')} countdown={player.get('poisoned_countdown')} variant={_suff_variant!r} room={room_name}")
+                        if _suff_variant == "suffocante":
+                            _suff_floor = game["rooms"][room_name].get("floor", "")
+                            _suff_floor_names = {
+                                "basement": "🕳️ Sous-sol",
+                                "ground_floor": "🏰 Rez-de-chaussée",
+                                "upper_floor": "🕯️ Étage"
+                            }
+                            _suff_floor_label = _suff_floor_names.get(_suff_floor, _suff_floor)
+                            await broadcast_to_session(session_id, {
+                                "type": "toxic_cough_popup",
+                                "title": "😷 Toxine suffocante",
+                                "message": f"Vous entendez tousser bruyamment dans {_suff_floor_label}.",
+                                "video_path": "/powers/Toxine suffocante.mp4",
+                                "floor": _suff_floor
+                            }, role_filter="killer")
+
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":
                         room = game["rooms"][room_name]
@@ -5226,6 +5888,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     None
                                 )
                                 logger.info(f"Player {player_id} found rune (lucky): {rune_type}")
+                            # Track for Vision Vigilante (survivor picked up items)
+                            if "turn_survivors_items_gained" not in game:
+                                game["turn_survivors_items_gained"] = {}
+                            game["turn_survivors_items_gained"][player_id] = room_name
                         else:
                             # RUNE DROP SYSTEM (after gold)
                             roll = random.random()
@@ -5251,6 +5917,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     None
                                 )
                                 logger.info(f"Player {player_id} found rune: {rune_type}")
+                                # Track for Vision Vigilante (survivor picked up an item)
+                                if "turn_survivors_items_gained" not in game:
+                                    game["turn_survivors_items_gained"] = {}
+                                game["turn_survivors_items_gained"][player_id] = room_name
 
                     # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
@@ -5400,7 +6070,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 if p["role"] == "survivor" and p.get("eliminated", False)
                             ]
                             game["rooms"][room_name]["resurrection_stele_discovered"] = True
-                            game["rooms"][room_name]["resurrection_stele_killer_visible"] = True
+                            # NOTE: do NOT set resurrection_stele_killer_visible here — killers
+                            # must discover the stele themselves by searching the room.
                             await enqueue_player_event(session_id, player_id, "resurrection_stele", {
                                 "type": "resurrection_stele_encounter",
                                 "message": "Vous avez découvert la stèle de résurrection ! Vous pouvez ramener à la vie un coéquipier, en sacrifiant le quart de vos pdv.",
@@ -5473,6 +6144,42 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 game["pending_power_selections"][player_id]["selected_power"] = power_name
                 
                 power_def = POWERS[power_name]
+
+                # Special case: patrouille spécialisée avec gobelin encore actif →
+                # pas de nouvelle pièce, le gobelin existant applique le pouvoir directement
+                if power_name == "patrouille":
+                    _pevo = (player or {}).get("powers_evolution", {}).get("patrouille", {})
+                    _variant = _pevo.get("variant")
+                    _patrol_active = (
+                        game.get("patrouille_patrol") is not None
+                        and game["patrouille_patrol"].get("active", False)
+                    )
+                    if _variant in ("patrouille", "vadrouille") and _patrol_active:
+                        game["pending_power_selections"][player_id]["action_complete"] = True
+                        await broadcast_to_session(session_id, {
+                            "type": "player_action",
+                            "player_id": player_id,
+                            "player_name": player["name"],
+                            "message": f"✅ {player['name']} a choisi son pouvoir"
+                        })
+                        await check_power_selection_complete(session_id)
+                        continue
+
+                # Special case: traque de masse (niveau 2, variante "masse") →
+                # pas de sélection d'étage, le pouvoir s'active directement comme un pouvoir sans action
+                if power_name == "traque":
+                    _pevo = (player or {}).get("powers_evolution", {}).get("traque", {})
+                    if _pevo.get("level") == 2 and _pevo.get("variant") == "masse":
+                        game["pending_power_selections"][player_id]["action_complete"] = True
+                        await broadcast_to_session(session_id, {
+                            "type": "player_action",
+                            "player_id": player_id,
+                            "player_name": player["name"],
+                            "message": f"✅ {player['name']} a choisi son pouvoir"
+                        })
+                        await check_power_selection_complete(session_id)
+                        continue
+
                 if power_def["requires_action"]:
                     game["pending_power_selections"][player_id]["action_complete"] = False
 
@@ -5516,6 +6223,86 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     })
                     
                     await check_power_selection_complete(session_id)
+            
+            elif data["type"] == "select_power_specialization":
+                # Handle power specialization selection
+                power_name = data.get("power")
+                variant = data.get("variant")
+                
+                if not power_name or not variant:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Spécialisation invalide"
+                    })
+                    continue
+                
+                if player["role"] != "killer":
+                    continue
+                
+                # Update power evolution
+                if "powers_evolution" not in player:
+                    player["powers_evolution"] = {}
+                
+                if power_name not in player["powers_evolution"]:
+                    player["powers_evolution"][power_name] = {"level": 1, "variant": None}
+                
+                # Upgrade to level 2 with chosen variant
+                player["powers_evolution"][power_name]["level"] = 2
+                player["powers_evolution"][power_name]["variant"] = variant
+
+                # Persist specialization display data so the power card shows the
+                # specialized name/description on future turns.
+                # NOTE: pending_specializations is cleared before the modal is shown,
+                # so we read from pending_events (which still holds the full payload).
+                pending_event = game.get("pending_events", {}).get(player_id, {})
+                spec_data = (
+                    pending_event.get("specializations", {}).get(variant)
+                    or game.get("pending_specializations", {})
+                       .get(player_id, {})
+                       .get("specializations", {})
+                       .get(variant, {})
+                )
+                if spec_data:
+                    player["powers_evolution"][power_name]["variant_name"] = spec_data.get("name")
+                    player["powers_evolution"][power_name]["variant_description"] = spec_data.get("description")
+                    player["powers_evolution"][power_name]["variant_video_path"] = spec_data.get("video_path")
+
+                logger.info(f"🔮 {player['name']} a spécialisé {power_name} vers {variant}")
+                
+                # Remove pending event
+                if player_id in game.get("pending_events", {}):
+                    del game["pending_events"][player_id]
+                
+                # Broadcast update
+                await broadcast_to_session(session_id, {
+                    "type": "state_update",
+                    "game": game_sessions[session_id]
+                })
+                
+                await websocket.send_json({
+                    "type": "specialization_confirmed",
+                    "power": power_name,
+                    "variant": variant,
+                    "message": f"✨ {power_name} amélioré vers {variant} !"
+                })
+
+                # ✅ Vérifier si tous les killers ont terminé leur spécialisation
+                # On vérifie uniquement les pending_events de type "power_specialization"
+                # pour ne pas être bloqué par d'éventuels events de combat.
+                alive_killers = [
+                    p for p in game["players"].values()
+                    if p["role"] == "killer" and not p["eliminated"]
+                ]
+                all_specs_done = all(
+                    game.get("pending_events", {}).get(p["id"], {}).get("type") != "power_specialization"
+                    for p in alive_killers
+                )
+
+                if all_specs_done:
+                    logger.info("🔮 Toutes les spécialisations terminées — reprise du flux via process_turn()")
+                    # Déléguer entièrement à process_turn() pour éviter la duplication
+                    # de logique (poison, Goliath, nouveau tour, etc.)
+                    await process_turn(session_id)
             
             elif data["type"] == "power_action":
                 if player["role"] != "killer" or game["phase"] != "killer_power_selection":
