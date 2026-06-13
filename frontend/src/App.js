@@ -1657,10 +1657,14 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
       let goldStolen = 0;
       let damageTaken = 0;
 
-      const survivorInitiative = Math.floor(Math.random() * 20) + 1;
+      const initiativeBonus = event.initiative_bonus || 0;
+      const survivorInitiative = Math.floor(Math.random() * 20) + 1 + initiativeBonus;
       const mimicInitiative = Math.floor(Math.random() * 20) + 1;
 
       const log = [`⚔️ Combat contre le Mimic !`];
+      if (event.eboulement_perturbation_active) {
+        log.push(`⛰️ Perturbation active : initiative -15, dégâts reçus ×2 !`);
+      }
       log.push(`Initiative : ${event.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
       setCombatLog([...log]);
 
@@ -2218,7 +2222,7 @@ const InventoryHUD = ({ player, onClick }) => {
   
   const inventory = player.inventory || [];
   const filledSlots = inventory.filter(slot => slot !== null).length;
-  const hasCursedItem = inventory.some(slot => slot && slot.cursed);
+  const hasCursedItem = inventory.some(slot => slot && (slot.cursed || slot.cursed_display));
   
   return (
     <button
@@ -2683,7 +2687,8 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           const item = inventory[index];
           const isHighlighted = deleteMode && item;
           const isSelectedForDeletion = pendingDeleteSlot && pendingDeleteSlot.index === index;
-          const isCursed = item && item.cursed;
+          const isCursed = item && (item.cursed || item.cursed_display);
+          const isRealCursed = item && item.cursed;
           return (
             <div
               key={index}
@@ -2709,7 +2714,7 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
                   ? 'cursedPulse 1.5s ease-in-out infinite'
                   : (isHighlighted && !isSelectedForDeletion ? 'pulse 1.2s ease-in-out infinite' : 'none'),
               }}
-              title={isCursed ? `⚠️ MAUDIT — ${ITEM_NAMES[item.type] || item.type}` : (item ? ITEM_NAMES[item.type] || item.type : '')}
+              title={isCursed ? (isRealCursed ? `⚠️ MAUDIT — ${ITEM_NAMES[item.type] || item.type}` : `⚠️ Peut-être maudit — ${ITEM_NAMES[item.type] || item.type}`) : (item ? ITEM_NAMES[item.type] || item.type : '')}
             >
               {item && (
                 <>
@@ -4070,7 +4075,7 @@ const Lobby = () => {
     { key: "rage",           label: "😡 Rage" },
     { key: "mimic",          label: "💰 Mimic" },
     { key: "teleportation",  label: "🌀 Piège de Téléportation" },
-    { key: "goliath",        label: "🕷️ La Goliath" },
+    { key: "goliath",        label: "⚔️ Poursuite" },
     { key: "eboulement",     label: "⛰️ Eboulement" },
     { key: "patrouille",     label: "🔍 Espionnage" },
     { key: "malediction",    label: "🔮 Malédiction" },
@@ -4700,7 +4705,8 @@ const PowerSelectionOverlay = ({
   powerActionData,
   secousseEvents = [],
   maledictionSurvivors = [],
-  cursePowerItem
+  cursePowerItem,
+  cursePowerItemMasse
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
   const [selectedFloor, setSelectedFloor] = useState(null);
@@ -4714,6 +4720,9 @@ const PowerSelectionOverlay = ({
   // NEW: Malédiction - selected target player + item
   const [maledictionTarget, setMaledictionTarget] = useState(null); // {player_id, player_name, slot_index, item_type}
   const [maledictionConfirming, setMaledictionConfirming] = useState(false);
+  // NEW: Malédiction de Masse - one selection per survivor + recap step
+  const [maledictionMasseSelections, setMaledictionMasseSelections] = useState({}); // {player_id: {slot_index, item_type, player_name}}
+  const [maledictionMasseRecap, setMaledictionMasseRecap] = useState(false);
   
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
@@ -4763,6 +4772,12 @@ const PowerSelectionOverlay = ({
       description: _powerEvolution.variant_description || _basePowerDef.description,
       requires_action: true,
       action_type: "select_rooms_blizzard",
+    } : _powerEvolution?.level === 2 && selectedPower === "malediction" && _powerEvolution.variant === "masse" ? {
+      // Malédiction de Masse : sélection d'un objet par aventurier puis récapitulatif
+      name: _powerEvolution.variant_name || "🔮 Malédiction de Masse",
+      description: _powerEvolution.variant_description || _basePowerDef.description,
+      requires_action: true,
+      action_type: "select_cursed_item_masse",
     } : _powerEvolution?.level === 2 && _powerEvolution.variant_name ? {
       name: _powerEvolution.variant_name,
       description: _powerEvolution.variant_description || _basePowerDef.description,
@@ -4995,6 +5010,127 @@ const PowerSelectionOverlay = ({
                   backgroundColor: secousseSelected ? '#8b5cf6' : '#555',
                   marginTop: '1.5rem'
                 }}
+              >
+                Suivant
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    // Malédiction de Masse: select one cursable item per survivor, then recap & confirm
+    if (actionType === "select_cursed_item_masse") {
+      const allSurvivorsSelected = maledictionSurvivors.length > 0 &&
+        maledictionSurvivors.every((s) => maledictionMasseSelections[s.player_id]);
+
+      // Recap step
+      if (maledictionMasseRecap) {
+        return (
+          <div className="power-selection-overlay" data-testid="malediction-masse-recap-overlay">
+            <Card className="power-action-card">
+              <CardHeader>
+                <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
+                <CardDescription className="text-center">Récapitulatif des malédictions</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {maledictionSurvivors.map((survivor) => {
+                    const sel = maledictionMasseSelections[survivor.player_id];
+                    return (
+                      <div key={survivor.player_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '0.6rem 1rem', border: '1px solid rgba(124,58,237,0.4)' }}>
+                        <span style={{ fontWeight: 'bold', color: '#c4b5fd' }}>🧙 {survivor.player_name}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {sel && <img src={ITEM_SPRITES[sel.item_type] || '/inventory/placeholder.png'} alt={ITEM_NAMES[sel.item_type] || sel.item_type} style={{ width: '24px', height: '24px', objectFit: 'contain' }} />}
+                          {sel ? (ITEM_NAMES[sel.item_type] || sel.item_type) : '—'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+                  <Button
+                    data-testid="malediction-masse-confirm-btn"
+                    onClick={() => {
+                      const selections = maledictionSurvivors.map((s) => ({
+                        target_player_id: s.player_id,
+                        slot_index: maledictionMasseSelections[s.player_id]?.slot_index
+                      }));
+                      cursePowerItemMasse(selections);
+                      setMaledictionMasseRecap(false);
+                      setMaledictionMasseSelections({});
+                    }}
+                    style={{ backgroundColor: '#7c3aed', padding: '0.75rem 1.5rem' }}
+                  >
+                    🔮 Confirmer toutes les malédictions
+                  </Button>
+                  <Button
+                    data-testid="malediction-masse-back-btn"
+                    onClick={() => setMaledictionMasseRecap(false)}
+                    style={{ backgroundColor: '#555', padding: '0.75rem 1.5rem' }}
+                  >
+                    Retour
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      // Selection step: pick one item per survivor
+      return (
+        <div className="power-selection-overlay" data-testid="malediction-masse-select-overlay">
+          <Card className="power-action-card">
+            <CardHeader>
+              <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
+              <CardDescription className="text-center">{selectedPowerDef.description}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {maledictionSurvivors.length === 0 ? (
+                <p className="text-center mb-4">Aucun aventurier ne possède d'objet maudissable.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+                  {maledictionSurvivors.map((survivor) => (
+                    <div key={survivor.player_id} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '10px', padding: '0.75rem 1rem', border: '1px solid rgba(124,58,237,0.4)' }}>
+                      <div style={{ fontWeight: 'bold', color: '#c4b5fd', marginBottom: '0.5rem' }}>🧙 {survivor.player_name}</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {survivor.items.map((item) => {
+                          const sel = maledictionMasseSelections[survivor.player_id];
+                          const isSel = sel && sel.slot_index === item.slot_index;
+                          return (
+                            <button
+                              key={`${survivor.player_id}-${item.slot_index}`}
+                              data-testid={`malediction-masse-item-${survivor.player_id}-${item.slot_index}`}
+                              onClick={() => setMaledictionMasseSelections({
+                                ...maledictionMasseSelections,
+                                [survivor.player_id]: { slot_index: item.slot_index, item_type: item.type, player_name: survivor.player_name }
+                              })}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                                backgroundColor: isSel ? '#7c3aed' : '#3b2a5a',
+                                border: isSel ? '2px solid #c4b5fd' : '2px solid transparent',
+                                borderRadius: '8px', padding: '6px 12px',
+                                color: '#fff', cursor: 'pointer', fontSize: '0.95rem', transition: 'all 0.2s'
+                              }}
+                            >
+                              <img src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'} alt={ITEM_NAMES[item.type] || item.type} style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+                              {ITEM_NAMES[item.type] || item.type}
+                              {isSel && ' ✓'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button
+                data-testid="malediction-masse-next-btn"
+                onClick={() => setMaledictionMasseRecap(true)}
+                disabled={!allSurvivorsSelected}
+                className="w-full mt-4"
+                style={{ backgroundColor: allSurvivorsSelected ? '#7c3aed' : '#555', marginTop: '1.5rem' }}
               >
                 Suivant
               </Button>
@@ -5759,15 +5895,10 @@ const prevPendingActionsRef = useRef('{}');
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
   const [antidoteMessage, setAntidoteMessage] = useState("");
 
-  // NEW: Goliath spawn popup state
-  const [showGoliathSpawnPopup, setShowGoliathSpawnPopup] = useState(false);
-  const [goliathSpawnMessage, setGoliathSpawnMessage] = useState("");
-  const [goliathSpawnVideoPath, setGoliathSpawnVideoPath] = useState("");
-
-  // NEW: Goliath death popup state
-  const [showGoliathDeathPopup, setShowGoliathDeathPopup] = useState(false);
-  const [goliathDeathMessage, setGoliathDeathMessage] = useState("");
-  const [goliathDeathVideoPath, setGoliathDeathVideoPath] = useState("");
+  // Poursuite spawn popup state
+  const [showPoursuiteSpawnPopup, setShowPoursuiteSpawnPopup] = useState(false);
+  const [poursuiteSpawnMessage, setPoursuiteSpawnMessage] = useState("");
+  const [poursuiteSpawnVideoPath, setPoursuiteSpawnVideoPath] = useState("");
   const [showTraquePopup, setShowTraquePopup] = useState(false);
   const [traqueMessage, setTraqueMessage] = useState("");
   const [traqueVideoPath, setTraqueVideoPath] = useState("/powers/Traque.mp4");
@@ -5801,6 +5932,9 @@ const prevPendingActionsRef = useRef('{}');
   const [maledictionVideoPath, setMaledictionVideoPath] = useState("");
   const [showMaledictionPenaltyPopup, setShowMaledictionPenaltyPopup] = useState(false);
   const [maledictionPenaltyMessage, setMaledictionPenaltyMessage] = useState("");
+  // NEW: Malédiction Incertaine - team-wide curse lifted popup
+  const [showMaledictionLiftedPopup, setShowMaledictionLiftedPopup] = useState(false);
+  const [maledictionLiftedMessage, setMaledictionLiftedMessage] = useState("");
   // Malediction killer selection state (passed to PowerSelectionOverlay)
   const [maledictionSurvivors, setMaledictionSurvivors] = useState([]);
 
@@ -6037,11 +6171,11 @@ const prevPendingActionsRef = useRef('{}');
         setTimeout(() => {
           setShowAntidotePopup(false);
         }, 3000);
-      } else if (data.type === "goliath_spawned") {
-        // Show Goliath spawn popup with video (for survivors)
-        setGoliathSpawnMessage(data.message);
-        setGoliathSpawnVideoPath(data.video_path);
-        setShowGoliathSpawnPopup(true);
+      } else if (data.type === "poursuite_spawned") {
+        // Afficher le popup Poursuite (pour les survivants)
+        setPoursuiteSpawnMessage(data.message);
+        setPoursuiteSpawnVideoPath(data.video_path);
+        setShowPoursuiteSpawnPopup(true);
         // No auto-hide - survivors must click to close
       } else if (data.type === "eboulement_activated") {
         // Show Eboulement popup with video (for survivors)
@@ -6078,12 +6212,6 @@ const prevPendingActionsRef = useRef('{}');
         setPatrolKillerMessage(`🔍 Gobelin ${_varLabel} : ${data.player_name} détecté au ${_floorLabels[data.floor] || data.floor} !`);
         setPatrolKillerVideoPath(data.variant === "vadrouille" ? "/powers/Vadrouille.mp4" : "/powers/Espionnage.mp4");
         setShowPatrolKillerAlert(true);
-      } else if (data.type === "goliath_death_popup") {
-        // Show Goliath death popup with video
-        setGoliathDeathMessage(data.message);
-        setGoliathDeathVideoPath(data.video_path);
-        setShowGoliathDeathPopup(true);
-        // NOTE: No auto-hide — user must click to close
       } else if (data.type === "traque_result") {
         // Show Traque popup with video (video_path and avatars vary by variant)
         setTraqueMessage(data.message);
@@ -6281,6 +6409,11 @@ const prevPendingActionsRef = useRef('{}');
         setMaledictionVideoPath(data.video_path || "/powers/Malediction.mp4");
         setShowMaledictionPenaltyPopup(true);
         // No auto-hide — user must click to close
+      } else if (data.type === "malediction_lifted") {
+        // Malédiction Incertaine: the whole team's curse has been lifted at once
+        setMaledictionLiftedMessage(data.message);
+        setShowMaledictionLiftedPopup(true);
+        // No auto-hide — user must click to close
       } else if (data.type === "error") {
         toast.error(data.message);
         // Reset hasSelectedRoom to allow player to try again after error
@@ -6469,10 +6602,13 @@ const selectRoom = (roomName) => {
         setShowOrcSearchPopup(false);
       }, 3000);
     } else if (powerDef && effectiveRequiresAction) {
-      // Afficher immédiatement l'interface d'action sans attendre le message WebSocket
-      // power_action_required. Cela évite le flash du popup de sélection de pouvoir
-      // pendant le round-trip réseau (visible notamment pour le Piège de Téléportation).
-      setShowPowerAction(true);
+      // Pour la malédiction : NE PAS afficher immédiatement.
+      // La liste cursable_survivors arrive avec le power_action_required WebSocket —
+      // afficher avant la réponse causerait un état vide ("Aucun aventurier...").
+      // Pour tous les autres pouvoirs : affichage immédiat pour éviter le flash réseau.
+      if (powerName !== "malediction") {
+        setShowPowerAction(true);
+      }
     }
   };
   
@@ -6533,6 +6669,23 @@ const selectRoom = (roomName) => {
     }, 3000);
   };
 
+  // NEW: Curse all survivors at once (Malédiction de Masse)
+  const cursePowerItemMasse = (selections) => {
+    if (!gameState || gameState.phase !== "killer_power_selection") return;
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "curse_item_masse",
+        selections: selections
+      }));
+    }
+    // Show "Fouillez une pièce" popup
+    setShowPowerAction(false);
+    setShowOrcSearchPopup(true);
+    setTimeout(() => {
+      setShowOrcSearchPopup(false);
+    }, 3000);
+  };
+
   if (!gameState) {
     return <div className="loading">Chargement...</div>;
   }
@@ -6583,13 +6736,15 @@ const selectRoom = (roomName) => {
       });
     }
     
-    // Check for La Goliath
+    // Check for La Poursuite
     if (gameState.goliath_active && gameState.goliath_turns_remaining > 0) {
+      const hasPrecision = (gameState.poursuite_precision_empty_rooms || []).length > 0;
       traps.push({
         type: "goliath",
-        icon: "/icons/La goliath.png",
-        name: "La Goliath",
-        description: `La goliath rôde encore pour ${gameState.goliath_turns_remaining} tours : Ne choisissez jamais une pièce que l'un de vous a visité durant le tour précédent !`,
+        icon: "/icons/Poursuite.png",
+        name: "Poursuite",
+        description: `La Poursuite est active pour ${gameState.goliath_turns_remaining} tour(s) : Ne choisissez jamais une pièce visitée au tour précédent !` +
+          (hasPrecision && currentPlayerRole === "killer" ? ` Les salles marquées (vide) ne contiennent aucun aventurier.` : ``),
         count: 1
       });
     }
@@ -8265,35 +8420,35 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* NEW: Goliath Spawn Popup */}
-      {showGoliathSpawnPopup && (
+      {/* Poursuite Spawn Popup */}
+      {showPoursuiteSpawnPopup && (
         <div 
           className="game-over-overlay" 
           style={{ zIndex: 1001 }}
-          onClick={() => setShowGoliathSpawnPopup(false)}
-          data-testid="goliath-spawn-popup"
+          onClick={() => setShowPoursuiteSpawnPopup(false)}
+          data-testid="poursuite-spawn-popup"
         >
           <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#2a2a2a', borderColor: '#8b0000' }}>
             <CardHeader>
               <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
-                🕷️
-                <span>La Goliath est invoquée !</span>
+                ⚔️
+                <span>Poursuite !</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {goliathSpawnVideoPath && (
+              {poursuiteSpawnVideoPath && (
                 <video 
                   autoPlay 
                   muted 
                   style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
-                  onEnded={() => setTimeout(() => setShowGoliathSpawnPopup(false), 1000)}
+                  onEnded={() => setTimeout(() => setShowPoursuiteSpawnPopup(false), 1000)}
                 >
-                  <source src={goliathSpawnVideoPath} type="video/mp4" />
+                  <source src={poursuiteSpawnVideoPath} type="video/mp4" />
                   Votre navigateur ne supporte pas la vidéo.
                 </video>
               )}
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {goliathSpawnMessage}
+                {poursuiteSpawnMessage}
               </p>
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
@@ -8650,38 +8805,33 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* NEW: Goliath Death Popup */}
-      {showGoliathDeathPopup && (
-        <div 
-          className="game-over-overlay" 
-          style={{ zIndex: 1001 }}
-          onClick={() => { setShowGoliathDeathPopup(false); notifyEventCompleted(); }}
-          data-testid="goliath-death-popup"
+      {/* NEW: Malédiction Incertaine - team-wide curse lifted popup */}
+      {showMaledictionLiftedPopup && (
+        <div
+          className="game-over-overlay"
+          style={{ zIndex: 1002 }}
+          onClick={() => setShowMaledictionLiftedPopup(false)}
+          data-testid="malediction-lifted-popup"
         >
-          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a1a', borderColor: '#8b0000' }}>
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1e0a32', borderColor: '#7c3aed' }}>
             <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#dc2626' }}>
-                💀🕷️
-                <span>La Goliath frappe !</span>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#c4b5fd' }}>
+                🔮 Malédiction levée !
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {goliathDeathVideoPath && (
-                <video 
-                  autoPlay 
-                  muted 
-                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
+              <p style={{ fontSize: '1.05em', textAlign: 'center', color: '#c4b5fd', lineHeight: '1.6' }}>
+                {maledictionLiftedMessage}
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1rem' }}>
+                <Button
+                  data-testid="malediction-lifted-ok-btn"
+                  onClick={() => setShowMaledictionLiftedPopup(false)}
+                  style={{ backgroundColor: '#7c3aed', padding: '0.6rem 1.5rem' }}
                 >
-                  <source src={goliathDeathVideoPath} type="video/mp4" />
-                  Votre navigateur ne supporte pas la vidéo.
-                </video>
-              )}
-              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {goliathDeathMessage}
-              </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
-                Cliquez pour continuer
-              </p>
+                  OK
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -8851,6 +9001,7 @@ const selectRoom = (roomName) => {
           secousseEvents={secousseEvents}
           maledictionSurvivors={maledictionSurvivors}
           cursePowerItem={cursePowerItem}
+          cursePowerItemMasse={cursePowerItemMasse}
         />
       )}
 
@@ -9012,6 +9163,19 @@ const selectRoom = (roomName) => {
                         disabled={isEliminated || hasSelectedRoom || room.locked}
                       >
                         <div className="room-name">{displayName}</div>
+                        {/* Poursuite de Précision : indiquer les salles sans survivants aux killers */}
+                        {currentPlayerRole === "killer" &&
+                         (gameState.poursuite_precision_empty_rooms || []).includes(room.name) && (
+                          <div style={{
+                            fontSize: '0.72em',
+                            color: '#a3e635',
+                            fontStyle: 'italic',
+                            marginTop: '2px',
+                            lineHeight: 1.1,
+                          }}>
+                            (vide)
+                          </div>
+                        )}
                         <div className="room-indicators">
                           {room.locked && <span className="room-icon locked-icon">❌</span>}
                           {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}

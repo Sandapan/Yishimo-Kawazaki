@@ -134,6 +134,48 @@ def is_inventory_full(player: dict) -> bool:
     inventory = player.get("inventory") or []
     return all(slot is not None for slot in inventory)
 
+# ── MALÉDICTION : helpers communs aux spécialisations ──────────────────────
+def clear_cursed_display(player: dict) -> None:
+    """Remove the 'cursed' / 'cursed_display' flags from every item in a player's
+    inventory. Used when a curse (normale or incertaine) is lifted."""
+    for slot in (player.get("inventory") or []):
+        if slot:
+            slot.pop("cursed", None)
+            slot.pop("cursed_display", None)
+
+def try_lift_curse(game: dict, player_id: str, slot_index: int) -> Optional[str]:
+    """Check whether the inventory slot (player_id, slot_index) was the cursed item
+    and, if so, lift the corresponding curse from the game state.
+
+    Returns the variant of the curse that was lifted:
+      - "normale"    : the base Malédiction (single curse)
+      - "incertaine" : Malédiction Incertaine — clears the cursed_display overlay
+                       from every other item of the target's inventory
+      - "masse"      : Malédiction de Masse — only this player's curse entry is removed
+    Returns None if this slot wasn't cursed.
+    """
+    active_curse = game.get("active_curse")
+    if (active_curse
+            and active_curse.get("target_player_id") == player_id
+            and active_curse.get("slot_index") == slot_index):
+        variant = active_curse.get("variant") or "normale"
+        game.pop("active_curse", None)
+        target_player = game["players"].get(player_id)
+        if target_player:
+            clear_cursed_display(target_player)
+        return variant
+
+    active_curses = game.get("active_curses")
+    if active_curses:
+        for i, curse in enumerate(active_curses):
+            if curse.get("target_player_id") == player_id and curse.get("slot_index") == slot_index:
+                active_curses.pop(i)
+                if not active_curses:
+                    game.pop("active_curses", None)
+                return "masse"
+
+    return None
+
 def generate_short_code() -> str:
     """Generate a short 4-character alphanumeric code"""
     characters = string.ascii_uppercase + string.digits
@@ -288,12 +330,14 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "observation_stone_target_room": None,  # room where the stone must be thrown
         "observation_stone_quest_completed": False,  # whether the stone quest has been completed
         "fleeing_goblin_placed": False,  # NEW: whether fleeing goblin has been placed
-        "goliath_active": False,  # NEW: whether Goliath is active
-        "goliath_turns_remaining": 0,  # NEW: turns remaining for Goliath
-        "goliath_previous_turn_rooms": [],  # NEW: rooms visited by survivors in the previous turn
-        "goliath_killed_this_turn": False,  # NEW: whether Goliath has killed a survivor this turn (only one kill per turn)
+        "goliath_active": False,  # whether Poursuite is active
+        "goliath_turns_remaining": 0,  # turns remaining for Poursuite
+        "goliath_previous_turn_rooms": [],  # rooms visited by survivors in the previous turn
+        "goliath_killed_this_turn": False,  # legacy flag (kept for compatibility)
+        "poursuite_precision_empty_rooms": [],  # rooms revealed by Poursuite de Précision variant
         "eboulement_active": False,  # NEW: whether Eboulement is active (blocks floor changes for 1 turn)
         "eboulement_locked_floors": {},  # NEW: stores which floor each survivor is locked to during eboulement {player_id: floor}
+        "eboulement_perturbation_active": False,  # NEW: whether Perturbation variant is active (double damage + -15 initiative)
         "patrouille_patrol": None,  # NEW: {room: str, floor: str, active: bool} - gobelin de patrouille
         "patrol_revealed_survivors": {},  # NEW: {player_id: room_name} - survivants revealed by patrol goblin during this turn
         "discovered_rooms": [],  # NEW: List of room names discovered by survivors (fog of war)
@@ -827,9 +871,9 @@ POWERS = {
         "action_type": "select_two_rooms"  # select two rooms sequentially
     },
     "goliath": {
-        "name": "🕷️ La Goliath",
-        "description": "Invoquez la Goliath pour plusieurs tours. Cette araignée géante traque les aventuriers qui revisitent une pièce fouillée au tour précédent.",
-        "icon": "La goliath.mp4",
+        "name": "⚔️ Poursuite",
+        "description": "Choisir une pièce déjà visitée par vos alliés ou vous-même au tour précédent déclenche un combat.",
+        "icon": "Poursuite.mp4",
         "requires_action": False
     },
     "eboulement": {
@@ -958,7 +1002,7 @@ def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optio
 
 
 def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> list:
-    """Get 3 random unique powers, excluding goliath if already active and
+    """Get 3 random unique powers, excluant poursuite si déjà active and
     excluding secousse if no events have been discovered yet."""
     excluded = list(exclude_powers)
 
@@ -967,7 +1011,7 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
     if enabled_powers is None:
         enabled_powers = list(POWERS.keys())
 
-    # Exclude goliath if already active
+    # Exclure poursuite si déjà active
     if game_state and game_state.get("goliath_active", False):
         excluded.append("goliath")
 
@@ -1045,8 +1089,10 @@ async def check_power_selection_complete(session_id: str):
     if all_complete:
         # Apply all selected powers
         await apply_powers(session_id)
-        
-        # Move to killer selection phase
+
+        # Flux normal vers killer_selection.
+        # Les pending_specializations éventuels seront consommés par process_turn
+        # après la phase de fouille, comme pour tous les autres pouvoirs (vision, mimic…).
         game["phase"] = "killer_selection"
         # Clear pending_power_selections before broadcast so the frontend never sees
         # action_complete=True while still on killer_power_selection phase.
@@ -1604,34 +1650,104 @@ async def apply_powers(session_id: str):
                     logger.info(f"🔮 Spécialisation Téléportation disponible pour {killer_player['name']}")
         
         elif power_name == "goliath":
-            # Activate the Goliath for 7-10 turns
-            goliath_duration = random.randint(7, 10)
+            # Activer la Poursuite pour 3 tours
+            poursuite_duration = 3
             game["goliath_active"] = True
-            game["goliath_turns_remaining"] = goliath_duration
-            game["goliath_previous_turn_rooms"] = []  # Will be populated at end of survivor turn
+            game["goliath_turns_remaining"] = poursuite_duration
+            # Peupler immédiatement avec les pièces choisies CE tour par les survivants,
+            # afin que le check soit effectif dès le prochain tour du killer (même tour d'activation).
+            current_turn_rooms = []
+            for pid, action in game.get("pending_actions", {}).items():
+                if pid in game["players"] and game["players"][pid]["role"] == "survivor":
+                    room_selected = action.get("room")
+                    if room_selected and room_selected not in current_turn_rooms:
+                        current_turn_rooms.append(room_selected)
+            game["goliath_previous_turn_rooms"] = current_turn_rooms
             
-            # Log event for killers
-            event_msg = f"🕷️ {player['name']} utilise La Goliath !"
+            # Événement pour les killers
+            event_msg = f"⚔️ {player['name']} utilise La Poursuite !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
             
-            # Log event for everyone (appearance)
-            goliath_spawn_msg = f"🕷️ La Goliath apparait pour {goliath_duration} tours !"
-            game["events"].append({"message": goliath_spawn_msg, "type": "goliath_spawned"})
-            await broadcast_to_session(session_id, {"type": "event", "message": goliath_spawn_msg})
+            # Événement pour tous (apparition)
+            poursuite_spawn_msg = "⚔️ La Poursuite est lancée pour 3 tours !"
+            game["events"].append({"message": poursuite_spawn_msg, "type": "poursuite_spawned"})
+            await broadcast_to_session(session_id, {"type": "event", "message": poursuite_spawn_msg})
             
-            # Send popup with video to all survivors
+            # Popup vidéo pour tous les survivants
             await broadcast_to_session(session_id, {
-                "type": "goliath_spawned",
-                "message": "La Goliath est invoquée ! Ne choisissez JAMAIS une pièce que l'un d'entre vous a visité au tour précédent tant qu'elle est présente.",
-                "video_path": "/event/Spawn-Goliath.mp4",
-                "duration": goliath_duration
+                "type": "poursuite_spawned",
+                "message": "Durant 3 tours, choisir une pièce déjà visitée par vos alliés ou vous-même au tour précédent déclenche un combat.",
+                "video_path": "/event/Poursuite.mp4",
+                "duration": poursuite_duration
             }, role_filter="survivor")
+
+            # Spécialisation disponible au niveau 1 (premier usage)
+            if player and "powers_evolution" in player:
+                poursuite_evo = player["powers_evolution"].get("goliath", {})
+                current_level = poursuite_evo.get("level", 1)
+                if current_level == 1 and not selection.get("specialization_triggered", False):
+                    if player_id in game["pending_power_selections"]:
+                        game["pending_power_selections"][player_id]["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "goliath",
+                        "specializations": {
+                            "endurante": {
+                                "name": "⚔️ Poursuite Endurante",
+                                "description": "La Poursuite dure désormais 2 tours supplémentaires.",
+                                "video_path": "/powers/PoursuiteEndurance.mp4"
+                            },
+                            "precision": {
+                                "name": "⚔️ Poursuite de Précision",
+                                "description": "En plus de l'effet Poursuite, 1 salle vide parmi chaque étage est désormais indiquée.",
+                                "video_path": "/powers/PoursuitePrécision.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"⚔️ Spécialisation Poursuite disponible pour {player['name']}")
+
+                elif current_level == 2 and poursuite_evo.get("variant") == "precision":
+                    # Réutilisation avec variant précision : recalculer les salles vides
+                    survivor_rooms = set()
+                    for p in game["players"].values():
+                        if p.get("role") == "survivor" and not p.get("eliminated") and p.get("current_room"):
+                            survivor_rooms.add(p["current_room"])
+                    for pid, action in game.get("pending_actions", {}).items():
+                        if pid in game["players"] and game["players"][pid].get("role") == "survivor":
+                            room_selected = action.get("room")
+                            if room_selected:
+                                survivor_rooms.add(room_selected)
+
+                    floors_order = ["upper_floor", "ground_floor", "basement"]
+                    empty_rooms_by_floor = {}
+                    for floor_key in floors_order:
+                        candidates = [
+                            room_name for room_name, room_data in game["rooms"].items()
+                            if room_data.get("floor") == floor_key
+                            and not room_data.get("locked")
+                            and room_name not in survivor_rooms
+                        ]
+                        if candidates:
+                            empty_rooms_by_floor[floor_key] = random.choice(candidates)
+
+                    revealed = list(empty_rooms_by_floor.values())
+                    game["poursuite_precision_empty_rooms"] = revealed
+
+                    floor_labels = {"upper_floor": "Étage", "ground_floor": "Rez-de-chaussée", "basement": "Sous-sol"}
+                    revealed_names = ", ".join(
+                        f"{empty_rooms_by_floor[f]} ({floor_labels.get(f, f)})"
+                        for f in floors_order if f in empty_rooms_by_floor
+                    )
+                    precision_msg = f"⚔️ Poursuite de Précision ! Salles sans aventuriers : {revealed_names}."
+                    game["events"].append({"message": precision_msg, "type": "poursuite_status", "for_role": "killer"})
+                    await broadcast_to_session(session_id, {"type": "event", "message": precision_msg}, role_filter="killer")
+                    logger.info(f"⚔️ Poursuite Précision (réutilisation) : salles vides → {revealed}")
         
         elif power_name == "eboulement":
             # Activate Eboulement for 1 turn (blocks floor changes)
             game["eboulement_active"] = True
-            
+
             # Store the floor each survivor is currently selecting (from pending_actions)
             # This will lock them to this floor on the next turn
             game["eboulement_locked_floors"] = {}
@@ -1641,23 +1757,108 @@ async def apply_powers(session_id: str):
                     if selected_room and selected_room in game["rooms"]:
                         # Store the floor of the room they're selecting THIS turn
                         game["eboulement_locked_floors"][survivor_id] = game["rooms"][selected_room]["floor"]
-            
-            # Log event for killers
+
+            # ── Variant: Séisme — inform killer of adventurers per floor ──
+            killer_player = game["players"].get(player_id)
+            eboulement_variant = (killer_player or {}).get("powers_evolution", {}).get("eboulement", {}).get("variant")
+
+            if eboulement_variant == "seisme":
+                floor_names = {
+                    "basement": "🕳️ Sous-sol",
+                    "ground_floor": "🏰 Rez-de-chaussée",
+                    "upper_floor": "🕯️ Étage"
+                }
+                # Build floor -> list of survivor names mapping (from pending_actions or current_room)
+                floor_to_survivors = {}
+                for sid, sp in game["players"].items():
+                    if sp.get("role") == "survivor" and not sp.get("eliminated", False):
+                        # Prefer the room they are moving to this turn
+                        pending_action = game.get("pending_actions", {}).get(sid, {})
+                        room = pending_action.get("room") or sp.get("current_room")
+                        if room and room in game["rooms"]:
+                            floor_key = game["rooms"][room]["floor"]
+                            floor_to_survivors.setdefault(floor_key, []).append(sp["name"])
+                # Build message
+                occupied_floors = [f for f in ["upper_floor", "ground_floor", "basement"] if floor_to_survivors.get(f)]
+                if occupied_floors:
+                    floor_parts = [floor_names.get(f, f) for f in occupied_floors]
+                    if len(floor_parts) == 1:
+                        seisme_msg = f"⛰️ Vous entendez des aventuriers s'extirper des débris dans {floor_parts[0]}."
+                    elif len(floor_parts) == 2:
+                        seisme_msg = f"⛰️ Vous entendez des aventuriers s'extirper des débris dans {floor_parts[0]} et {floor_parts[1]}."
+                    else:
+                        seisme_msg = f"⛰️ Vous entendez des aventuriers s'extirper des débris dans {floor_parts[0]}, {floor_parts[1]} et {floor_parts[2]}."
+                else:
+                    seisme_msg = "⛰️ Silence total... Aucun aventurier détecté dans les décombres."
+                game["events"].append({"message": seisme_msg, "type": "seisme_detection", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": seisme_msg}, role_filter="killer")
+                logger.info(f"⛰️ Séisme : étages avec aventuriers → {occupied_floors}")
+
+            # ── Variant: Perturbation — apply initiative malus and double damage to survivors ──
+            if eboulement_variant == "perturbation":
+                for sid, sp in game["players"].items():
+                    if sp.get("role") == "survivor" and not sp.get("eliminated", False):
+                        sp["initiative_bonus"] = sp.get("initiative_bonus", 0) - 15
+                        sp["eboulement_perturbation_active"] = True
+                game["eboulement_perturbation_active"] = True
+                logger.info("⛰️ Perturbation : malus initiative -15 et dégâts ×2 appliqués aux survivants")
+
+            # Événement pour les killers
             event_msg = f"⛰️ {player['name']} utilise Eboulement !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
-            
+
             # Log event for everyone
-            eboulement_msg = f"⛰️ Un éboulement bloque les escaliers pour 1 tour !"
+            if eboulement_variant == "perturbation":
+                eboulement_msg = "⛰️ Un éboulement bloque les escaliers pour 1 tour ! Les aventuriers sont perturbés !"
+            else:
+                eboulement_msg = "⛰️ Un éboulement bloque les escaliers pour 1 tour !"
             game["events"].append({"message": eboulement_msg, "type": "eboulement_activated"})
             await broadcast_to_session(session_id, {"type": "event", "message": eboulement_msg})
-            
-            # Send popup with video to all survivors
-            await broadcast_to_session(session_id, {
-                "type": "eboulement_activated",
-                "message": "Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci.",
-                "video_path": "/powers/Eboulement.mp4"
-            }, role_filter="survivor")
+
+            # Popup vidéo pour tous les survivants
+            if eboulement_variant == "perturbation":
+                await broadcast_to_session(session_id, {
+                    "type": "eboulement_activated",
+                    "message": "Un éboulement bloque les escaliers ! Vous êtes perturbé : -15 en initiative et dégâts reçus doublés ce tour-ci !",
+                    "video_path": "/powers/Perturbation.mp4"
+                }, role_filter="survivor")
+            elif eboulement_variant == "seisme":
+                await broadcast_to_session(session_id, {
+                    "type": "eboulement_activated",
+                    "message": "Un éboulement secoue le donjon ! Vous ne pouvez pas changer d'étage ce tour-ci.",
+                    "video_path": "/powers/Séisme.mp4"
+                }, role_filter="survivor")
+            else:
+                await broadcast_to_session(session_id, {
+                    "type": "eboulement_activated",
+                    "message": "Un éboulement bloque les escaliers ! Vous ne pouvez pas changer d'étage ce tour-ci.",
+                    "video_path": "/powers/Eboulement.mp4"
+                }, role_filter="survivor")
+
+            # ── Trigger specialization choice at level 1 ──
+            if killer_player and "powers_evolution" in killer_player:
+                power_data = killer_player["powers_evolution"].get("eboulement", {})
+                current_level = power_data.get("level", 1)
+                if current_level == 1 and not power_data.get("specialization_triggered", False):
+                    power_data["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "eboulement",
+                        "specializations": {
+                            "seisme": {
+                                "name": "⛰️ Séisme",
+                                "description": "L'éboulement informe désormais de la présence d'aventuriers dans chaque étage. Vous entendez les survivants s'extirper des décombres.",
+                                "video_path": "/powers/Séisme.mp4"
+                            },
+                            "perturbation": {
+                                "name": "⛰️ Perturbation",
+                                "description": "Durant l'éboulement, tous les aventuriers subissent -15 en initiative et reçoivent 2× plus de dégâts.",
+                                "video_path": "/powers/Perturbation.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"⛰️ Spécialisation Éboulement disponible pour {killer_player['name']}")
         
         elif power_name == "patrouille":
             killer_player = game["players"].get(player_id)
@@ -1750,38 +1951,37 @@ async def apply_powers(session_id: str):
                 await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
 
         elif power_name == "malediction":
-            # Build the list of survivors with cursable items and send to this killer
-            CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
-            cursable_survivors = []
-            for pid, p in game["players"].items():
-                if p.get("role") == "survivor" and not p.get("eliminated", False):
-                    items = []
-                    for idx, slot in enumerate(p.get("inventory") or []):
-                        if slot and slot.get("type") in CURSABLE_TYPES:
-                            items.append({"slot_index": idx, "type": slot["type"]})
-                    if items:
-                        cursable_survivors.append({
-                            "player_id": pid,
-                            "player_name": p["name"],
-                            "items": items
-                        })
-
-            if cursable_survivors:
-                # Send inventory selection interface to this killer only
-                killer_ws = active_connections.get(session_id, {}).get(player_id)
-                if killer_ws:
-                    try:
-                        await killer_ws.send_json({
-                            "type": "power_action_required",
-                            "power": "malediction",
-                            "cursable_survivors": cursable_survivors
-                        })
-                    except Exception:
-                        pass
-            
+            # La sélection de la cible est gérée via curse_item / curse_item_masse dans le WebSocket.
+            # apply_powers ne fait qu'enregistrer l'event ; le payload power_action_required
+            # a déjà été envoyé dans select_power avec la liste cursable_survivors à jour.
             event_msg = f"🔮 {player['name']} invoque la Malédiction !"
             game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
             await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+            # ── Specialization trigger (level 1 only) ──
+            if "powers_evolution" in player:
+                power_evolution_check = player["powers_evolution"].get("malediction", {})
+                current_level = power_evolution_check.get("level", 1)
+                if current_level == 1 and not selection.get("specialization_triggered", False):
+                    selection["specialization_triggered"] = True
+                    game["pending_specializations"] = game.get("pending_specializations", {})
+                    game["pending_specializations"][player_id] = {
+                        "power": "malediction",
+                        "specializations": {
+                            "incertaine": {
+                                "name": "🔮 Malédiction Incertaine",
+                                "description": "Tous les objets maudissables de l'inventaire ciblé semblent désormais maudits : les aventuriers ne savent plus lequel est réellement maudit.",
+                                "video_path": "/powers/MalédictionIncertaine.mp4"
+                            },
+                            "masse": {
+                                "name": "🔮 Malédiction de Masse",
+                                "description": "Maudissez simultanément un objet dans l'inventaire de chaque aventurier.",
+                                "video_path": "/powers/MalédictionDeMasse.mp4"
+                            }
+                        }
+                    }
+                    logger.info(f"🔮 Spécialisation Malédiction disponible pour {player['name']}")
+
 
 def filter_game_state(game_state: dict, player_role: str, player_id: Optional[str] = None) -> dict:
     """
@@ -1927,6 +2127,22 @@ async def broadcast_to_role(session_id: str, role: str, message: dict):
     await broadcast_to_session(session_id, message, role_filter=role)
 
 
+async def broadcast_curse_lifted(session_id: str, game: dict, variant: Optional[str]):
+    """Notify survivors when a curse has been lifted.
+
+    For "incertaine", the entire team's curse is lifted at once (the cursed_display
+    overlay disappears from every other item), so we show a popup informing everyone.
+    For "normale" and "masse" the existing behaviour (silent lift) is preserved.
+    """
+    if variant == "incertaine":
+        msg = "Vous levez la malédiction pour toute l'équipe !"
+        game["events"].append({"message": f"🔮 {msg}", "type": "malediction_lifted"})
+        await broadcast_to_session(session_id, {
+            "type": "malediction_lifted",
+            "message": msg
+        }, role_filter="survivor")
+
+
 async def try_advance_to_killer_phase(session_id: str) -> bool:
     """
     Check if the survivor phase should end and transition to the killer phase.
@@ -2033,6 +2249,64 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
         # Si l'item est ENCORE là (curse_still_active), on NE PAS effacer active_curse :
         # la malédiction persiste et sera réévaluée au tour suivant.
 
+    # MALÉDICTION DE MASSE : chaque malédiction encore active inflige 10 PV
+    # uniquement à l'aventurier concerné (les autres ne sont pas affectés).
+    active_curses = game.get("active_curses")
+    if active_curses:
+        remaining_curses = []
+        penalized_names = []
+        for curse in active_curses:
+            target_pid = curse.get("target_player_id")
+            slot_idx = curse.get("slot_index")
+            target_player = game["players"].get(target_pid)
+            curse_still_active = False
+
+            if target_player and not target_player.get("eliminated", False):
+                inv = target_player.get("inventory") or []
+                if slot_idx is not None and 0 <= slot_idx < len(inv):
+                    slot = inv[slot_idx]
+                    if slot and slot.get("cursed"):
+                        curse_still_active = True
+
+            if curse_still_active:
+                target_player["hp"] = max(0, (target_player.get("hp") or 0) - 10)
+                if target_player["hp"] <= 0 and not target_player.get("eliminated", False):
+                    target_player["eliminated"] = True
+                if "turn_survivors_damaged" not in game:
+                    game["turn_survivors_damaged"] = {}
+                game["turn_survivors_damaged"][target_pid] = target_player.get("current_room")
+                penalized_names.append(target_player["name"])
+                remaining_curses.append(curse)
+            else:
+                # Objet maudit utilisé/détruit/vendu pendant le tour — malédiction levée
+                # pour cet aventurier uniquement, pas de pénalité pour lui.
+                logger.info(f"Malédiction de Masse: cursed item lifted for player {target_pid}, no penalty")
+
+        if remaining_curses:
+            game["active_curses"] = remaining_curses
+            names_str = ", ".join(penalized_names)
+            penalty_msg = f"Des objets maudits sont encore dans vos inventaires : {names_str} perd(ent) 10 points de vie !"
+            game["events"].append({"message": f"🔮 {penalty_msg}", "type": "malediction_penalty"})
+
+            await broadcast_to_session(session_id, {
+                "type": "malediction_penalty",
+                "message": penalty_msg,
+                "video_path": "/powers/MalédictionDeMasse.mp4"
+            }, role_filter="survivor")
+
+            await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+            logger.info(f"Malédiction de Masse penalty applied to: {names_str}")
+
+            warning_msg = "Certains d'entre vous ont leur inventaire maudit ! Utilisez ou débarrassez vous de votre objet maudit avant la fin de votre tour, sous peine de perdre 10 points de vie !"
+            await broadcast_to_session(session_id, {
+                "type": "malediction_warning",
+                "message": warning_msg,
+                "video_path": "/powers/MalédictionDeMasse.mp4"
+            }, role_filter="survivor")
+        else:
+            game.pop("active_curses", None)
+
+
     # Broadcast latest state before phase change
     await broadcast_to_session(session_id, {
         "type": "state_update",
@@ -2077,7 +2351,7 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
     if mimics_cleared > 0:
         logger.info(f"Cleared {mimics_cleared} untriggered mimic(s) after survivor turn")
 
-    # GOLIATH: track previous turn rooms
+    # POURSUITE : mémoriser les pièces visitées ce tour
     if game.get("goliath_active", False):
         current_turn_rooms = []
         for pid, action in game["pending_actions"].items():
@@ -2095,6 +2369,17 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
     if game.get("eboulement_active", False):
         game["eboulement_active"] = False
         game["eboulement_locked_floors"] = {}
+
+        # PERTURBATION: remove initiative malus and damage flag from survivors
+        if game.get("eboulement_perturbation_active", False):
+            game["eboulement_perturbation_active"] = False
+            for sp in game["players"].values():
+                if sp.get("role") == "survivor" and not sp.get("eliminated", False):
+                    if sp.get("eboulement_perturbation_active", False):
+                        sp["initiative_bonus"] = sp.get("initiative_bonus", 0) + 15
+                        sp["eboulement_perturbation_active"] = False
+            logger.info("⛰️ Perturbation terminée : malus initiative +15 (annulation) et dégâts ×2 retirés")
+
         eboulement_clear_msg = "⛰️ Les escaliers sont de nouveau accessibles !"
         game["events"].append({"message": eboulement_clear_msg, "type": "eboulement_cleared"})
         await broadcast_to_session(session_id, {"type": "event", "message": eboulement_clear_msg})
@@ -2456,7 +2741,11 @@ async def process_turn(session_id: str):
                 player["poisoned_countdown"] -= 1
                 # Apply 3 HP damage per tick (new behaviour)
                 if player.get("hp") is not None:
-                    player["hp"] = max(0, player["hp"] - 3)
+                    _poison_dmg = 3
+                    # PERTURBATION: double damage if active on this survivor
+                    if player.get("eboulement_perturbation_active", False):
+                        _poison_dmg = 6
+                    player["hp"] = max(0, player["hp"] - _poison_dmg)
                 # Track poison tick for Vision Accumulative
                 if "turn_survivors_damaged" not in game:
                     game["turn_survivors_damaged"] = {}
@@ -2598,20 +2887,21 @@ async def process_turn(session_id: str):
         game["goliath_turns_remaining"] -= 1
         
         if game["goliath_turns_remaining"] <= 0:
-            # Goliath disappears
+            # La Poursuite prend fin
             game["goliath_active"] = False
             game["goliath_turns_remaining"] = 0
             game["goliath_previous_turn_rooms"] = []
+            game["poursuite_precision_empty_rooms"] = []
             
-            goliath_end_msg = "🕷️ La Goliath disparait !"
-            game["events"].append({"message": goliath_end_msg, "type": "goliath_disappeared"})
-            await broadcast_to_session(session_id, {"type": "event", "message": goliath_end_msg})
+            poursuite_end_msg = "⚔️ La Poursuite prend fin."
+            game["events"].append({"message": poursuite_end_msg, "type": "poursuite_disparue"})
+            await broadcast_to_session(session_id, {"type": "event", "message": poursuite_end_msg})
         else:
-            # Goliath still active, notify remaining turns
+            # Poursuite encore active, notifier les tours restants
             turns_left = game["goliath_turns_remaining"]
-            goliath_status_msg = f"🕷️ La Goliath  {turns_left} tour(s)."
-            game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
-            await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
+            poursuite_status_msg = f"⚔️ La Poursuite est active pour {turns_left} tour(s)."
+            game["events"].append({"message": poursuite_status_msg, "type": "poursuite_status"})
+            await broadcast_to_session(session_id, {"type": "event", "message": poursuite_status_msg})
     
     # EBOULEMENT: Do NOT clear here - it should remain active for the next survivor selection phase
     # It will be cleared when entering killer_power_selection phase of the next turn
@@ -2767,7 +3057,11 @@ async def process_rage_second_selections(session_id: str):
                 player["poisoned_countdown"] -= 1
                 # Apply 3 HP damage per tick (new behaviour)
                 if player.get("hp") is not None:
-                    player["hp"] = max(0, player["hp"] - 3)
+                    _poison_dmg = 3
+                    # PERTURBATION: double damage if active on this survivor
+                    if player.get("eboulement_perturbation_active", False):
+                        _poison_dmg = 6
+                    player["hp"] = max(0, player["hp"] - _poison_dmg)
                 # Track poison tick for Vision Accumulative
                 if "turn_survivors_damaged" not in game:
                     game["turn_survivors_damaged"] = {}
@@ -2877,20 +3171,21 @@ async def process_rage_second_selections(session_id: str):
         game["goliath_turns_remaining"] -= 1
         
         if game["goliath_turns_remaining"] <= 0:
-            # Goliath disappears
+            # La Poursuite prend fin
             game["goliath_active"] = False
             game["goliath_turns_remaining"] = 0
             game["goliath_previous_turn_rooms"] = []
+            game["poursuite_precision_empty_rooms"] = []
             
-            goliath_end_msg = "🕷️ La Goliath disparait !"
-            game["events"].append({"message": goliath_end_msg, "type": "goliath_disappeared"})
-            await broadcast_to_session(session_id, {"type": "event", "message": goliath_end_msg})
+            poursuite_end_msg = "⚔️ La Poursuite prend fin."
+            game["events"].append({"message": poursuite_end_msg, "type": "poursuite_disparue"})
+            await broadcast_to_session(session_id, {"type": "event", "message": poursuite_end_msg})
         else:
-            # Goliath still active, notify remaining turns
+            # Poursuite encore active, notifier les tours restants
             turns_left = game["goliath_turns_remaining"]
-            goliath_status_msg = f"🕷️ La Goliath rôde encore pour {turns_left} tour(s)..."
-            game["events"].append({"message": goliath_status_msg, "type": "goliath_status"})
-            await broadcast_to_session(session_id, {"type": "event", "message": goliath_status_msg})
+            poursuite_status_msg = f"⚔️ La Poursuite est active pour {turns_left} tour(s)."
+            game["events"].append({"message": poursuite_status_msg, "type": "poursuite_status"})
+            await broadcast_to_session(session_id, {"type": "event", "message": poursuite_status_msg})
     
     await broadcast_to_session(session_id, {
         "type": "new_turn",
@@ -3428,8 +3723,10 @@ async def reset_game(session_id: str):
     game["goliath_turns_remaining"] = 0
     game["goliath_previous_turn_rooms"] = []
     game["goliath_killed_this_turn"] = False
+    game["poursuite_precision_empty_rooms"] = []
     game["eboulement_active"] = False
     game["eboulement_locked_floors"] = {}
+    game["eboulement_perturbation_active"] = False
     game["patrouille_patrol"] = None
     game["patrol_revealed_survivors"] = {}
     game["discovered_rooms"] = []  # NOUVEAU : reset des pièces découvertes
@@ -3698,6 +3995,10 @@ async def sell_item(session_id: str = Query(...), player_id: str = Query(...), s
     player["gold"] = player.get("gold", 0) + sell_price
 
     logger.info(f"Player {player_id} sold {item_type} for {sell_price} gold (new balance: {player['gold']})")
+
+    # MALÉDICTION: If the sold item was cursed, lift the curse
+    lifted_variant_sell = try_lift_curse(game, player_id, slot_index)
+    await broadcast_curse_lifted(session_id, game, lifted_variant_sell)
 
     # Broadcast state update
     await broadcast_to_session(session_id, {
@@ -4176,17 +4477,8 @@ async def use_item(session_id: str, request: UseItemRequest):
         logger.info(f"Player {request.player_id} used medikit from slot {request.slot_index}")
         
         # MALÉDICTION: Lift the curse if this was the cursed item
-        active_curse = game.get("active_curse")
-        if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
-            game.pop("active_curse", None)
-        
-        # Broadcast state update
-        await broadcast_to_session(session_id, {
-            "type": "state_update",
-            "game": game
-        })
-        
-        return {"status": "success", "message": "Médikit utilisé !"}
+        lifted_variant_medikit = try_lift_curse(game, request.player_id, request.slot_index)
+        await broadcast_curse_lifted(session_id, game, lifted_variant_medikit)
     
     # Handle antidote usage
     elif item_type == "antidote":
@@ -4205,9 +4497,8 @@ async def use_item(session_id: str, request: UseItemRequest):
         inventory[request.slot_index] = None
         
         # MALÉDICTION: Lift the curse if this was the cursed item
-        active_curse = game.get("active_curse")
-        if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
-            game.pop("active_curse", None)
+        lifted_variant_antidote = try_lift_curse(game, request.player_id, request.slot_index)
+        await broadcast_curse_lifted(session_id, game, lifted_variant_antidote)
         
         event_msg = f"💊 {player['name']} utilise un antidote et est guéri du poison !"
         game["events"].append({"message": event_msg, "type": "antidote_used"})
@@ -4373,10 +4664,10 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
     logger.info(f"Player {request.player_id} deleted item {item_type} from slot {request.slot_index}")
 
     # MALÉDICTION: If the deleted item was cursed, lift the curse
-    active_curse = game.get("active_curse")
-    if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
-        game.pop("active_curse", None)
-        logger.info(f"Curse lifted: player {request.player_id} deleted the cursed item")
+    lifted_variant_delete = try_lift_curse(game, request.player_id, request.slot_index)
+    if lifted_variant_delete:
+        logger.info(f"Curse lifted ({lifted_variant_delete}): player {request.player_id} deleted the cursed item")
+        await broadcast_curse_lifted(session_id, game, lifted_variant_delete)
 
     # Broadcast state update
     await broadcast_to_session(session_id, {
@@ -4432,9 +4723,8 @@ async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
     inventory[request.slot_index] = None
 
     # MALÉDICTION: Lift the curse if this was the cursed item
-    active_curse = game.get("active_curse")
-    if active_curse and active_curse.get("target_player_id") == request.player_id and active_curse.get("slot_index") == request.slot_index:
-        game.pop("active_curse", None)
+    lifted_variant_forge = try_lift_curse(game, request.player_id, request.slot_index)
+    await broadcast_curse_lifted(session_id, game, lifted_variant_forge)
 
     # Determine success via mini-game result from client, fallback to random
     attempts_done = player.get("weapon_forge_attempts", 0)
@@ -4746,8 +5036,13 @@ async def resolve_combat(session_id: str, request: CombatResultRequest):
  
      # Mettre à jour les PV du survivant (défenseur) - les dégâts subis pendant le combat
     if defender.get("hp") is not None and request.damage_dealt > 0:
-        defender["hp"] = max(0, defender["hp"] - request.damage_dealt)
-        logger.info(f"❤️ PV de {defender['name']} mis à jour: {defender['hp']} (dégâts subis: {request.damage_dealt})")
+        actual_damage = request.damage_dealt
+        # PERTURBATION: double damage if active on this survivor
+        if defender.get("eboulement_perturbation_active", False):
+            actual_damage = actual_damage * 2
+            logger.info(f"⛰️ Perturbation active : dégâts doublés ({request.damage_dealt} → {actual_damage}) pour {defender['name']}")
+        defender["hp"] = max(0, defender["hp"] - actual_damage)
+        logger.info(f"❤️ PV de {defender['name']} mis à jour: {defender['hp']} (dégâts subis: {actual_damage})")
         # Track for Vision Accumulative
         if "turn_survivors_damaged" not in game:
             game["turn_survivors_damaged"] = {}
@@ -4856,8 +5151,13 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
             
             # Mettre à jour les PV
             if survivor.get("hp") is not None and damage_dealt > 0:
-                survivor["hp"] = max(0, survivor["hp"] - damage_dealt)
-                logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {damage_dealt})")
+                actual_damage = damage_dealt
+                # PERTURBATION: double damage if active on this survivor
+                if survivor.get("eboulement_perturbation_active", False):
+                    actual_damage = actual_damage * 2
+                    logger.info(f"⛰️ Perturbation active : dégâts doublés ({damage_dealt} → {actual_damage}) pour {survivor['name']}")
+                survivor["hp"] = max(0, survivor["hp"] - actual_damage)
+                logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {actual_damage})")
                 # Track for Vision Accumulative
                 if "turn_survivors_damaged" not in game:
                     game["turn_survivors_damaged"] = {}
@@ -4958,7 +5258,11 @@ async def resolve_crystal_combat(session_id: str, request: ResolveCrystalCombatR
         if survivor_id in game["players"]:
             survivor = game["players"][survivor_id]
             if survivor.get("hp") is not None and damage_dealt > 0:
-                survivor["hp"] = max(0, survivor["hp"] - damage_dealt)
+                actual_damage = damage_dealt
+                # PERTURBATION: double damage if active on this survivor
+                if survivor.get("eboulement_perturbation_active", False):
+                    actual_damage = actual_damage * 2
+                survivor["hp"] = max(0, survivor["hp"] - actual_damage)
 
             if is_eliminated or (survivor.get("hp") is not None and survivor["hp"] <= 0):
                 survivor["eliminated"] = True
@@ -5047,8 +5351,13 @@ async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatReque
     
     # Apply damage to survivor
     if survivor.get("hp") is not None and request.damage_dealt_to_survivor > 0:
-        survivor["hp"] = max(0, survivor["hp"] - request.damage_dealt_to_survivor)
-        logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {request.damage_dealt_to_survivor})")
+        actual_damage = request.damage_dealt_to_survivor
+        # PERTURBATION: double damage if active on this survivor
+        if survivor.get("eboulement_perturbation_active", False):
+            actual_damage = actual_damage * 2
+            logger.info(f"⛰️ Perturbation active : dégâts doublés ({request.damage_dealt_to_survivor} → {actual_damage}) pour {survivor['name']}")
+        survivor["hp"] = max(0, survivor["hp"] - actual_damage)
+        logger.info(f"❤️ PV de {survivor['name']} mis à jour: {survivor['hp']} (dégâts: {actual_damage})")
         # Track for Vision Accumulative
         if "turn_survivors_damaged" not in game:
             game["turn_survivors_damaged"] = {}
@@ -5520,83 +5829,53 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     
                     # GOLIATH CHECK
                     if (player["role"] == "survivor" and 
-                        game.get("goliath_active", False) and 
-                        not game.get("goliath_killed_this_turn", False)):
+                        game.get("goliath_active", False)):
                         previous_turn_rooms = game.get("goliath_previous_turn_rooms", [])
                         if room_name in previous_turn_rooms:
-                            player["eliminated"] = True
-                            player["gold"] = 0
-                            game["rooms"][room_name]["eliminated_players"].append(player_id)
-                            
-                            game["goliath_killed_this_turn"] = True
-                            
-                            player_class = player.get("character_class", "Assassin")
-                            death_video_path = f"/death/{player_class}_La Goliath.mp4"
-                            
-                            event_msg = f"💀🕷️ {player['name']} s'est fait tuer par la Goliath dans {room_name} !"
-                            game["events"].append({"message": event_msg, "type": "goliath_elimination"})
+                            # Déclencher un combat goblin contre cet aventurier (comme quand le killer fouille une pièce occupée)
+                            _tox_incap = False
+                            for _kp in game["players"].values():
+                                if _kp.get("role") == "killer":
+                                    if (_kp.get("powers_evolution") or {}).get("toxine", {}).get("variant") == "incapacitante":
+                                        _tox_incap = True
+                                        break
+
+                            # Trouver le killer (pour attacker_id/attacker_class)
+                            killer_player = next((p for p in game["players"].values() if p.get("role") == "killer"), None)
+                            killer_id_for_combat = killer_player["id"] if killer_player else "poursuite"
+                            killer_class_for_combat = killer_player.get("character_class", "Orc") if killer_player else "Orc"
+                            killer_name_for_combat = killer_player.get("name", "Poursuite") if killer_player else "Poursuite"
+
+                            combat_event = {
+                                "type": "multiplayer_combat",
+                                "attacker_id": killer_id_for_combat,
+                                "attacker_class": killer_class_for_combat,
+                                "attacker_name": killer_name_for_combat,
+                                "survivors": [{
+                                    "id": player_id,
+                                    "name": player["name"],
+                                    "class": player.get("character_class", "Survivor"),
+                                    "hp": player.get("hp", 36),
+                                    "max_hp": player.get("max_hp", 36),
+                                    "initiative_bonus": player.get("initiative_bonus", 0),
+                                    "damage_bonus": player.get("damage_bonus", 0),
+                                    "avatar": player.get("avatar", ""),
+                                    "poisoned_countdown": player.get("poisoned_countdown", 0),
+                                }],
+                                "num_goblins": 1,
+                                "goblin_hp": 6,
+                                "turn": game["turn"],
+                                "combat_id": f"poursuite_{player_id}_{room_name}_{game['turn']}",
+                                "toxine_incapacitante_active": _tox_incap
+                            }
+
+                            game["pending_events"][player_id] = combat_event
+
+                            event_msg = f"⚔️ La Poursuite déclenche un combat pour {player['name']} dans {room_name} !"
+                            game["events"].append({"message": event_msg, "type": "poursuite_combat"})
                             await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-                            
-                            await websocket.send_json({
-                                "type": "goliath_death_popup",
-                                "message": "Vous avez été éliminé par la Goliath !",
-                                "video_path": death_video_path
-                            })
-                            
-                            for other_pid, other_ws in active_connections.get(session_id, {}).items():
-                                if other_pid != player_id:
-                                    try:
-                                        await other_ws.send_json({
-                                            "type": "goliath_death_popup",
-                                            "message": f"{player['name']} s'est fait tuer par la Goliath dans {room_name} !",
-                                            "video_path": death_video_path,
-                                            "victim_name": player['name'],
-                                            "room_name": room_name
-                                        })
-                                    except:
-                                        pass
-                            
-                            logger.info(f"🕷️ {player['name']} tué par la Goliath dans {room_name} (Goliath désactivée pour ce tour)")
-                            
-                            game["rooms"][room_name]["locked"] = True
-                            lock_msg = f"⚠️ La pièce {room_name} est condamnée pour ce tour."
-                            game["events"].append({"message": lock_msg, "type": "room_locked"})
-                            await broadcast_to_session(session_id, {"type": "event", "message": lock_msg})
-                            
-                            if has_item(player, "medikit"):
-                                remove_item(player, "medikit")
-                                new_medikit_room = respawn_medikit(game)
-                                if new_medikit_room:
-                                    respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
-                                    game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
-                                    await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "player_action",
-                                "player_id": player_id,
-                                "player_name": player["name"],
-                                "message": f"✅ {player['name']} a fait son choix"
-                            })
-                            
-                            alive_survivors = [p for p in game["players"].values() if p["role"] == "survivor" and not p["eliminated"]]
-                            if len(alive_survivors) == 0:
-                                game["phase"] = "game_over"
-                                game["winner"] = "killers"
-                                
-                                survivor_msg = "🎉 DEFAITE ! Tous les aventuriers ont été éliminés..."
-                                killer_msg = "💀 VICTOIRE ! Tous les aventuriers ont été éliminés ..."
-                                
-                                game["events"].append({"message": survivor_msg, "type": "game_over", "for_role": "survivor"})
-                                game["events"].append({"message": killer_msg, "type": "game_over", "for_role": "killer"})
-                                
-                                await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": survivor_msg}, role_filter="survivor")
-                                await broadcast_to_session(session_id, {"type": "game_over", "winner": "killers", "message": killer_msg}, role_filter="killer")
-                            
-                            await broadcast_to_session(session_id, {
-                                "type": "state_update",
-                                "game": game_sessions[session_id]
-                            })
-                            continue
+
+                            logger.info(f"⚔️ Poursuite : combat déclenché pour {player['name']} dans {room_name}")
                     
                     # NOUVEAU : Découvrir la pièce pour les survivants (fog of war)
                     newly_discovered = False
@@ -5627,6 +5906,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         # Infliger ~20% des PV max au survivant
                         max_hp = player.get("max_hp") or 36
                         blizzard_dmg = max(1, round(max_hp * 0.20))
+                        # PERTURBATION: double damage if active on this survivor
+                        if player.get("eboulement_perturbation_active", False):
+                            blizzard_dmg = blizzard_dmg * 2
                         player["hp"] = max(0, (player.get("hp") or 0) - blizzard_dmg)
 
                         player_class = player.get("character_class", "Mage").lower()
@@ -5830,7 +6112,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "survivor_hp": player.get("hp", 36),
                             "survivor_gold": player.get("gold", 0),
                             "mimic_hp": 6,
-                            "message": "💰 Un Mimic vous attaque !"
+                            "message": "💰 Un Mimic vous attaque !",
+                            "eboulement_perturbation_active": player.get("eboulement_perturbation_active", False),
+                            "initiative_bonus": player.get("initiative_bonus", 0),
                         }
 
                         await enqueue_player_event(session_id, player_id, "mimic_combat", mimic_combat_event)
@@ -6212,6 +6496,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     })
                         payload["cursable_survivors"] = cursable_survivors
 
+                        # NEW: tell the frontend which level-2 specialization is active
+                        # ("incertaine" or "masse"), or None for the base power.
+                        killer_evolution = (player or {}).get("powers_evolution", {}).get("malediction", {})
+                        payload["malediction_variant"] = (
+                            killer_evolution.get("variant") if killer_evolution.get("level") == 2 else None
+                        )
+
                     await websocket.send_json(payload)
                 else:
                     game["pending_power_selections"][player_id]["action_complete"] = True
@@ -6249,6 +6540,60 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 # Upgrade to level 2 with chosen variant
                 player["powers_evolution"][power_name]["level"] = 2
                 player["powers_evolution"][power_name]["variant"] = variant
+
+                # --- Effets immédiats des variants Poursuite ---
+                if power_name == "goliath":
+                    if variant == "endurante":
+                        # +2 tours si la Poursuite est encore active
+                        if game.get("goliath_active", False):
+                            game["goliath_turns_remaining"] = game.get("goliath_turns_remaining", 0) + 2
+                            extra_msg = f"⚔️ Poursuite Endurante ! La Poursuite dure 2 tours de plus ({game['goliath_turns_remaining']} tours restants)."
+                            game["events"].append({"message": extra_msg, "type": "poursuite_status"})
+                            await broadcast_to_session(session_id, {"type": "event", "message": extra_msg})
+                            logger.info(f"⚔️ Poursuite Endurante : +2 tours → {game['goliath_turns_remaining']} tours restants")
+
+                    elif variant == "precision":
+                        # Calculer les positions actuelles des survivants
+                        survivor_rooms = set()
+                        for p in game["players"].values():
+                            if p.get("role") == "survivor" and not p.get("eliminated") and p.get("current_room"):
+                                survivor_rooms.add(p["current_room"])
+                        # Aussi inclure les pending_actions du tour en cours
+                        for pid, action in game.get("pending_actions", {}).items():
+                            if pid in game["players"] and game["players"][pid].get("role") == "survivor":
+                                room_selected = action.get("room")
+                                if room_selected:
+                                    survivor_rooms.add(room_selected)
+
+                        # Révéler 1 salle sans survivant par étage
+                        floors_order = ["upper_floor", "ground_floor", "basement"]
+                        empty_rooms_by_floor = {}
+                        for floor_key in floors_order:
+                            candidates = []
+                            for room_name, room_data in game["rooms"].items():
+                                if room_data.get("floor") != floor_key:
+                                    continue
+                                if room_data.get("locked"):
+                                    continue
+                                # Salle "vide" = aucun survivant présent ou se dirigeant vers elle
+                                if room_name not in survivor_rooms:
+                                    candidates.append(room_name)
+                            if candidates:
+                                empty_rooms_by_floor[floor_key] = random.choice(candidates)
+
+                        # Stocker dans l'état du jeu (visible uniquement par les killers côté App.js)
+                        revealed = list(empty_rooms_by_floor.values())
+                        game["poursuite_precision_empty_rooms"] = revealed
+
+                        floor_labels = {"upper_floor": "Étage", "ground_floor": "Rez-de-chaussée", "basement": "Sous-sol"}
+                        revealed_names = ", ".join(
+                            f"{empty_rooms_by_floor[f]} ({floor_labels.get(f, f)})"
+                            for f in floors_order if f in empty_rooms_by_floor
+                        )
+                        precision_msg = f"⚔️ Poursuite de Précision ! Salles sans aventuriers révélées : {revealed_names}."
+                        game["events"].append({"message": precision_msg, "type": "poursuite_status", "for_role": "killer"})
+                        await broadcast_to_session(session_id, {"type": "event", "message": precision_msg}, role_filter="killer")
+                        logger.info(f"⚔️ Poursuite Précision : salles sans survivants → {revealed}")
 
                 # Persist specialization display data so the power card shows the
                 # specialized name/description on future turns.
@@ -6301,7 +6646,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if all_specs_done:
                     logger.info("🔮 Toutes les spécialisations terminées — reprise du flux via process_turn()")
                     # Déléguer entièrement à process_turn() pour éviter la duplication
-                    # de logique (poison, Goliath, nouveau tour, etc.)
+                    # de logique (poison, Poursuite, nouveau tour, etc.)
                     await process_turn(session_id)
             
             elif data["type"] == "power_action":
@@ -6356,13 +6701,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                 # Mark the item as cursed
                 item["cursed"] = True
+
+                # Read the killer's malediction specialization (None = base level 1)
+                killer_evolution = (player or {}).get("powers_evolution", {}).get("malediction", {})
+                curse_variant = killer_evolution.get("variant") if killer_evolution.get("level") == 2 else None
+
                 # Store curse info in game state
                 game["active_curse"] = {
                     "target_player_id": target_player_id,
                     "slot_index": slot_index,
                     "item_type": item["type"],
-                    "cursed_by": player_id
+                    "cursed_by": player_id,
+                    "variant": curse_variant
                 }
+
+                # SPÉCIALISATION "Malédiction Incertaine" : tous les objets maudissables
+                # de l'inventaire ciblé affichent l'overlay de malédiction. Seul item
+                # gardera "cursed": True ; les autres reçoivent "cursed_display": True
+                # pour le rendu, sans déclencher la levée de malédiction.
+                if curse_variant == "incertaine":
+                    for idx, slot in enumerate(inventory):
+                        if slot and slot.get("type") in CURSABLE_TYPES and idx != slot_index:
+                            slot["cursed_display"] = True
+                    item["cursed_display"] = True
+
 
                 # Mark power action as complete
                 if player_id in game["pending_power_selections"]:
@@ -6389,7 +6751,83 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                 await check_power_selection_complete(session_id)
 
-            elif data["type"] == "use_medikit":
+            elif data["type"] == "curse_item_masse":
+                # SPÉCIALISATION "Malédiction de Masse" : le killer maudit simultanément
+                # un objet dans l'inventaire de chaque aventurier vivant.
+                if player["role"] != "killer" or game["phase"] != "killer_power_selection":
+                    continue
+
+                killer_evolution = (player or {}).get("powers_evolution", {}).get("malediction", {})
+                if not (killer_evolution.get("level") == 2 and killer_evolution.get("variant") == "masse"):
+                    continue
+
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+
+                selections = data.get("selections", [])
+                if not isinstance(selections, list):
+                    continue
+
+                new_curses = []
+                cursed_player_names = []
+
+                for sel in selections:
+                    target_player_id = sel.get("target_player_id")
+                    slot_index = sel.get("slot_index")
+
+                    if target_player_id not in game["players"]:
+                        continue
+
+                    target = game["players"][target_player_id]
+                    if target.get("role") != "survivor" or target.get("eliminated", False):
+                        continue
+
+                    inventory = target.get("inventory") or []
+                    if slot_index is None or slot_index < 0 or slot_index >= len(inventory):
+                        continue
+
+                    item = inventory[slot_index]
+                    if not item or item.get("type") not in CURSABLE_TYPES:
+                        continue
+
+                    item["cursed"] = True
+                    new_curses.append({
+                        "target_player_id": target_player_id,
+                        "slot_index": slot_index,
+                        "item_type": item["type"],
+                        "cursed_by": player_id
+                    })
+                    cursed_player_names.append(target["name"])
+
+                if not new_curses:
+                    continue
+
+                game["active_curses"] = new_curses
+
+                # Mark power action as complete
+                if player_id in game["pending_power_selections"]:
+                    game["pending_power_selections"][player_id]["action_complete"] = True
+                    game["pending_power_selections"][player_id]["action_data"] = {
+                        "selections": selections
+                    }
+
+                event_msg = f"🔮 {player['name']} maudit un objet dans l'inventaire de chaque aventurier !"
+                game["events"].append({"message": event_msg, "type": "power_used", "for_role": "killer"})
+                await broadcast_to_session(session_id, {"type": "event", "message": event_msg}, role_filter="killer")
+
+                # Broadcast state update so the cursed items render in inventories
+                await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+                # Warn all survivors with video + message
+                curse_warning_msg = "Chacun de vous a un objet maudit dans son inventaire ! Utilisez ou débarrassez vous de votre objet maudit avant la fin de votre tour pour lever votre malédiction, sous peine de perdre 10 points de vie !"
+                await broadcast_to_session(session_id, {
+                    "type": "malediction_warning",
+                    "message": curse_warning_msg,
+                    "video_path": "/powers/MalédictionDeMasse.mp4"
+                }, role_filter="survivor")
+
+                await check_power_selection_complete(session_id)
+
+
                 if game["players"][player_id]["role"] != "survivor":
                     continue
 
