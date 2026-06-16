@@ -109,7 +109,6 @@ const ITEM_SPRITES = {
   rune_dommage: '/inventory/rune_dommage.png',
   rune_initiative: '/inventory/rune_initiative.png',
   rune_vitalite: '/inventory/rune_vitalite.png',
-  medikit: '/inventory/medikit.png',
   antidote: '/inventory/antidote.png',
   pierre_quete: '/items/Pierre_Quete.png',
   chaussons: '/items/Chaussons.png',
@@ -124,7 +123,6 @@ const ITEM_NAMES = {
   rune_dommage: 'Rune de Dommage',
   rune_initiative: "Rune d'Initiative",
   rune_vitalite: 'Rune de Vitalité',
-  medikit: 'Médikit',
   antidote: 'Antidote',
   pierre_quete: "Pierre d'observation",
   chaussons: 'Chaussons du Roi Orc',
@@ -142,6 +140,24 @@ const TROPHY_DESCRIPTIONS = {
   culotte: "Comptez-vous réellement encombrer votre inventaire avec cette culotte ridicule ?",
 };
 
+// Descriptions des objets de l'inventaire (affichées dans ItemInfoModal)
+const ITEM_DESCRIPTIONS = {
+  rune_vitalite: "Elle vous apportera un peu de confort si vous l'appliquez correctement à votre arme grâce à la forge.",
+  rune_initiative: "Passez probablement prioritaire en début de combat si vous l'appliquez correctement à votre arme grâce à la forge.",
+  rune_dommage: "Gagnez en puissance si vous l'appliquez correctement à votre arme grâce à la forge.",
+  antidote: "S'utilise pour vous soigner de la toxine.",
+  relique_spherique: "Obtenue sur le gobelin fuyard, cette étrange relique est nécessaire pour venir à bout du cristal.",
+  relique_cubique: "Obtenue suite à la quête de la pierre d'observation, cette étrange relique est nécessaire pour venir à bout du cristal.",
+  relique_triangulaire: "Obtenue auprès du marchand, cette étrange relique est nécessaire pour venir à bout du cristal.",
+  // Conservation des descriptions existantes
+  chaussons: TROPHY_DESCRIPTIONS.chaussons,
+  couronne: TROPHY_DESCRIPTIONS.couronne,
+  culotte: TROPHY_DESCRIPTIONS.culotte,
+  // pierre_quete: pas de description ajoutée → fallback "No description."
+};
+
+const getItemDescription = (itemType) => ITEM_DESCRIPTIONS[itemType] || "No description.";
+
 // Prix de vente au marchand (doit correspondre au backend SELL_PRICES)
 const SELL_PRICES = {
   rune_dommage: 100,
@@ -150,7 +166,6 @@ const SELL_PRICES = {
   chaussons: 500,
   couronne: 500,
   culotte: 500,
-  medikit: 500,
   antidote: 150,
   relique_triangulaire: 500,
 };
@@ -212,6 +227,7 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const [orcAttacking, setOrcAttacking] = useState(false);
   const [canClose, setCanClose] = useState(false);
   const [totalDamageToSurvivor, setTotalDamageToSurvivor] = useState(0);
+  const [initiativeIndicators, setInitiativeIndicators] = useState({});
 
   // Classes et noms
   const survivorClass = event.defender_class;
@@ -285,6 +301,12 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       let currentSpeed = 400;
       const log = [];
       let damageToSurvivor = 0;
+
+      // Calcul des initiatives (affichage uniquement — l'ordre des tours reste fixe : aventurier puis orc)
+      const survivorInit = Math.floor(Math.random() * 20) + 1;
+      const orcInit = Math.floor(Math.random() * 20) + 1;
+      setInitiativeIndicators({ survivor: survivorInit, orc: orcInit });
+      setTimeout(() => setInitiativeIndicators({}), 2000);
 
       while (currentSurvivorHP > 0 && currentOrcHP > 0 && mounted) {
         await new Promise((resolve) => setTimeout(resolve, currentSpeed));
@@ -410,6 +432,26 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   {orcAttacking && (
                     <div style={{ position: "absolute", top: "50%", left: "-20px", fontSize: "2rem" }}>💥</div>
                   )}
+                  {initiativeIndicators['orc'] !== undefined && (
+                    <div
+                      data-testid="initiative-indicator-orc"
+                      style={{
+                        position: 'absolute',
+                        top: '-40px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        color: '#3b82f6',
+                        fontSize: '1.8rem',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                        pointerEvents: 'none',
+                        animation: 'initiativeFadeUp 2s ease-out forwards',
+                        zIndex: 10,
+                      }}
+                    >
+                      🎲 {initiativeIndicators['orc']}
+                    </div>
+                  )}
                 </div>
                 <h3 style={{ color: "#ef4444", marginBottom: "0.5rem" }}>{orcClass} (Vous)</h3>
                 <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
@@ -451,6 +493,26 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   />
                   {survivorAttacking && (
                     <div style={{ position: "absolute", top: "50%", right: "-20px", fontSize: "2rem" }}>💥</div>
+                  )}
+                  {initiativeIndicators['survivor'] !== undefined && (
+                    <div
+                      data-testid="initiative-indicator-survivor"
+                      style={{
+                        position: 'absolute',
+                        top: '-40px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        color: '#3b82f6',
+                        fontSize: '1.8rem',
+                        fontWeight: 'bold',
+                        textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                        pointerEvents: 'none',
+                        animation: 'initiativeFadeUp 2s ease-out forwards',
+                        zIndex: 10,
+                      }}
+                    >
+                      🎲 {initiativeIndicators['survivor']}
+                    </div>
                   )}
                 </div>
                 <h3 style={{ color: "#10b981", marginBottom: "0.5rem" }}>{survivorClass}</h3>
@@ -549,6 +611,26 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                 {survivorAttacking && (
                   <div style={{ position: "absolute", top: "50%", right: "-20px", fontSize: "2rem" }}>💥</div>
                 )}
+                {initiativeIndicators['survivor'] !== undefined && (
+                  <div
+                    data-testid="initiative-indicator-survivor"
+                    style={{
+                      position: 'absolute',
+                      top: '-40px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      color: '#3b82f6',
+                      fontSize: '1.8rem',
+                      fontWeight: 'bold',
+                      textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                      pointerEvents: 'none',
+                      animation: 'initiativeFadeUp 2s ease-out forwards',
+                      zIndex: 10,
+                    }}
+                  >
+                    🎲 {initiativeIndicators['survivor']}
+                  </div>
+                )}
               </div>
               <h3 style={{ color: "#10b981", marginBottom: "0.5rem" }}>{survivorClass} (Vous)</h3>
               <div style={{ width: "200px", height: "20px", backgroundColor: "#333", borderRadius: "10px", overflow: "hidden", margin: "0 auto" }}>
@@ -590,6 +672,26 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                 />
                 {orcAttacking && (
                   <div style={{ position: "absolute", top: "50%", left: "-20px", fontSize: "2rem" }}>💥</div>
+                )}
+                {initiativeIndicators['orc'] !== undefined && (
+                  <div
+                    data-testid="initiative-indicator-orc"
+                    style={{
+                      position: 'absolute',
+                      top: '-40px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      color: '#3b82f6',
+                      fontSize: '1.8rem',
+                      fontWeight: 'bold',
+                      textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                      pointerEvents: 'none',
+                      animation: 'initiativeFadeUp 2s ease-out forwards',
+                      zIndex: 10,
+                    }}
+                  >
+                    🎲 {initiativeIndicators['orc']}
+                  </div>
                 )}
               </div>
               <h3 style={{ color: "#ef4444", marginBottom: "0.5rem" }}>{orcClass}</h3>
@@ -786,6 +888,7 @@ const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
   const [goblinAnim,   setGoblinAnim]         = useState('idle'); // 'idle' | 'flee' | 'fainted'
   const [survivorLeft, setSurvivorLeft]       = useState('10%'); // position pour animer l'avance
   const [damageIndicators, setDamageIndicators] = useState({});
+  const [initiativeIndicators, setInitiativeIndicators] = useState({});
   const [combatLog,   setCombatLog]           = useState([]);
   const [combatOver,  setCombatOver]          = useState(false);
   const [canClose,    setCanClose]            = useState(false);
@@ -821,6 +924,9 @@ const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
       `⚔️ Un Gobelin Fuyard surgit !`,
       `📊 Initiatives — ${survivorData.name} : ${survivorData.initiative} | Gobelin : ${goblinData.initiative}`,
     ]);
+
+    setInitiativeIndicators({ [survivorData.id]: survivorData.initiative, fleeing_goblin: goblinData.initiative });
+    setTimeout(() => setInitiativeIndicators({}), 2000);
   }, [event]);
 
   // ── Simulation du combat ─────────────────────────────────────────────────────
@@ -960,6 +1066,26 @@ const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
             frameDuration={sp.frameDuration}
             loop={sp.loop}
           />
+          {initiativeIndicators[survivorData.id] !== undefined && (
+            <div
+              data-testid={`initiative-indicator-${survivorData.id}`}
+              style={{
+                position: 'absolute',
+                top: '-40px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                color: '#3b82f6',
+                fontSize: '1.8rem',
+                fontWeight: 'bold',
+                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                pointerEvents: 'none',
+                animation: 'initiativeFadeUp 2s ease-out forwards',
+                zIndex: 10,
+              }}
+            >
+              🎲 {survivorData.initiative}
+            </div>
+          )}
           {/* Barre de vie */}
           <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
             <div style={{ width: `${((survivorF?.hp ?? 0) / (survivorF?.maxHp ?? 1)) * 100}%`, height: '100%', backgroundColor: '#10b981', transition: 'width 0.3s' }} />
@@ -1002,6 +1128,26 @@ const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
               pointerEvents: 'none', zIndex: 1000,
             }}>
               -{damageIndicators['fleeing_goblin'].damage}
+            </div>
+          )}
+          {initiativeIndicators['fleeing_goblin'] !== undefined && (
+            <div
+              data-testid="initiative-indicator-fleeing_goblin"
+              style={{
+                position: 'absolute',
+                top: '-40px',
+                left: '50%',
+                transform: 'translateX(-50%) scaleX(-1)',
+                color: '#3b82f6',
+                fontSize: '1.8rem',
+                fontWeight: 'bold',
+                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                pointerEvents: 'none',
+                animation: 'initiativeFadeUp 2s ease-out forwards',
+                zIndex: 10,
+              }}
+            >
+              🎲 {goblinData.initiative}
             </div>
           )}
           {/* Barre de vie (re-miroir) */}
@@ -1075,6 +1221,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const [canClose, setCanClose] = useState(false);
   const [animatingEntity, setAnimatingEntity] = useState(null); // {id, type: 'attack' | 'hurt'}
   const [damageIndicators, setDamageIndicators] = useState({}); // {entityId: {damage: number, timestamp: number}}
+  const [initiativeIndicators, setInitiativeIndicators] = useState({});
 
   // Initialiser les combattants avec initiative
   useEffect(() => {
@@ -1109,16 +1256,18 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       });
     });
     
-    // Ajouter les gobelins
-    for (let i = 0; i < event.num_goblins; i++) {
+    // Ajouter les ennemis (gobelins OU mimic selon combat_type)
+    const isMimic = event.combat_type === 'mimic';
+    const enemyCount = isMimic ? 1 : event.num_goblins;
+    for (let i = 0; i < enemyCount; i++) {
       fighters.push({
-        id: `goblin_${i}`,
-        name: `Gobelin ${i + 1}`,
-        class: 'Goblin',
-        type: 'goblin',
-        hp: event.goblin_hp,
-        maxHp: event.goblin_hp,
-        initiative: Math.floor((hashCode(`goblin_${i}` + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
+        id: isMimic ? 'mimic' : `goblin_${i}`,
+        name: isMimic ? 'Mimic' : `Gobelin ${i + 1}`,
+        class: isMimic ? 'Mimic' : 'Goblin',
+        type: isMimic ? 'mimic' : 'goblin',
+        hp: isMimic ? event.mimic_hp : event.goblin_hp,
+        maxHp: isMimic ? event.mimic_hp : event.goblin_hp,
+        initiative: Math.floor((hashCode((isMimic ? 'mimic' : `goblin_${i}`) + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
         position: i, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -1135,6 +1284,11 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       initLog.push(`${f.name} (${f.initiative})`);
     });
     setCombatLog(initLog);
+
+    const initiatives = {};
+    fighters.forEach(f => { initiatives[f.id] = f.initiative; });
+    setInitiativeIndicators(initiatives);
+    setTimeout(() => setInitiativeIndicators({}), 2000);
   }, [event]);
 
   // Écouter les événements de combat via WebSocket (TOUS les clients)
@@ -1201,7 +1355,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       while (mounted) {
         // Vérifier les conditions de victoire
         const aliveSurvivors = fighters.filter(f => f.type === 'survivor' && f.alive);
-        const aliveGoblins = fighters.filter(f => f.type === 'goblin' && f.alive);
+        const aliveGoblins = fighters.filter(f => (f.type === 'goblin' || f.type === 'mimic') && f.alive);
         
         if (aliveSurvivors.length === 0 || aliveGoblins.length === 0) {
           // Combat terminé
@@ -1225,12 +1379,20 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           // Seul le simulateur envoie les résultats au serveur
           if (isSimulator) {
             try {
-              await axios.post(`${API}/game/${sessionId}/resolve_multiplayer_combat`, {
-                attacker_id: event.attacker_id,
-                survivors_results: survivorsResults,
-                goblins_defeated: goblinsDefeated,
-                combat_log: combatLog
-              });
+              if (event.combat_type === 'mimic') {
+                await axios.post(`${API}/game/${sessionId}/resolve_mimic_combat`, {
+                  survivors_results: survivorsResults,
+                  mimic_defeated: aliveGoblins.length === 0, // ici aliveGoblins contient le mimic
+                  combat_log: combatLog
+                });
+              } else {
+                await axios.post(`${API}/game/${sessionId}/resolve_multiplayer_combat`, {
+                  attacker_id: event.attacker_id,
+                  survivors_results: survivorsResults,
+                  goblins_defeated: goblinsDefeated,
+                  combat_log: combatLog
+                });
+              }
             } catch (error) {
               console.error("Erreur lors de la résolution du combat:", error);
             }
@@ -1252,9 +1414,11 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         }
         
         // Trouver une cible aléatoire dans le camp opposé
-        const targets = fighters.filter(f => 
-          f.type !== attacker.type && f.alive
-        );
+        const targets = fighters.filter(f => {
+          if (!f.alive) return false;
+          if (attacker.type === 'survivor') return f.type === 'goblin' || f.type === 'mimic';
+          return f.type === 'survivor';
+        });
         
         if (targets.length === 0) {
           turnIndex++;
@@ -1336,15 +1500,26 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 
   // Fonction pour obtenir le sprite sheet approprié
   const getSpriteSheet = (combatant, animationType) => {
+    if (combatant.type === 'mimic') {
+      return `/fight/Mimic_${animationType}.webp`;
+    }
     if (combatant.type === 'goblin') {
       return `/fight/Goblin_${animationType}.webp`;
-    } else {
-      return `/fight/${combatant.class}_${animationType}.webp`;
     }
+    return `/fight/${combatant.class}_${animationType}.webp`;
   };
 
   // Fonction pour obtenir les paramètres de sprite sheet (UNIFORMISÉS)
   const getSpriteParams = (combatant, animationType) => {
+    if (combatant.type === 'mimic') {
+      switch (animationType) {
+        case 'idle':    return { cols: 5, rows: 6, totalFrames: 30 };
+        case 'attack':  return { cols: 5, rows: 4, totalFrames: 20 };
+        case 'hurt':    return { cols: 5, rows: 2, totalFrames: 10 };
+        case 'fainted': return { cols: 5, rows: 4, totalFrames: 20 };
+        default:        return { cols: 5, rows: 6, totalFrames: 30 };
+      }
+    }
     // Paramètres uniformisés pour tous les personnages (gobelins et aventuriers)
     switch (animationType) {
       case 'idle':
@@ -1434,6 +1609,26 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                   -{damageIndicators[combatant.id].damage}
                 </div>
               )}
+              {initiativeIndicators[combatant.id] !== undefined && (
+                <div
+                  data-testid={`initiative-indicator-${combatant.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: '-40px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    color: '#3b82f6',
+                    fontSize: '1.8rem',
+                    fontWeight: 'bold',
+                    textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                    pointerEvents: 'none',
+                    animation: 'initiativeFadeUp 2s ease-out forwards',
+                    zIndex: 10,
+                  }}
+                >
+                  🎲 {combatant.initiative}
+                </div>
+              )}
               
               {/* Barre de vie */}
               <div style={{
@@ -1460,7 +1655,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         })}
 
         {/* Gobelins (à droite) */}
-        {combatants.filter(c => c.type === 'goblin').map((combatant, idx) => {
+        {combatants.filter(c => c.type === 'goblin' || c.type === 'mimic').map((combatant, idx) => {
           const animationType = !combatant.alive 
             ? 'fainted' 
             : (animatingEntity?.id === combatant.id ? animatingEntity.type : 'idle');
@@ -1502,6 +1697,26 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                   zIndex: 1000
                 }}>
                   -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              {initiativeIndicators[combatant.id] !== undefined && (
+                <div
+                  data-testid={`initiative-indicator-${combatant.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: '-40px',
+                    left: '50%',
+                    transform: 'translateX(-50%) scaleX(-1)',
+                    color: '#3b82f6',
+                    fontSize: '1.8rem',
+                    fontWeight: 'bold',
+                    textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                    pointerEvents: 'none',
+                    animation: 'initiativeFadeUp 2s ease-out forwards',
+                    zIndex: 10,
+                  }}
+                >
+                  🎲 {combatant.initiative}
                 </div>
               )}
               
@@ -1606,10 +1821,181 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 };
 
 // ========== MIMIC COMBAT COMPONENT ==========
+// ========== COMBAT HELP WINDOW COMPONENTS ==========
+
+const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, onExpire }) => {
+  const [timeLeft, setTimeLeft] = useState(10);
+
+  useEffect(() => {
+    const update = () => {
+      const remaining = Math.max(0, data.expires_at - Date.now() / 1000);
+      setTimeLeft(remaining);
+      if (remaining <= 0) {
+        // Laisser une petite marge pour que le backend ait fini d'envoyer le combat
+        setTimeout(() => onExpire && onExpire(), 500);
+      }
+    };
+    update();
+    const id = setInterval(update, 100);
+    return () => clearInterval(id);
+  }, [data.expires_at, onExpire]);
+
+  return (
+    <div
+      data-testid="combat-help-waiting-overlay"
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+        zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div style={{
+        background: '#1a1208', border: '3px solid #d4af37', borderRadius: 16,
+        padding: '2rem 3rem', maxWidth: 600, textAlign: 'center', color: '#fff',
+      }}>
+        <h2 style={{ color: '#d4af37', fontSize: '1.8rem', marginBottom: '1rem' }}>
+          💰 Combat Mimic — En attente
+        </h2>
+        <p style={{ fontSize: '1.1rem', marginBottom: '1.5rem' }}>
+          Vos alliés peuvent vous rejoindre dans <strong>{data.room}</strong>...
+        </p>
+
+        <div style={{
+          fontSize: '3rem', fontWeight: 'bold', color: '#ff7a18',
+          margin: '1rem 0',
+        }}>
+          {timeLeft.toFixed(1)}s
+        </div>
+        <div style={{
+          width: '100%', height: 8, background: '#333', borderRadius: 4,
+          overflow: 'hidden', marginBottom: '1.5rem',
+        }}>
+          <div style={{
+            width: `${(timeLeft / 10) * 100}%`, height: '100%',
+            background: 'linear-gradient(90deg, #ff7a18, #ffd166)',
+            transition: 'width 0.1s linear',
+          }} />
+        </div>
+
+        <h3 style={{ color: '#ffd166', marginBottom: '0.5rem' }}>Participants</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'center' }}>
+          {participants.map(pid => {
+            const p = players[pid];
+            const isMe = pid === playerId;
+            const displayName = p?.name || pid;
+            return (
+              <div key={pid} style={{
+                display: 'flex', alignItems: 'center', gap: '0.6rem',
+                background: '#2a1f17', padding: '0.5rem 1rem', borderRadius: 8,
+                border: isMe ? '2px solid #d4af37' : '1px solid #555',
+              }}>
+                {p?.avatar && <img src={p.avatar} alt={displayName} style={{ width: 32, height: 32, borderRadius: '50%' }} />}
+                <span>👤 {displayName} {isMe ? '(vous)' : '(a rejoint !)'}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CombatHelpAvailablePopup = ({ data, ws, onClose }) => {
+  const [timeLeft, setTimeLeft] = useState(10);
+
+  useEffect(() => {
+    const update = () => {
+      const remaining = Math.max(0, data.expires_at - Date.now() / 1000);
+      setTimeLeft(remaining);
+      if (remaining <= 0) onClose();
+    };
+    update();
+    const id = setInterval(update, 100);
+    return () => clearInterval(id);
+  }, [data.expires_at, onClose]);
+
+  const handleJoin = () => {
+    if (ws?.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "action",
+        action: { type: "join_combat", attacker_id: data.attacker_id },
+      }));
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      data-testid="combat-help-available-popup"
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+        zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#1a1208', border: '2px solid #d4af37', borderRadius: 12,
+          padding: '1.5rem 2rem', maxWidth: 420, color: '#fff', textAlign: 'center',
+        }}
+      >
+        <h3 style={{ color: '#d4af37', marginBottom: '0.8rem' }}>
+          ⚔️ {data.attacker_name} combat un Mimic dans {data.room} !
+        </h3>
+        <p style={{ marginBottom: '0.8rem', fontSize: '0.95rem', color: '#ccc' }}>
+          Rejoignez le combat pour aider votre allié.
+        </p>
+        <div style={{ fontWeight: 'bold', fontSize: '1.4rem', color: '#ff7a18', marginBottom: '0.4rem' }}>
+          {timeLeft.toFixed(1)}s
+        </div>
+        <div style={{ width: '100%', height: 6, background: '#333', borderRadius: 3, overflow: 'hidden', marginBottom: '1rem' }}>
+          <div style={{
+            width: `${(timeLeft / 10) * 100}%`, height: '100%',
+            background: 'linear-gradient(90deg, #ff7a18, #ffd166)',
+            transition: 'width 0.1s linear',
+          }} />
+        </div>
+        <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center' }}>
+          <Button
+            data-testid="combat-help-join-btn"
+            onClick={handleJoin}
+            style={{ background: '#10b981', color: '#fff', fontWeight: 'bold', padding: '0.6rem 1.5rem' }}
+          >
+            Rejoindre
+          </Button>
+          <Button
+            data-testid="combat-help-ignore-btn"
+            onClick={onClose}
+            style={{ background: '#dc2626', color: '#fff', padding: '0.6rem 1.5rem' }}
+          >
+            Ignorer
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
-  // État du combat
-  const [survivorHP, setSurvivorHP] = useState(event.survivor_hp);
-  const [survivorGold, setSurvivorGold] = useState(event.survivor_gold);
+  // Rétro-compatibilité : si pas de survivors_data (ancien format 1v1), on en crée un
+  const survivorsData = event.survivors_data || [{
+    survivor_id: event.survivor_id,
+    survivor_name: event.survivor_name,
+    survivor_class: event.survivor_class,
+    survivor_hp: event.survivor_hp,
+    survivor_max_hp: event.survivor_hp,
+    survivor_gold: event.survivor_gold,
+    initiative_bonus: event.initiative_bonus || 0,
+    damage_bonus: 0,
+    eboulement_perturbation_active: event.eboulement_perturbation_active || false,
+  }];
+  const participants = event.participants || [event.survivor_id];
+  // Seul le premier participant (A) exécute la simulation et envoie le résultat
+  const isSimulator = participants[0] === playerId;
+
+  // On garde les states de l'ancien format pour le rendu sprite (1er survivant)
+  const primarySurvivor = survivorsData[0];
+  const [survivorHP, setSurvivorHP] = useState(primarySurvivor.survivor_hp);
+  const [survivorGold, setSurvivorGold] = useState(primarySurvivor.survivor_gold);
   const [mimicHP, setMimicHP] = useState(event.mimic_hp);
   const [combatLog, setCombatLog] = useState([]);
   const [combatOver, setCombatOver] = useState(false);
@@ -1619,9 +2005,10 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
   const [totalGoldStolen, setTotalGoldStolen] = useState(0);
   const [mimicDefeated, setMimicDefeated] = useState(false);
   const [damageIndicator, setDamageIndicator] = useState(null);
+  const [initiativeIndicators, setInitiativeIndicators] = useState({});
 
   const getSurvivorSpriteSheet = (animationType) => {
-    return `/fight/${event.survivor_class}_${animationType}.webp`;
+    return `/fight/${primarySurvivor.survivor_class}_${animationType}.webp`;
   };
 
   const getMimicSpriteSheet = (animationType) => {
@@ -1651,22 +2038,28 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
     let mounted = true;
 
     const runCombat = async () => {
-      let currentSurvivorHP = event.survivor_hp;
+      let currentSurvivorHP = primarySurvivor.survivor_hp;
       let currentMimicHP = event.mimic_hp;
-      let currentGold = event.survivor_gold;
+      let currentGold = primarySurvivor.survivor_gold;
       let goldStolen = 0;
       let damageTaken = 0;
 
-      const initiativeBonus = event.initiative_bonus || 0;
+      const initiativeBonus = primarySurvivor.initiative_bonus || 0;
       const survivorInitiative = Math.floor(Math.random() * 20) + 1 + initiativeBonus;
       const mimicInitiative = Math.floor(Math.random() * 20) + 1;
 
       const log = [`⚔️ Combat contre le Mimic !`];
-      if (event.eboulement_perturbation_active) {
+      if (primarySurvivor.eboulement_perturbation_active) {
         log.push(`⛰️ Perturbation active : initiative -15, dégâts reçus ×2 !`);
       }
-      log.push(`Initiative : ${event.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
+      if (participants.length > 1) {
+        log.push(`👥 ${participants.length} aventuriers participent au combat !`);
+      }
+      log.push(`Initiative : ${primarySurvivor.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
       setCombatLog([...log]);
+
+      setInitiativeIndicators({ [primarySurvivor.survivor_id]: survivorInitiative, mimic: mimicInitiative });
+      setTimeout(() => setInitiativeIndicators({}), 2000);
 
       await new Promise(resolve => setTimeout(resolve, 1500));
 
@@ -1677,7 +2070,9 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           setAnimatingEntity('survivor_attack');
           await new Promise(resolve => setTimeout(resolve, 600));
 
-          const damage = Math.floor(Math.random() * 6) + 1;
+          // Bonus de dégâts : +1d6 par participant supplémentaire
+          const extraDamage = (participants.length - 1) * (Math.floor(Math.random() * 6) + 1);
+          const damage = Math.floor(Math.random() * 6) + 1 + extraDamage;
           currentMimicHP = Math.max(0, currentMimicHP - damage);
           setMimicHP(currentMimicHP);
 
@@ -1685,7 +2080,7 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           setDamageIndicator({ type: 'damage', value: damage });
           setTimeout(() => setDamageIndicator(null), 1500);
 
-          log.push(`⚔️ ${event.survivor_class} attaque : ${damage} dégâts !`);
+          log.push(`⚔️ ${primarySurvivor.survivor_class} attaque : ${damage} dégâts !`);
           setCombatLog([...log]);
 
           await new Promise(resolve => setTimeout(resolve, 800));
@@ -1737,16 +2132,24 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
 
       setCombatLog([...log]);
 
-      try {
-        await axios.post(`${API}/game/${sessionId}/resolve_mimic_combat`, {
-          survivor_id: event.survivor_id,
-          damage_dealt_to_survivor: damageTaken,
-          gold_stolen: goldStolen,
-          mimic_defeated: currentMimicHP <= 0,
-          combat_log: log
-        });
-      } catch (error) {
-        console.error("Erreur lors de la résolution du combat Mimic:", error);
+      // Seul le premier participant (isSimulator) envoie le résultat au serveur
+      if (isSimulator) {
+        try {
+          // Format multi-participants
+          const survivors_results = survivorsData.map(s => ({
+            id: s.survivor_id,
+            damage_dealt: s.survivor_id === primarySurvivor.survivor_id ? damageTaken : 0,
+            gold_stolen: s.survivor_id === primarySurvivor.survivor_id ? goldStolen : 0,
+            eliminated: s.survivor_id === primarySurvivor.survivor_id ? currentSurvivorHP <= 0 : false,
+          }));
+          await axios.post(`${API}/game/${sessionId}/resolve_mimic_combat`, {
+            survivors_results,
+            mimic_defeated: currentMimicHP <= 0,
+            combat_log: log,
+          });
+        } catch (error) {
+          console.error("Erreur lors de la résolution du combat Mimic:", error);
+        }
       }
 
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1813,11 +2216,32 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
               )}
             </div>
           )}
+          {initiativeIndicators[primarySurvivor.survivor_id] !== undefined && (
+            <div
+              data-testid={`initiative-indicator-${primarySurvivor.survivor_id}`}
+              style={{
+                position: 'absolute',
+                top: '-40px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                color: '#3b82f6',
+                fontSize: '1.8rem',
+                fontWeight: 'bold',
+                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                pointerEvents: 'none',
+                animation: 'initiativeFadeUp 2s ease-out forwards',
+                zIndex: 10,
+              }}
+            >
+              🎲 {initiativeIndicators[primarySurvivor.survivor_id]}
+            </div>
+          )}
           <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
-            <div style={{ width: `${(survivorHP / event.survivor_hp) * 100}%`, height: '100%', backgroundColor: survivorHP > event.survivor_hp * 0.3 ? '#10b981' : '#ef4444', transition: 'width 0.3s' }} />
+            <div style={{ width: `${(survivorHP / primarySurvivor.survivor_hp) * 100}%`, height: '100%', backgroundColor: survivorHP > primarySurvivor.survivor_hp * 0.3 ? '#10b981' : '#ef4444', transition: 'width 0.3s' }} />
           </div>
           <div style={{ color: '#fff', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
-            {event.survivor_class} ({survivorHP}/{event.survivor_hp})
+            {primarySurvivor.survivor_class} ({survivorHP}/{primarySurvivor.survivor_hp})
+            {participants.length > 1 && <span style={{ color: '#ffd166', marginLeft: 6 }}>+{participants.length - 1} allié(s)</span>}
           </div>
           <div style={{ color: '#FFD700', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
             💰 {survivorGold}
@@ -1859,6 +2283,26 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           {damageIndicator && damageIndicator.type === 'damage' && (
             <div style={{ position: 'absolute', top: '-30px', left: '50%', transform: 'translateX(-50%)', fontSize: '28px', fontWeight: 'bold', color: '#ff0000', textShadow: '2px 2px 4px #000', animation: 'floatUp 1.5s ease-out' }}>
               -{damageIndicator.value}
+            </div>
+          )}
+          {initiativeIndicators['mimic'] !== undefined && (
+            <div
+              data-testid="initiative-indicator-mimic"
+              style={{
+                position: 'absolute',
+                top: '-40px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                color: '#3b82f6',
+                fontSize: '1.8rem',
+                fontWeight: 'bold',
+                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                pointerEvents: 'none',
+                animation: 'initiativeFadeUp 2s ease-out forwards',
+                zIndex: 10,
+              }}
+            >
+              🎲 {initiativeIndicators['mimic']}
             </div>
           )}
           <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
@@ -1915,6 +2359,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const [canClose, setCanClose] = useState(false);
   const [animatingEntity, setAnimatingEntity] = useState(null);
   const [damageIndicators, setDamageIndicators] = useState({});
+  const [initiativeIndicators, setInitiativeIndicators] = useState({});
 
   // --- init combattants (initiative déterministe via combat_id) ---
   useEffect(() => {
@@ -1948,6 +2393,11 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     const initLog = [`💎 Combat contre le Cristal ! Ordre d'initiative :`];
     fighters.forEach(f => initLog.push(`${f.name} (${f.initiative})`));
     setCombatLog(initLog);
+
+    const initiatives = {};
+    fighters.forEach(f => { initiatives[f.id] = f.initiative; });
+    setInitiativeIndicators(initiatives);
+    setTimeout(() => setInitiativeIndicators({}), 2000);
   }, [event]);
 
   // --- boucle simulation déterministe ---
@@ -2122,6 +2572,26 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   -{damageIndicators[combatant.id].damage}
                 </div>
               )}
+              {initiativeIndicators[combatant.id] !== undefined && (
+                <div
+                  data-testid={`initiative-indicator-${combatant.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: '-40px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    color: '#3b82f6',
+                    fontSize: '1.8rem',
+                    fontWeight: 'bold',
+                    textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                    pointerEvents: 'none',
+                    animation: 'initiativeFadeUp 2s ease-out forwards',
+                    zIndex: 10,
+                  }}
+                >
+                  🎲 {combatant.initiative}
+                </div>
+              )}
               <div style={{ width: '200px', height: '12px', backgroundColor: '#333',
                             borderRadius: '6px', overflow: 'hidden', marginTop: '5px',
                             border: '2px solid #5fa8ff' }}>
@@ -2163,6 +2633,26 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                               animation: 'floatUpMirrored 1.5s ease-out',
                               pointerEvents: 'none', zIndex: 1000 }}>
                   -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              {initiativeIndicators[combatant.id] !== undefined && (
+                <div
+                  data-testid={`initiative-indicator-${combatant.id}`}
+                  style={{
+                    position: 'absolute',
+                    top: '-40px',
+                    left: '50%',
+                    transform: 'translateX(-50%) scaleX(-1)',
+                    color: '#3b82f6',
+                    fontSize: '1.8rem',
+                    fontWeight: 'bold',
+                    textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+                    pointerEvents: 'none',
+                    animation: 'initiativeFadeUp 2s ease-out forwards',
+                    zIndex: 10,
+                  }}
+                >
+                  🎲 {combatant.initiative}
                 </div>
               )}
               <div style={{ width: '200px', height: '12px', backgroundColor: '#333',
@@ -2526,10 +3016,112 @@ const StatsModal = ({ player, onClose }) => {
   );
 };
 
+// ========== ITEM INFO MODAL COMPONENT ==========
+const ItemInfoModal = ({ item, onClose }) => {
+  if (!item) return null;
+  const sprite = ITEM_SPRITES[item.type];
+  const name = ITEM_NAMES[item.type] || item.type;
+  const description = getItemDescription(item.type);
+
+  return (
+    <div
+      data-testid="item-info-modal-backdrop"
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.65)',
+        zIndex: 10001,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '1rem',
+      }}
+    >
+      <div
+        data-testid="item-info-modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'relative',
+          background: 'linear-gradient(180deg, #2a1f17 0%, #1a1208 100%)',
+          border: '3px solid #d4af37',
+          borderRadius: 14,
+          boxShadow: '0 0 30px rgba(212, 175, 55, 0.5)',
+          padding: '2rem 1.8rem 1.5rem',
+          maxWidth: 380,
+          width: '100%',
+          color: '#f5e6c8',
+          textAlign: 'center',
+          fontFamily: 'inherit',
+        }}
+      >
+        {/* Bouton fermeture */}
+        <button
+          data-testid="item-info-close-btn"
+          onClick={onClose}
+          aria-label="Fermer"
+          style={{
+            position: 'absolute', top: 8, right: 10,
+            background: 'transparent', border: 'none',
+            color: '#d4af37', fontSize: '1.5rem', fontWeight: 'bold',
+            cursor: 'pointer', lineHeight: 1,
+          }}
+        >
+          ❌
+        </button>
+
+        {/* Sprite */}
+        {sprite && (
+          <div style={{
+            display: 'flex', justifyContent: 'center', marginBottom: '1rem',
+          }}>
+            <img
+              src={sprite}
+              alt={name}
+              style={{
+                width: 96, height: 96, objectFit: 'contain',
+                imageRendering: 'pixelated',
+                filter: 'drop-shadow(0 0 8px rgba(212,175,55,0.4))',
+              }}
+            />
+          </div>
+        )}
+
+        {/* Nom */}
+        <h3 style={{
+          color: '#d4af37',
+          fontSize: '1.3rem',
+          margin: '0 0 0.8rem 0',
+          letterSpacing: '0.5px',
+        }}>
+          {name}
+        </h3>
+
+        {/* Séparateur */}
+        <div style={{
+          height: 1,
+          background: 'linear-gradient(90deg, transparent, #d4af37, transparent)',
+          margin: '0.5rem 0 1rem',
+        }} />
+
+        {/* Description */}
+        <p style={{
+          fontSize: '0.95rem',
+          lineHeight: 1.5,
+          color: '#e8d5a3',
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          {description}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ========== INVENTORY MODAL COMPONENT ==========
 const InventoryModal = ({ player, onClose, sessionId }) => {
   const [deleteMode, setDeleteMode] = useState(false);
   const [pendingDeleteSlot, setPendingDeleteSlot] = useState(null); // {index, item}
+  const [inspectedItem, setInspectedItem] = useState(null);
 
   if (!player || player.role !== "survivor") return null;
 
@@ -2556,8 +3148,8 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
 
     const itemType = item.type;
 
-    // Only medikit and antidote can be used directly
-    if (itemType === 'medikit' || itemType === 'antidote') {
+    // Only antidote can be used directly
+    if (itemType === 'antidote') {
       try {
         const response = await axios.post(`${API}/game/${sessionId}/use_item`, {
           player_id: player.id,
@@ -2742,6 +3334,36 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
                       animation: 'cursedSkullBob 1s ease-in-out infinite',
                     }}>💀</div>
                   )}
+                  <button
+                    data-testid={`inventory-slot-info-${index}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setInspectedItem(item);
+                    }}
+                    aria-label="Informations sur l'objet"
+                    style={{
+                      position: 'absolute',
+                      bottom: '-4px',
+                      left: '-4px',
+                      width: '18px',
+                      height: '18px',
+                      borderRadius: '50%',
+                      background: 'rgba(20, 14, 10, 0.85)',
+                      border: '1px solid #d4af37',
+                      color: '#d4af37',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                      lineHeight: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      padding: 0,
+                      zIndex: 1,
+                    }}
+                  >
+                    i
+                  </button>
                 </>
               )}
             </div>
@@ -2829,6 +3451,13 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           </div>
         )}
       </div>
+
+      {inspectedItem && (
+        <ItemInfoModal
+          item={inspectedItem}
+          onClose={() => setInspectedItem(null)}
+        />
+      )}
     </div>
   );
 };
@@ -5761,10 +6390,25 @@ const Game = () => {
   const [multiplayerCombatEvent, setMultiplayerCombatEvent] = useState(null);
   const [showMimicCombat, setShowMimicCombat] = useState(false);
   const [mimicCombatEvent, setMimicCombatEvent] = useState(null);
+  // NEW: Combat help window states
+  const [combatHelpWaiting, setCombatHelpWaiting] = useState(null); // pour A
+  const [combatHelpAvailable, setCombatHelpAvailable] = useState(null); // pour B
+  const [combatHelpParticipants, setCombatHelpParticipants] = useState([]); // pour A : liste qui s'agrandit
   const [showCrystalCombat, setShowCrystalCombat] = useState(false);
   const [crystalCombatEvent, setCrystalCombatEvent] = useState(null);
   const [showFleeingGoblinCombat, setShowFleeingGoblinCombat] = useState(false);
   const [fleeingGoblinCombatEvent, setFleeingGoblinCombatEvent] = useState(null);
+
+  // SAFEGUARD: ferme l'overlay "en attente d'alliés" dès qu'un combat mimic
+  // est arrivé dans pending_events, même si le state_update tarde par ailleurs.
+  useEffect(() => {
+    const evt = gameState?.pending_events?.[playerId];
+    if (evt && typeof evt === 'object' && evt.type === 'mimic_combat') {
+      setCombatHelpWaiting(null);
+      setCombatHelpAvailable(null);
+      setCombatHelpParticipants([]);
+    }
+  }, [gameState?.pending_events, playerId]);
 
   // NEW: Flashing rooms when teammates select
 const [flashingRooms, setFlashingRooms] = useState(new Set());
@@ -5995,6 +6639,14 @@ const prevPendingActionsRef = useRef('{}');
     ws.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
+      if (data.type === "mimic_combat") {
+        // Fermer immédiatement la fenêtre d'attente (A) ou le popup d'aide (B)
+        setCombatHelpWaiting(null);
+        setCombatHelpAvailable(null);
+        setCombatHelpParticipants([]);
+        // ⚠️ NE PAS return : laisser le code existant gérer l'ajout aux pending_events
+      }
+
       if (data.type === "state_update") {
         setGameState(data.game);
 
@@ -6021,8 +6673,17 @@ const prevPendingActionsRef = useRef('{}');
               setMultiplayerCombatEvent(event);
               setShowMultiplayerCombat(true);
             } else if (event.type === "mimic_combat") {
-              setMimicCombatEvent(event);
-              setShowMimicCombat(true);
+              setCombatHelpWaiting(null);
+              setCombatHelpAvailable(null);
+              if (event.survivors) {
+                // Nouveau format multi-joueurs : router vers MultiPlayerCombat
+                setMultiplayerCombatEvent(event);
+                setShowMultiplayerCombat(true);
+              } else {
+                // Ancien format solo (rétro-compat)
+                setMimicCombatEvent(event);
+                setShowMimicCombat(true);
+              }
             } else if (event.type === "crystal_combat") {
               setCrystalCombatEvent(event);
               setShowCrystalCombat(true);
@@ -6094,13 +6755,43 @@ const prevPendingActionsRef = useRef('{}');
         setMimicMessage(data.message);
         setShowMimicPopup(true);
         // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
+      } else if (data.type === "combat_help_waiting") {
+        setCombatHelpWaiting(data);
+        setCombatHelpParticipants([storedPlayerId]); // A est seul au départ
+        return;
+      } else if (data.type === "combat_help_available") {
+        setCombatHelpAvailable(data);
+        return;
+      } else if (data.type === "combat_help_expired") {
+        setCombatHelpAvailable(null);
+        toast.info(data.message || "⏱️ La fenêtre de combat est expirée");
+        return;
+      } else if (data.type === "player_joined_combat") {
+        // Mettre à jour la liste si on est A (overlay ouvert)
+        if (data.participants) {
+          setCombatHelpParticipants(data.participants);
+        }
+        // Si on est B et qu'on vient de rejoindre, fermer le popup
+        if (data.player_id === storedPlayerId) {
+          setCombatHelpAvailable(null);
+        }
+        return;
       } else if (data.type === "mimic_combat") {
         // FIX: Top-level handler for the mimic combat WS message sent by the backend
         // via enqueue_player_event / dispatch_next_player_event. Without this branch,
         // the message was silently dropped when it arrived AFTER a gold popup
         // (mimic was queued behind gold_found and only dispatched on event_completed).
-        setMimicCombatEvent(data);
-        setShowMimicCombat(true);
+        setCombatHelpWaiting(null);
+        setCombatHelpAvailable(null);
+        if (data.survivors) {
+          // Nouveau format multi-joueurs : router vers MultiPlayerCombat
+          setMultiplayerCombatEvent(data);
+          setShowMultiplayerCombat(true);
+        } else {
+          // Ancien format solo (rétro-compat)
+          setMimicCombatEvent(data);
+          setShowMimicCombat(true);
+        }
       } else if (data.type === "crystal_combat") {
         // Direct WS handler for the crystal combat (broadcasted by crystal_attack)
         // Only show the overlay to participants of the combat.
@@ -6553,15 +7244,6 @@ const selectRoom = (roomName) => {
     }
   };
 
-  const useMedikit = (targetPlayerId) => {
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({
-        type: "use_medikit",
-        target_player_id: targetPlayerId
-      }));
-    }
-  };
-  
   // NEW: Power selection functions
   const selectPower = (powerName) => {
     if (!gameState || gameState.phase !== "killer_power_selection") return;
@@ -6821,6 +7503,29 @@ const selectRoom = (roomName) => {
             setShowMultiplayerCombat(false);
             setMultiplayerCombatEvent(null);
           }}
+        />
+      )}
+
+      {/* Combat Help Window — overlay A (en attente d'alliés) */}
+      {combatHelpWaiting && (
+        <CombatHelpWaitingOverlay
+          data={combatHelpWaiting}
+          participants={combatHelpParticipants}
+          players={gameState.players}
+          playerId={playerId}
+          onExpire={() => {
+            setCombatHelpWaiting(null);
+            setCombatHelpParticipants([]);
+          }}
+        />
+      )}
+
+      {/* Combat Help Window — popup B (proposition de rejoindre) */}
+      {combatHelpAvailable && (
+        <CombatHelpAvailablePopup
+          data={combatHelpAvailable}
+          ws={ws}
+          onClose={() => setCombatHelpAvailable(null)}
         />
       )}
 
@@ -7438,43 +8143,6 @@ const selectRoom = (roomName) => {
 
               {/* Shop items */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {/* Resurrection Potion */}
-                <div style={{ 
-                  padding: '1.5rem', 
-                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
-                  border: '2px solid #d4af37',
-                  borderRadius: '8px',
-                  display: 'flex',
-                  gap: '1rem',
-                  alignItems: 'center'
-                }}>
-                  <img src="/items/medikit.png" alt="Potion de résurrection" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
-                  <div style={{ flex: 1 }}>
-                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Potion de résurrection</h3>
-                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
-                      Cette potion permet de réanimer le joueur que vous aspergez.
-                    </p>
-                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 1000</p>
-                  </div>
-                  <Button
-                    onClick={async () => {
-                      try {
-                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=resurrection_potion`);
-                        toast.success("Potion de résurrection achetée !");
-                      } catch (error) {
-                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
-                      }
-                    }}
-                    disabled={gameState.players[playerId]?.gold < 1000 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'medikit')}
-                    style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'medikit')) ? '#10b981' : '#555',
-                      minWidth: '100px'
-                    }}
-                  >
-                    Acheter
-                  </Button>
-                </div>
-
                 {/* Antidote */}
                 <div style={{ 
                   padding: '1.5rem', 

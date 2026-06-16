@@ -3237,3 +3237,23 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.78; }
 }
+
+/* ========== INITIATIVE INDICATOR (partagé par tous les composants de combat) ========== */
+@keyframes initiativeFadeUp {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 10px) scale(0.7);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.2);
+  }
+  40% {
+    opacity: 1;
+    transform: translate(-50%, -5px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -40px) scale(0.9);
+  }
+}

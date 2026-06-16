@@ -206,7 +206,6 @@ def generate_rooms_state() -> dict:
         rooms_state[room_name] = {
             "floor": floor,
             "has_key": False,
-            "has_medikit": False,
             "locked": False,
             "eliminated_players": [],
             "trapped": False,
@@ -342,6 +341,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "patrol_revealed_survivors": {},  # NEW: {player_id: room_name} - survivants revealed by patrol goblin during this turn
         "discovered_rooms": [],  # NEW: List of room names discovered by survivors (fog of war)
         "pending_specializations": {},  # NEW: Pending power specializations
+        "combat_help_windows": {}, # NEW: {attacker_id: {combat_type, room, participants, mimic_hp, mimic_has_initiative, expires_at, finalized}}
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
@@ -665,30 +665,6 @@ def place_next_key(game_state: dict) -> Optional[str]:
 
     return None
 
-def respawn_medikit(game_state: dict) -> Optional[str]:
-    """Respawn medikit randomly in an available room after use"""
-    available_rooms = []
-
-    # Get all killer positions
-    killer_positions = [p["current_room"] for p in game_state["players"].values()\
-                       if p["role"] == "killer" and p["current_room"]]
-
-    for room_name, room_data in game_state["rooms"].items():
-        # Room is available if: not locked, no medikit already, no key, not a killer's position
-        if (not room_data["locked"] and
-            not room_data["has_medikit"] and
-            not room_data["has_key"] and
-            room_name not in killer_positions):
-            available_rooms.append(room_name)
-
-    if available_rooms:
-        selected_room = random.choice(available_rooms)
-        game_state["rooms"][selected_room]["has_medikit"] = True
-        logger.info(f"Respawned medikit in room: {selected_room}")
-        return selected_room
-
-    return None
-
 def get_survivor_floor_hints(game_state: dict) -> dict:
     """
     Get floor hints for survivors' positions.
@@ -769,6 +745,59 @@ async def enqueue_player_event(session_id: str, player_id: str, event_key, ws_me
             f"{event_key if isinstance(event_key, str) else event_key.get('type', event_key)} "
             f"(queue size: {len(pending_queue[player_id])})"
         )
+
+
+async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: float = 10.0):
+    await asyncio.sleep(delay)
+    game = game_sessions.get(session_id)
+    if not game:
+        return
+    combat_window = game.get("combat_help_windows", {}).get(attacker_id)
+    if not combat_window or combat_window.get("finalized"):
+        return
+    combat_window["finalized"] = True
+    participants = combat_window["participants"]
+
+    # ⚠️ Format identique à un combat multi-gobelin (réutilise MultiPlayerCombat côté front)
+    survivors = []
+    for sid in participants:
+        s = game["players"].get(sid)
+        if not s:
+            continue
+        survivors.append({
+            "id": sid,
+            "name": s["name"],
+            "class": s.get("character_class", "Guerrier"),
+            "hp": s.get("hp", 36),
+            "max_hp": s.get("max_hp", 36),
+            "initiative_bonus": s.get("initiative_bonus", 0),
+            "damage_bonus": s.get("damage_bonus", 0),
+            "poisoned_countdown": s.get("poisoned_countdown", 0),
+        })
+
+    combat_id = f"mimic_{attacker_id}_{int(combat_window['expires_at'])}"
+    combat_event = {
+        "type": "mimic_combat",                # ← garde ce type pour le routage
+        "combat_type": "mimic",                # ← flag pour MultiPlayerCombat
+        "attacker_id": attacker_id,            # requis par MultiPlayerCombat
+        "room": combat_window["room"],
+        "survivors": survivors,                # ← clé identique au gobelin multi
+        "participants": participants,
+        "num_goblins": 1,                      # 1 seul "enemy" = le Mimic
+        "goblin_hp": combat_window["mimic_hp"],
+        "mimic_hp": combat_window["mimic_hp"],
+        "combat_id": combat_id,
+        "turn": game.get("turn", 0),
+        "toxine_incapacitante_active": False,
+        "eboulement_perturbation_active": game.get("eboulement_perturbation_active", False),
+    }
+
+    for sid in participants:
+        await enqueue_player_event(session_id, sid, "mimic_combat", combat_event)
+
+    del game["combat_help_windows"][attacker_id]
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    logger.info(f"🪤 Mimic combat finalisé : {len(participants)} participant(s)")
 
 
 async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
@@ -1021,7 +1050,7 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
         excluded.append("vision")
 
     # Exclude malediction if no survivor has a cursable item
-    CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+    CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
     if game_state:
         has_cursable = False
         for p in game_state.get("players", {}).values():
@@ -2430,6 +2459,51 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
                 except Exception:
                     pass
 
+    # POURSUITE DE PRÉCISION : recalculer les salles vides à chaque début de phase killer
+    # Les survivants ont pu changer de salle depuis le dernier calcul — on recheck maintenant
+    # que leurs pending_actions (choix de ce tour) sont connus.
+    if game.get("goliath_active", False):
+        precision_active = any(
+            p.get("powers_evolution", {}).get("goliath", {}).get("variant") == "precision"
+            for p in game["players"].values()
+            if p.get("role") == "killer" and not p.get("eliminated", False)
+        )
+        if precision_active:
+            survivor_rooms = set()
+            for p in game["players"].values():
+                if p.get("role") == "survivor" and not p.get("eliminated") and p.get("current_room"):
+                    survivor_rooms.add(p["current_room"])
+            for pid, action in game.get("pending_actions", {}).items():
+                if pid in game["players"] and game["players"][pid].get("role") == "survivor":
+                    room_selected = action.get("room")
+                    if room_selected:
+                        survivor_rooms.add(room_selected)
+
+            floors_order = ["upper_floor", "ground_floor", "basement"]
+            empty_rooms_by_floor = {}
+            for floor_key in floors_order:
+                candidates = [
+                    room_name for room_name, room_data in game["rooms"].items()
+                    if room_data.get("floor") == floor_key
+                    and not room_data.get("locked")
+                    and room_name not in survivor_rooms
+                ]
+                if candidates:
+                    empty_rooms_by_floor[floor_key] = random.choice(candidates)
+
+            revealed = list(empty_rooms_by_floor.values())
+            game["poursuite_precision_empty_rooms"] = revealed
+
+            floor_labels = {"upper_floor": "Étage", "ground_floor": "Rez-de-chaussée", "basement": "Sous-sol"}
+            revealed_names = ", ".join(
+                f"{empty_rooms_by_floor[f]} ({floor_labels.get(f, f)})"
+                for f in floors_order if f in empty_rooms_by_floor
+            )
+            precision_msg = f"⚔️ Poursuite de Précision ! Salles sans aventuriers ce tour : {revealed_names}."
+            game["events"].append({"message": precision_msg, "type": "poursuite_status", "for_role": "killer"})
+            await broadcast_to_session(session_id, {"type": "event", "message": precision_msg}, role_filter="killer")
+            logger.info(f"⚔️ Poursuite Précision (recalcul début phase killer) : salles vides → {revealed}")
+
     await broadcast_to_session(session_id, {
         "type": "phase_change",
         "phase": "killer_power_selection",
@@ -2491,42 +2565,12 @@ async def process_turn(session_id: str):
     for player_id, action in survivors_actions.items():
         game["players"][player_id]["current_room"] = action["room"]
 
-    # Survivors interact with rooms (medikits, auto-revival)
+    # Survivors interact with rooms
     # NOTE: Quest handling is now done immediately when survivor selects room (not here)
     for player_id, action in survivors_actions.items():
         player = game["players"][player_id]
         room = game["rooms"][action["room"]]
 
-        # Check for medikit
-        if room["has_medikit"]:
-            room["has_medikit"] = False
-            add_item(player, "medikit")
-            event_msg = f"⚗️ {player['name']} a trouvé la potion de résurrection et en est désormais le porteur."
-            game["events"].append({"message": event_msg, "type": "medikit_found"})
-            await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-
-        # Auto-revive: If survivor has medikit and enters room with eliminated player
-        if has_item(player, "medikit") and room["eliminated_players"]:
-            # Revive the first eliminated player in this room
-            target_player_id = room["eliminated_players"][0]
-            if target_player_id in game["players"] and game["players"][target_player_id]["eliminated"]:
-                # Revive the player
-                game["players"][target_player_id]["eliminated"] = False
-                # Reset poison status when revived
-                game["players"][target_player_id]["poisoned_countdown"] = 0
-                remove_item(player, "medikit")
-                room["eliminated_players"].remove(target_player_id)
-
-                event_msg = f"💚 {player['name']} a ranimé {game['players'][target_player_id]['name']} !"
-                game["events"].append({"message": event_msg, "type": "revival"})
-                await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-
-                # Respawn the medikit
-                new_medikit_room = respawn_medikit(game)
-                if new_medikit_room:
-                    respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
-                    game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
-                    await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
 
     # ============================================
     # PHASE 2: KILLERS PLAY SECOND
@@ -2961,15 +3005,6 @@ async def process_rage_second_selections(session_id: str):
                     "death_image": death_image_path,
                     "message": elimination_message
                 })
-                
-                # If survivor had medikit, destroy it and respawn a new one
-                if has_item(survivor, "medikit"):
-                    remove_item(survivor, "medikit")
-                    new_medikit_room = respawn_medikit(game)
-                    if new_medikit_room:
-                        respawn_msg = "⚗️ La potion de résurrection réapparaît quelque part dans la maison..."
-                        game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
-                        await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
         
         # Lock second room if eliminations occurred
         if eliminated_in_second_room:
@@ -3552,10 +3587,6 @@ async def start_game(session_id: str):
         # Set active_quest to None since all quests are now placed
         game["active_quest"] = None
 
-    # Place the FIRST medikit at game start
-    medikit_room = respawn_medikit(game)
-    logger.info(f"First medikit placed in: {medikit_room}")
-
     # Place the merchant at game start (once per game)
     merchant_room = place_merchant(game)
     if merchant_room:
@@ -3870,11 +3901,6 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     
     # Define items and their prices
     items = {
-        "resurrection_potion": {
-            "price": 1000,
-            "item_type": "medikit",
-            "name": "Potion de résurrection"
-        },
         "antidote": {
             "price": 300,
             "item_type": "antidote",
@@ -3946,7 +3972,6 @@ SELL_PRICES = {
     "couronne": 500,
     "culotte": 500,
     # Items du shop : moitié du prix d'achat
-    "medikit": 500,    # potion résurrection achetée à 1000
     "antidote": 150,   # antidote achetée à 300
     "relique_triangulaire": 500,  # relique triangulaire achetée à 1000
 }
@@ -4862,7 +4887,7 @@ async def crystal_place_relic(session_id: str, request: CrystalActionRequest):
     }
 
 CRYSTAL_MAX_HP = 30
-CRYSTAL_DAMAGE = 3
+CRYSTAL_DAMAGE = 9
 SURVIVOR_BASE_DAMAGE = 5
 
 @api_router.post("/game/{session_id}/crystal_attack")
@@ -5327,11 +5352,14 @@ async def resolve_crystal_combat(session_id: str, request: ResolveCrystalCombatR
 
 # Modèle pour la résolution de combat contre le Mimic
 class ResolveMimicCombatRequest(BaseModel):
-    survivor_id: str
-    damage_dealt_to_survivor: int  # Dégâts subis par le survivant
-    gold_stolen: int  # Or volé par le Mimic pendant le combat
-    mimic_defeated: bool  # Le Mimic a-t-il été vaincu ?
+    # Ancien format (rétro-compat)
+    survivor_id: Optional[str] = None
+    damage_dealt_to_survivor: Optional[int] = 0
+    gold_stolen: Optional[int] = 0
+    mimic_defeated: Optional[bool] = False
     combat_log: List[str] = []
+    # Nouveau format multi
+    survivors_results: Optional[List[dict]] = None  # [{id, damage_dealt, gold_stolen, eliminated}]
 
 @api_router.post("/game/{session_id}/resolve_mimic_combat")
 async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatRequest):
@@ -5342,14 +5370,50 @@ async def resolve_mimic_combat(session_id: str, request: ResolveMimicCombatReque
     game = game_sessions[session_id]
     survivor_id = request.survivor_id
     
-    if survivor_id not in game["players"]:
+    if survivor_id is not None and survivor_id not in game["players"]:
         raise HTTPException(status_code=404, detail="Survivor not found")
     
-    survivor = game["players"][survivor_id]
+    survivor = game["players"][survivor_id] if survivor_id else None
     
-    logger.info(f"⚔️ Résolution combat Mimic: survivor={survivor['name']}, damage={request.damage_dealt_to_survivor}, gold_stolen={request.gold_stolen}, defeated={request.mimic_defeated}")
+    logger.info(f"⚔️ Résolution combat Mimic: survivor={request.survivor_id}, damage={request.damage_dealt_to_survivor}, gold_stolen={request.gold_stolen}, defeated={request.mimic_defeated}")
     
-    # Apply damage to survivor
+    # Multi-participants ?
+    if request.survivors_results:
+        participants = []
+        for r in request.survivors_results:
+            sid = r.get("id")
+            if not sid or sid not in game["players"]:
+                continue
+            participants.append(sid)
+            survivor = game["players"][sid]
+            dmg = int(r.get("damage_dealt", 0) or 0)
+            gold_lost = int(r.get("gold_stolen", 0) or 0)
+            survivor["hp"] = max(0, (survivor.get("hp", 36) or 36) - dmg)
+            survivor["gold"] = max(0, (survivor.get("gold", 0) or 0) - gold_lost)
+            if r.get("eliminated") or survivor["hp"] <= 0:
+                survivor["eliminated"] = True
+                room = survivor.get("current_room")
+                if room and room in game["rooms"]:
+                    if sid not in game["rooms"][room]["eliminated_players"]:
+                        game["rooms"][room]["eliminated_players"].append(sid)
+
+        # 🔑 Nettoyer pending_events pour tous les participants
+        # et dispatcher le prochain event en file si nécessaire
+        for sid in participants:
+            if sid in game.get("pending_events", {}):
+                del game["pending_events"][sid]
+            await dispatch_next_player_event(session_id, sid)
+
+        await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+
+        # ⚡ Vérifier si on peut passer à la phase killer (au cas où tous les survivants
+        # auraient terminé leur tour, ce qui inclut ceux en combat join)
+        await try_advance_to_killer_phase(session_id)
+
+        return {"success": True}
+    # Sinon : conserver l'ancienne logique 1v1 ci-dessous (rétro-compat)
+
+    survivor_id = request.survivor_id
     if survivor.get("hp") is not None and request.damage_dealt_to_survivor > 0:
         actual_damage = request.damage_dealt_to_survivor
         # PERTURBATION: double damage if active on this survivor
@@ -6094,31 +6158,91 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "video_path": crystal_video
                             }, role_filter="killer")
                     
-                    # Check for mimic FIRST (priority over gold) - Combat instead of instant gold loss
-                    # Must be enqueued before gold_found so it's dispatched immediately via WS
+                    # NEW: Mimic encounter → ouvre une fenêtre d'aide de 10 secondes au lieu d'un combat 1v1 immédiat
                     mimic_triggered = False
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_mimic", False):
-                        # Remove mimic from room (will be triggered only once)
                         game["rooms"][room_name]["has_mimic"] = False
                         mimic_triggered = True
 
-                        # Create a combat event with the mimic
-                        mimic_combat_event = {
-                            "type": "mimic_combat",
+                        expires_at = time.time() + 10.0
+                        game.setdefault("combat_help_windows", {})[player_id] = {
+                            "combat_type": "mimic",
                             "room": room_name,
-                            "survivor_id": player_id,
-                            "survivor_name": player["name"],
-                            "survivor_class": player.get("character_class", "Survivor"),
-                            "survivor_hp": player.get("hp", 36),
-                            "survivor_gold": player.get("gold", 0),
+                            "participants": [player_id],
                             "mimic_hp": 6,
-                            "message": "💰 Un Mimic vous attaque !",
-                            "eboulement_perturbation_active": player.get("eboulement_perturbation_active", False),
-                            "initiative_bonus": player.get("initiative_bonus", 0),
+                            "mimic_has_initiative": False,
+                            "expires_at": expires_at,
+                            "finalized": False,
                         }
 
-                        await enqueue_player_event(session_id, player_id, "mimic_combat", mimic_combat_event)
-                        logger.info(f"Player {player_id} ({player['name']}) triggered mimic combat in {room_name}")
+                        # Calculer la liste des B éligibles
+                        # Salle du Mimic et son étage
+                        mimic_room = room_name
+                        mimic_floor = game["rooms"][mimic_room]["floor"]
+
+                        eligible_B = []
+                        for pid, p in game["players"].items():
+                            if pid == player_id:
+                                continue
+                            if p.get("role") != "survivor":
+                                continue
+                            if p.get("eliminated", False):
+                                continue
+                            if pid in game.get("pending_actions", {}):
+                                continue
+
+                            # ❄️ BLIZZARD : si le survivant est immobilisé → exclu
+                            if p.get("immobilized_next_turn", False):
+                                continue
+
+                            # ⛰️ ÉBOULEMENT (base + variantes perturbation/séisme) :
+                            # si actif et que le joueur est verrouillé sur un étage
+                            # différent de celui du Mimic → exclu
+                            if game.get("eboulement_active", False):
+                                locked_floor = game.get("eboulement_locked_floors", {}).get(pid)
+                                if locked_floor and locked_floor != mimic_floor:
+                                    continue
+
+                            eligible_B.append(pid)
+
+                        # ⚡ Si aucun B éligible → lancer le combat directement (pas de fenêtre)
+                        if not eligible_B:
+                            logger.info(f"🪤 Mimic solo : pas d'allié éligible, combat immédiat pour {player['name']}")
+                            asyncio.create_task(finalize_combat_help_window(session_id, player_id, 0.0))
+                        else:
+                            # Notifier A : il doit attendre
+                            ws_a = active_connections.get(session_id, {}).get(player_id)
+                            if ws_a:
+                                try:
+                                    await ws_a.send_json({
+                                        "type": "combat_help_waiting",
+                                        "combat_type": "mimic",
+                                        "room": room_name,
+                                        "expires_at": expires_at,
+                                        "message": "💰 Un Mimic vous attaque ! Vos alliés peuvent vous rejoindre...",
+                                    })
+                                except Exception:
+                                    pass
+
+                            # Notifier les B éligibles
+                            for pid in eligible_B:
+                                ws_b = active_connections.get(session_id, {}).get(pid)
+                                if ws_b:
+                                    try:
+                                        await ws_b.send_json({
+                                            "type": "combat_help_available",
+                                            "combat_type": "mimic",
+                                            "attacker_id": player_id,
+                                            "attacker_name": player["name"],
+                                            "room": room_name,
+                                            "expires_at": expires_at,
+                                            "mimic_hp": 6,
+                                        })
+                                    except Exception:
+                                        pass
+
+                            asyncio.create_task(finalize_combat_help_window(session_id, player_id, 10.0))
+                            logger.info(f"🪤 Fenêtre d'aide Mimic ouverte par {player['name']} dans {room_name} ({len(eligible_B)} allié(s) éligible(s))")
 
                     # GOLD SYSTEM (skipped if mimic triggered — gold resolved in resolve_mimic_combat)
                     if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False) and not mimic_triggered:
@@ -6480,7 +6604,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     # NEW: For Malediction, send the list of survivors with cursable items
                     if power_name == "malediction":
-                        CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+                        CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
                         cursable_survivors = []
                         for pid, p in game["players"].items():
                             if p.get("role") == "survivor" and not p.get("eliminated", False):
@@ -6695,7 +6819,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if not item:
                     continue
 
-                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
                 if item.get("type") not in CURSABLE_TYPES:
                     continue
 
@@ -6761,7 +6885,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if not (killer_evolution.get("level") == 2 and killer_evolution.get("variant") == "masse"):
                     continue
 
-                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "medikit", "antidote", "couronne", "culotte", "chaussons"}
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
 
                 selections = data.get("selections", [])
                 if not isinstance(selections, list):
@@ -6827,36 +6951,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                 await check_power_selection_complete(session_id)
 
-
-                if game["players"][player_id]["role"] != "survivor":
-                    continue
-
-                if not has_item(game["players"][player_id], "medikit"):
-                    continue
-
-                target_player_id = data["target_player_id"]
-                if target_player_id in game["players"] and game["players"][target_player_id]["eliminated"]:
-                    target_room = game["players"][target_player_id]["current_room"]
-                    current_room = game["players"][player_id]["current_room"]
-
-                    if target_room == current_room:
-                        game["players"][target_player_id]["eliminated"] = False
-                        game["players"][target_player_id]["poisoned_countdown"] = 0
-                        remove_item(game["players"][player_id], "medikit")
-
-                        if target_player_id in game["rooms"][target_room]["eliminated_players"]:
-                            game["rooms"][target_room]["eliminated_players"].remove(target_player_id)
-
-                        event_msg = f"💚 {game['players'][player_id]['name']} a ranimé {game['players'][target_player_id]['name']} !"
-                        game["events"].append({"message": event_msg, "type": "revival"})
-                        await broadcast_to_session(session_id, {"type": "event", "message": event_msg})
-
-                        new_medikit_room = respawn_medikit(game)
-                        if new_medikit_room:
-                            respawn_msg = "🩺 Le medikit réapparaît quelque part dans la maison..."
-                            game["events"].append({"message": respawn_msg, "type": "medikit_respawn"})
-                            await broadcast_to_session(session_id, {"type": "event", "message": respawn_msg})
-
             elif data["type"] == "use_antidote":
                 if game["players"][player_id]["role"] != "survivor":
                     continue
@@ -6880,7 +6974,61 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 
                 logger.info(f"Player {player_id} used antidote to cure poison")
 
-            
+
+            elif data["type"] == "action" and data.get("action", {}).get("type") == "join_combat":
+                action_data = data["action"]
+                attacker_id = action_data.get("attacker_id")
+
+                combat_window = game.get("combat_help_windows", {}).get(attacker_id)
+                if not combat_window:
+                    await websocket.send_json({
+                        "type": "combat_help_expired",
+                        "message": "⏱️ Combat introuvable"
+                    })
+                    continue
+
+                if time.time() > combat_window["expires_at"] or combat_window.get("finalized"):
+                    await websocket.send_json({
+                        "type": "combat_help_expired",
+                        "message": "⏱️ La fenêtre de combat est expirée"
+                    })
+                    continue
+
+                # Vérifier que le joueur est éligible
+                if player.get("eliminated", False):
+                    continue
+                if player_id in game.get("pending_actions", {}):
+                    continue
+                if player_id == attacker_id:
+                    continue
+
+                if player_id not in combat_window["participants"]:
+                    combat_window["participants"].append(player_id)
+
+                    # Marquer l'action du joueur comme complétée
+                    game.setdefault("pending_actions", {})[player_id] = {
+                        "type": "join_combat",
+                        "combat_id": attacker_id,
+                        "room": combat_window["room"],
+                    }
+
+                    logger.info(f"✅ {player['name']} rejoint le combat Mimic de {attacker_id}")
+
+                    # Broadcast : informer tous les joueurs (A voit B rejoindre)
+                    await broadcast_to_session(session_id, {
+                        "type": "player_joined_combat",
+                        "player_id": player_id,
+                        "player_name": player["name"],
+                        "attacker_id": attacker_id,
+                        "participants": combat_window["participants"],
+                    })
+
+                    # Push state pour mettre à jour les autres clients
+                    await broadcast_to_session(session_id, {
+                        "type": "state_update",
+                        "game": game
+                    })
+
             # NEW: Handle event completion notification from frontend
             elif data["type"] == "event_completed":
                 if player_id in game.get("pending_events", {}):
