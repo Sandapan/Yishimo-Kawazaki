@@ -105,6 +105,12 @@ class ResolveCombatRequest(BaseModel):
 
 # Helper functions
 
+# Tags d'équipement (slot dans lequel un item peut être équipé)
+ITEM_TAGS = {
+    "amulette_tortue": "babiole",
+    # futurs items: "amulette_xxx": "babiole", "familier_yyy": "familier", ...
+}
+
 # Inventory helpers
 def has_item(player: dict, item_type: str) -> bool:
     """Check if player has an item of the specified type in their inventory"""
@@ -125,7 +131,11 @@ def add_item(player: dict, item_type: str) -> bool:
     inventory = player.get("inventory") or []
     for i, slot in enumerate(inventory):
         if slot is None:
-            inventory[i] = {"type": item_type}
+            new_item = {"type": item_type}
+            tag = ITEM_TAGS.get(item_type)
+            if tag:
+                new_item["tag"] = tag
+            inventory[i] = new_item
             return True
     return False
 
@@ -774,6 +784,8 @@ async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: 
             "initiative_bonus": s.get("initiative_bonus", 0),
             "damage_bonus": s.get("damage_bonus", 0),
             "poisoned_countdown": s.get("poisoned_countdown", 0),
+            # 🐢 NEW
+            "has_amulette_tortue": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
         })
 
     combat_id = f"mimic_{attacker_id}_{int(combat_window['expires_at'])}"
@@ -2623,6 +2635,8 @@ async def process_turn(session_id: str):
                                 "damage_bonus": surv_player.get("damage_bonus", 0),  # NEW: bonus dégâts
                                 "avatar": surv_player.get("avatar", ""),
                                 "poisoned_countdown": surv_player.get("poisoned_countdown", 0),  # NEW: pour toxine incapacitante
+                                # 🐢 NEW
+                                "has_amulette_tortue": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
                             })
 
                 if survivors_in_room:
@@ -4207,6 +4221,9 @@ class PickupRuneRequest(BaseModel):
 class DismissRuneRequest(BaseModel):
     player_id: str
 
+class DismissAmuletteRequest(BaseModel):
+    player_id: str
+
 class UseItemRequest(BaseModel):
     player_id: str
     slot_index: int
@@ -4329,6 +4346,88 @@ async def dismiss_rune(session_id: str, request: DismissRuneRequest):
     logger.info(f"Player {request.player_id} dismissed rune")
 
     return {"status": "success", "message": "Rune ignorée"}
+
+
+@api_router.post("/game/{session_id}/pickup_amulette")
+async def pickup_amulette(session_id: str, request: DismissAmuletteRequest):
+    """Add the Amulette Tortue to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "amulette_tortue_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add amulette to inventory
+    if not add_item(player, "amulette_tortue"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente (forge, marchand, etc.)
+    # Le dispatch doit avoir lieu AVANT le broadcast pour que le state_update
+    # envoyé au frontend contienne déjà le nouvel événement actif (s'il y en a un).
+    await dispatch_next_player_event(session_id, request.player_id)
+    # Compat legacy : ouvrir une forge qui aurait été mise en attente via l'ancien système
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update (après dispatch pour que pending_events soit à jour)
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: amulette_tortue")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/dismiss_amulette")
+async def dismiss_amulette(session_id: str, request: DismissAmuletteRequest):
+    """Dismiss/ignore the found amulette"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    # Remove pending event if exists
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+
+    # Dispatch next pending event
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} dismissed amulette")
+
+    return {"status": "success", "message": "Amulette ignorée"}
 
 # ========== OBSERVATION STONE ENDPOINTS ==========
 class PickupPierreQueteRequest(BaseModel):
@@ -5036,6 +5135,8 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
                 "max_hp": p.get("max_hp", 36),
                 "initiative_bonus": p.get("initiative_bonus", 0),
                 "damage_bonus": p.get("damage_bonus", 0),
+                # 🐢 NEW
+                "has_amulette_tortue": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
             })
 
     if not participants:
@@ -6382,6 +6483,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             if "turn_survivors_items_gained" not in game:
                                 game["turn_survivors_items_gained"] = {}
                             game["turn_survivors_items_gained"][player_id] = room_name
+                            # 🐢 NEW: Amulette Tortue garantie (100%) en supplément des 2 runes
+                            # L'ajout réel à l'inventaire se fait via /pickup_amulette quand le
+                            # joueur clique sur "Ramasser" dans le popup (même flow que les runes) ;
+                            # ici on se contente de notifier la découverte.
+                            amu_msg = f"🐢 {player['name']} découvre une Amulette Tortue !"
+                            game["events"].append({
+                                "message": amu_msg,
+                                "type": "amulette_tortue_found",
+                                "for_role": "survivor"
+                            })
+                            # amulette_tortue_found has no direct WS popup (frontend reads it
+                            # from state_update -> pending_events), so pass ws_message=None.
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "amulette_tortue_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Amulette Tortue (lucky search)")
                         else:
                             # RUNE DROP SYSTEM (after gold)
                             roll = random.random()

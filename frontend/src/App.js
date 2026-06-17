@@ -117,6 +117,7 @@ const ITEM_SPRITES = {
   relique_triangulaire: '/items/Relique_Triangulaire.png',
   relique_cubique: '/items/Relique_Cubique.png',
   relique_spherique: '/items/Relique_Spherique.png',
+  amulette_tortue: '/items/amulette_tortue.png',   // 🐢 NEW
 };
 
 const ITEM_NAMES = {
@@ -131,6 +132,7 @@ const ITEM_NAMES = {
   relique_triangulaire: 'Relique Triangulaire',
   relique_cubique: 'Relique Cubique',
   relique_spherique: 'Relique Sphérique',
+  amulette_tortue: 'Amulette Tortue',               // 🐢 NEW
 };
 
 // Descriptions des trophées (Chaussons / Couronne / Culotte)
@@ -154,6 +156,9 @@ const ITEM_DESCRIPTIONS = {
   couronne: TROPHY_DESCRIPTIONS.couronne,
   culotte: TROPHY_DESCRIPTIONS.culotte,
   // pierre_quete: pas de description ajoutée → fallback "No description."
+  amulette_tortue:
+    "Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !\n\n" +
+    "Effet : vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat.",
 };
 
 const getItemDescription = (itemType) => ITEM_DESCRIPTIONS[itemType] || "No description.";
@@ -171,7 +176,7 @@ const SELL_PRICES = {
 };
 
 // Items NON vendables (objets de quête)
-const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique']);
+const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique', 'amulette_tortue']);
 
 const getSellPrice = (itemType) => SELL_PRICES[itemType] ?? 50;
 
@@ -1203,6 +1208,33 @@ const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
   );
 };
 
+// 🐢 Marque les combattants qui bénéficient de la réduction de dégâts.
+// Le porteur doit avoir STRICTEMENT la plus basse initiative parmi TOUS les combattants.
+const applyAmuletteTortueBonus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length < 2) return recipients;
+
+  const minInit = Math.min(...fighters.map(f => f.initiative));
+  fighters.forEach(f => {
+    if (!f.has_amulette_tortue) return;
+    const isStrictlyLowest =
+      f.initiative === minInit &&
+      fighters.every(o => o === f || o.initiative > f.initiative);
+    if (isStrictlyLowest) {
+      f.amulette_tortue_active = true;
+      recipients.push(f);
+    }
+  });
+  return recipients;
+};
+
+// 🐢 Applique -25% sur le dégât reçu si la cible bénéficie de l'amulette.
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const reduceDamageIfTurtle = (target, rawDamage) => {
+  if (!target || !target.amulette_tortue_active || rawDamage <= 0) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 0.75));
+};
+
 // ========== MULTIPLAYER COMBAT COMPONENT ==========
 const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const isAttacker = event.attacker_id === playerId;
@@ -1252,7 +1284,8 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         poisonDamageMalus: poisonDamageMalus, // NEW: toxine incapacitante malus
         position: idx, // Position 0-3
         alive: true,
-        currentAnimation: 'idle'
+        currentAnimation: 'idle',
+        has_amulette_tortue: !!survivor.has_amulette_tortue,   // 🐢 NEW
       });
     });
     
@@ -1276,12 +1309,18 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     
     // Trier par initiative (du plus haut au plus bas)
     fighters.sort((a, b) => b.initiative - a.initiative);
-    
+
+    // 🐢 Amulette Tortue : flag les bénéficiaires
+    const amuletteRecipients = applyAmuletteTortueBonus(fighters);
+
     setCombatants(fighters);
     
     const initLog = [`⚔️ Combat commencé ! Ordre d'initiative :`];
     fighters.forEach(f => {
       initLog.push(`${f.name} (${f.initiative})`);
+    });
+    amuletteRecipients.forEach(f => {
+      initLog.push(`🐢 ${f.name} a la plus basse initiative — Amulette Tortue active : dégâts reçus -25% !`);
     });
     setCombatLog(initLog);
 
@@ -1443,6 +1482,11 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         if (attacker.type === 'survivor' && attacker.poisonDamageMalus) {
           damage = Math.ceil(damage / 2);
         }
+        // 🐢 Amulette Tortue — réduction de 25% si la cible est un survivant éligible
+        const rawDamageForTurtle = damage;
+        if (target.type === 'survivor') {
+          damage = reduceDamageIfTurtle(target, damage);
+        }
         target.hp = Math.max(0, target.hp - damage);
         
         if (target.hp <= 0) {
@@ -1475,7 +1519,12 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         setAnimatingEntity(null);
         
         // Log de l'action
-        const logEntry = `${attacker.name} attaque ${target.name} : ${damage} dégâts ! (${target.hp}/${target.maxHp} HP)`;
+        let logEntry;
+        if (target.type === 'survivor' && damage < rawDamageForTurtle) {
+          logEntry = `🩸 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🐢 -25%, ${rawDamageForTurtle}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else {
+          logEntry = `${attacker.name} attaque ${target.name} : ${damage} dégâts ! (${target.hp}/${target.maxHp} HP)`;
+        }
         setCombatLog(prev => [...prev, logEntry]);
         
         // Broadcaster le log et les HP mis à jour
@@ -1987,6 +2036,7 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
     initiative_bonus: event.initiative_bonus || 0,
     damage_bonus: 0,
     eboulement_perturbation_active: event.eboulement_perturbation_active || false,
+    has_amulette_tortue: !!(event.survivors?.[0]?.has_amulette_tortue),   // 🐢 NEW
   }];
   const participants = event.participants || [event.survivor_id];
   // Seul le premier participant (A) exécute la simulation et envoie le résultat
@@ -2048,6 +2098,11 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
       const survivorInitiative = Math.floor(Math.random() * 20) + 1 + initiativeBonus;
       const mimicInitiative = Math.floor(Math.random() * 20) + 1;
 
+      // 🐢 Active le flag si init strictement plus basse
+      if (primarySurvivor.has_amulette_tortue && survivorInitiative < mimicInitiative) {
+        primarySurvivor.amulette_tortue_active = true;
+      }
+
       const log = [`⚔️ Combat contre le Mimic !`];
       if (primarySurvivor.eboulement_perturbation_active) {
         log.push(`⛰️ Perturbation active : initiative -15, dégâts reçus ×2 !`);
@@ -2056,6 +2111,9 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
         log.push(`👥 ${participants.length} aventuriers participent au combat !`);
       }
       log.push(`Initiative : ${primarySurvivor.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
+      if (primarySurvivor.amulette_tortue_active) {
+        log.push(`🐢 Amulette Tortue active : dégâts reçus -25% pour ce combat !`);
+      }
       setCombatLog([...log]);
 
       setInitiativeIndicators({ [primarySurvivor.survivor_id]: survivorInitiative, mimic: mimicInitiative });
@@ -2094,7 +2152,8 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           setAnimatingEntity('mimic_attack');
           await new Promise(resolve => setTimeout(resolve, 600));
 
-          const damage = Math.floor(Math.random() * 6) + 1;
+          const rawMimicDamage = Math.floor(Math.random() * 6) + 1;
+          const damage = reduceDamageIfTurtle(primarySurvivor, rawMimicDamage);
           currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
           damageTaken += damage;
           setSurvivorHP(currentSurvivorHP);
@@ -2110,7 +2169,11 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           setDamageIndicator({ type: 'both', damage: damage, gold: goldToSteal });
           setTimeout(() => setDamageIndicator(null), 1500);
 
-          log.push(`💰 Le Mimic attaque : ${damage} dégâts et vole ${goldToSteal}💰 !`);
+          if (damage < rawMimicDamage) {
+            log.push(`💰 Le Mimic attaque : ${damage} dégâts (🐢 -25%, ${rawMimicDamage}→${damage}) et vole ${goldToSteal}💰 !`);
+          } else {
+            log.push(`💰 Le Mimic attaque : ${damage} dégâts et vole ${goldToSteal}💰 !`);
+          }
           setCombatLog([...log]);
 
           await new Promise(resolve => setTimeout(resolve, 800));
@@ -2378,6 +2441,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         damageBonus: survivor.damage_bonus || 0,
         poisonDamageMalus: poisonDamageMalus,
         position: idx, alive: true, currentAnimation: 'idle',
+        has_amulette_tortue: !!survivor.has_amulette_tortue,   // 🐢 NEW
       });
     });
     const crystalInitiative = Math.floor(
@@ -2389,9 +2453,16 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
       initiative: crystalInitiative, position: 0, alive: true, currentAnimation: 'idle',
     });
     fighters.sort((a, b) => b.initiative - a.initiative);
+
+    // 🐢 Amulette Tortue : flag les bénéficiaires
+    const amuletteRecipientsCrystal = applyAmuletteTortueBonus(fighters);
+
     setCombatants(fighters);
     const initLog = [`💎 Combat contre le Cristal ! Ordre d'initiative :`];
     fighters.forEach(f => initLog.push(`${f.name} (${f.initiative})`));
+    amuletteRecipientsCrystal.forEach(f => {
+      initLog.push(`🐢 ${f.name} a la plus basse initiative — Amulette Tortue active : dégâts reçus -25% !`);
+    });
     setCombatLog(initLog);
 
     const initiatives = {};
@@ -2473,13 +2544,14 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           setAnimatingEntity({ id: 'crystal', type: 'attack' });
           await new Promise(resolve => setTimeout(resolve, 1700));
 
-          const damage = event.crystal_damage || 3;
+          const rawCrystalDamage = event.crystal_damage || 3;
           const hitNames = [];
           aliveSurvivors.forEach(s => {
-            s.hp = Math.max(0, s.hp - damage);
+            const effectiveDamage = reduceDamageIfTurtle(s, rawCrystalDamage);  // 🐢
+            s.hp = Math.max(0, s.hp - effectiveDamage);
             if (s.hp <= 0) s.alive = false;
-            hitNames.push(s.name);
-            setDamageIndicators(prev => ({ ...prev, [s.id]: { damage, timestamp: Date.now() } }));
+            hitNames.push(s.name + (effectiveDamage < rawCrystalDamage ? ` (🐢 ${effectiveDamage})` : ''));
+            setDamageIndicators(prev => ({ ...prev, [s.id]: { damage: effectiveDamage, timestamp: Date.now() } }));
           });
           setTimeout(() => setDamageIndicators(prev => {
             const n = { ...prev }; aliveSurvivors.forEach(s => delete n[s.id]); return n;
@@ -2490,7 +2562,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           await new Promise(resolve => setTimeout(resolve, 1000));
           setAnimatingEntity(null);
 
-          setCombatLog(prev => [...prev, `💥 ${crystal.name} frappe TOUS les survivants (${hitNames.join(', ')}) : ${damage} dégâts AOE !`]);
+          setCombatLog(prev => [...prev, `💥 ${crystal.name} frappe TOUS les survivants (${hitNames.join(', ')}) : ${rawCrystalDamage} dégâts AOE !`]);
           setCombatants([...fighters]);
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
@@ -3158,7 +3230,12 @@ const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
                 toast.success(`${item.name || item.type} équipé(e) !`);
                 onClose();
               } catch (e) {
-                toast.error(e.response?.data?.detail || "Erreur");
+                const errorMsg = e.response?.data?.detail;
+                if (errorMsg && typeof errorMsg === 'string') {
+                  toast.error(errorMsg);
+                } else {
+                  toast.error("Erreur lors de l'équipement");
+                }
               }
             }}
             style={{
@@ -3168,6 +3245,38 @@ const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
             }}
           >
             ⚔️ Équiper
+          </button>
+        )}
+
+        {/* Bouton Déséquiper (babiole / familier équipé) */}
+        {(item.tag === 'babiole' || item.tag === 'familier') && item.equipped && player && sessionId && (
+          <button
+            data-testid="item-unequip-btn"
+            onClick={async () => {
+              try {
+                await axios.post(`${API}/game/${sessionId}/unequip_item`, {
+                  player_id: player.id,
+                  slot_index: item._slotIndex,
+                  slot_type: item.tag,
+                });
+                toast.success(`${item.name || item.type} déséquipé(e) !`);
+                onClose();
+              } catch (e) {
+                const errorMsg = e.response?.data?.detail;
+                if (errorMsg && typeof errorMsg === 'string') {
+                  toast.error(errorMsg);
+                } else {
+                  toast.error("Erreur lors du déséquipement");
+                }
+              }
+            }}
+            style={{
+              marginTop: '1rem',
+              backgroundColor: '#ef4444', color: '#fff', fontWeight: 'bold',
+              padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+            }}
+          >
+            🗑️ Déséquiper
           </button>
         )}
       </div>
@@ -3228,7 +3337,12 @@ const EquipmentGrid = ({ player, sessionId, onInspect }) => {
       {EQUIPMENT_SLOT_CONDITIONS.map((cond, idx) => {
         const pos = EQUIPMENT_SLOT_POSITIONS[idx];
         const isWeaponSlot = cond === 'weapon';
-        const equippedItem = isWeaponSlot ? weaponItem : equipment[cond];
+        // NEW: pour les babioles/familiers équipés, on marque explicitement
+        // `equipped: true` (et un _slotIndex factice, ignoré par /unequip_item)
+        // afin que la modale d'inspection affiche bien le bouton "Déséquiper".
+        const equippedItem = isWeaponSlot
+          ? weaponItem
+          : (equipment[cond] ? { ...equipment[cond], equipped: true, _slotIndex: -1 } : null);
 
         return (
           <div
@@ -3994,6 +4108,158 @@ const TrophyModal = ({ event, playerId, sessionId, onOpenInventory, player }) =>
               }}
             >
               ✖ Ignorer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+// ========== AMULETTE PICKUP MODAL COMPONENT ==========
+const AmulettePickupModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
+  if (!event || event.type !== 'amulette_tortue_found') return null;
+  
+  const amuletteType = 'amulette_tortue';
+  // Recalculate live from actual inventory so freeing a slot immediately unlocks the button
+  const inventory = player?.inventory || [];
+  const inventoryFull = inventory.filter(Boolean).length >= 9;
+  
+  const handlePickup = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/pickup_amulette`, {
+        player_id: playerId
+      });
+      
+      if (response.data.status === 'success') {
+        toast.success(`✨ ${ITEM_NAMES[amuletteType]} ajoutée à l'inventaire !`);
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || "Erreur lors du ramassage";
+      if (errorMsg === "Inventaire plein") {
+        toast.error("❌ Inventaire plein !");
+      } else {
+        toast.error(errorMsg);
+      }
+    }
+  };
+  
+  const handleDismiss = async () => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/dismiss_amulette`, {
+        player_id: playerId
+      });
+    } catch (error) {
+      console.error("Error dismissing amulette:", error);
+    }
+  };
+  
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+    >
+      <Card
+        style={{
+          maxWidth: '600px',
+          backgroundColor: '#2a1f17',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            ✨ Vous avez trouvé une amulette !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <img
+              src={ITEM_SPRITES[amuletteType]}
+              alt={ITEM_NAMES[amuletteType]}
+              style={{
+                width: '150px',
+                height: '150px',
+                objectFit: 'contain',
+                margin: '0 auto',
+                filter: 'drop-shadow(0 4px 8px rgba(212, 175, 55, 0.5))',
+              }}
+            />
+            <h3 style={{ color: '#e8dcc4', marginTop: '16px', fontSize: '1.4rem' }}>
+              {ITEM_NAMES[amuletteType]}
+            </h3>
+            
+            {/* Description */}
+            <p style={{ color: '#b8a488', fontSize: '1rem', marginTop: '12px', fontStyle: 'italic' }}>
+              Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !
+            </p>
+            
+            {/* Effet */}
+            <div style={{
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              border: '2px solid #10b981',
+              borderRadius: '8px',
+              padding: '12px',
+              marginTop: '16px',
+              color: '#10b981',
+              textAlign: 'left',
+              fontSize: '0.95rem'
+            }}>
+              <strong>Effet :</strong> vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat.
+            </div>
+          </div>
+          
+          {inventoryFull && (
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              color: '#ef4444',
+              textAlign: 'center',
+              fontWeight: 'bold'
+            }}>
+              ⚠️ Inventaire plein !
+            </div>
+          )}
+          
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <Button
+              onClick={inventoryFull ? onOpenInventory : handlePickup}
+              style={{
+                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+              }}
+            >
+              {inventoryFull ? '🎒 Gérer l\'inventaire' : '🎒 Ramasser'}
+            </Button>
+            <Button
+              onClick={handleDismiss}
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+              }}
+            >
+              ❌ Ignorer
             </Button>
           </div>
         </CardContent>
@@ -10310,6 +10576,20 @@ const selectRoom = (roomName) => {
        typeof gameState.pending_events[playerId] === 'object' &&
        gameState.pending_events[playerId].type === 'rune_found' && (
         <RunePickupModal
+          event={gameState.pending_events[playerId]}
+          playerId={playerId}
+          sessionId={sessionId}
+          onOpenInventory={() => setShowInventory(true)}
+          player={currentPlayer}
+        />
+      )}
+
+      {/* Amulette Pickup Modal */}
+      {gameState.pending_events && 
+       gameState.pending_events[playerId] && 
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'amulette_tortue_found' && (
+        <AmulettePickupModal
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}
