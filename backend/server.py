@@ -267,6 +267,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "weapon_forge_attempts": 0 if host_role == "survivor" else 0,  # NEW: forge attempts on weapon
                 "weapon_bonuses": [] if host_role == "survivor" else None,  # NEW: list of {stat, value, rune_type, label}
                 "pending_forge_room": None,  # NEW: room name where a forge is waiting after a rune event
+                "equipment": {"babiole": None, "familier": None} if host_role == "survivor" else None,  # NEW: equipment slots
                 "inventory": [None] * 9 if host_role == "survivor" else None,
                 "powers_evolution": {
                     "mimic": {"level": 1, "variant": None},
@@ -3296,6 +3297,7 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "max_hp": 36 if request.role == "survivor" else None,
         "initiative_bonus": 0,
         "damage_bonus": 0,
+        "equipment": {"babiole": None, "familier": None} if request.role == "survivor" else None,  # NEW: equipment slots
         "inventory": [None] * 9 if request.role == "survivor" else None,
         "powers_evolution": {
             "mimic": {"level": 1, "variant": None},
@@ -3407,10 +3409,12 @@ async def select_role(session_id: str, request: SelectRoleRequest):
         player["hp"] = 36
         player["max_hp"] = 36
         player["inventory"] = [None] * 9
+        player["equipment"] = {"babiole": None, "familier": None}  # NEW
     else:
         player["hp"] = None
         player["max_hp"] = None
         player["inventory"] = None
+        player["equipment"] = None  # NEW
         # Initialize powers_evolution for killers
         if not player.get("powers_evolution"):
             player["powers_evolution"] = {
@@ -3514,6 +3518,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW: reset forge attempts
                 game["players"][player_id]["weapon_bonuses"] = []  # NEW: reset weapon bonuses
                 game["players"][player_id]["inventory"] = [None] * 9
+                game["players"][player_id]["equipment"] = {"babiole": None, "familier": None}  # NEW
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
                 # Assigner le rôle orc
@@ -3531,6 +3536,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["weapon_bonuses"] = None  # NEW
                 game["players"][player_id]["pending_forge_room"] = None  # NEW
                 game["players"][player_id]["inventory"] = None
+                game["players"][player_id]["equipment"] = None  # NEW
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} aventuriers et orcs avec classes aventurier uniques")
@@ -3712,6 +3718,7 @@ async def reset_game(session_id: str):
         player["weapon_bonuses"] = [] if player.get("role") == "survivor" else None  # NEW: reset weapon bonuses
         player["pending_forge_room"] = None  # NEW: reset pending forge
         player["inventory"] = [None] * 9 if player.get("role") == "survivor" else None
+        player["equipment"] = {"babiole": None, "familier": None} if player.get("role") == "survivor" else None  # NEW
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
@@ -3863,6 +3870,7 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["weapon_bonuses"] = [] if request.role == "survivor" else None  # NEW
     game["players"][player_id]["pending_forge_room"] = None  # NEW
     game["players"][player_id]["inventory"] = [None] * 9 if request.role == "survivor" else None
+    game["players"][player_id]["equipment"] = {"babiole": None, "familier": None} if request.role == "survivor" else None  # NEW
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
@@ -4206,6 +4214,11 @@ class UseItemRequest(BaseModel):
 class DeleteItemRequest(BaseModel):
     player_id: str
     slot_index: int
+
+class EquipItemRequest(BaseModel):  # NEW: equip babiole/familier
+    player_id: str
+    slot_index: int  # index de l'item dans l'inventaire
+    slot_type: str   # "babiole" or "familier"
 
 async def _trigger_pending_forge(session_id: str, player_id: str):
     """If a forge was queued while another event was active, open it now."""
@@ -4702,7 +4715,76 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
 
     return {"status": "success", "message": f"{item_name} supprimé(e) de l'inventaire"}
 
-# ========== FORGE ENDPOINTS ==========
+# ========== EQUIPMENT ENDPOINTS ==========
+
+@api_router.post("/game/{session_id}/equip_item")
+async def equip_item(session_id: str, request: EquipItemRequest):
+    """Equip a babiole or familier from inventory into the equipment slot."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+    if request.slot_type not in ("babiole", "familier"):
+        raise HTTPException(status_code=400, detail="Invalid slot type")
+
+    inventory = player.get("inventory") or []
+    if request.slot_index < 0 or request.slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+
+    item = inventory[request.slot_index]
+    if not item:
+        raise HTTPException(status_code=400, detail="Empty slot")
+
+    if item.get("tag") != request.slot_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cet item ne peut être équipé que dans un slot {request.slot_type}"
+        )
+
+    if "equipment" not in player or player["equipment"] is None:
+        player["equipment"] = {"babiole": None, "familier": None}
+
+    # Si un item est déjà équipé, le remettre dans l'inventaire (swap)
+    previously_equipped = player["equipment"].get(request.slot_type)
+    player["equipment"][request.slot_type] = item
+    inventory[request.slot_index] = previously_equipped  # remplacer par l'ancien (ou None)
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {"success": True}
+
+
+@api_router.post("/game/{session_id}/unequip_item")
+async def unequip_item(session_id: str, request: EquipItemRequest):
+    """Unequip a babiole or familier back into inventory. slot_index is ignored."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+    if request.slot_type not in ("babiole", "familier"):
+        raise HTTPException(status_code=400, detail="Invalid slot type")
+
+    equipped = player.get("equipment", {}).get(request.slot_type) if player.get("equipment") else None
+    if not equipped:
+        raise HTTPException(status_code=400, detail="Aucun item équipé")
+
+    inventory = player.get("inventory") or []
+    free_slot = next((i for i, s in enumerate(inventory) if s is None), None)
+    if free_slot is None:
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    inventory[free_slot] = equipped
+    player["equipment"][request.slot_type] = None
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {"success": True}
+
+
 class ForgeUseRuneRequest(BaseModel):
     player_id: str
     slot_index: int

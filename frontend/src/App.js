@@ -3017,11 +3017,11 @@ const StatsModal = ({ player, onClose }) => {
 };
 
 // ========== ITEM INFO MODAL COMPONENT ==========
-const ItemInfoModal = ({ item, onClose }) => {
+const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
   if (!item) return null;
-  const sprite = ITEM_SPRITES[item.type];
-  const name = ITEM_NAMES[item.type] || item.type;
-  const description = getItemDescription(item.type);
+  const sprite = item.type === 'weapon_equipped' ? item.sprite : ITEM_SPRITES[item.type];
+  const name = item.type === 'weapon_equipped' ? item.name : (ITEM_NAMES[item.type] || item.type);
+  const description = item.type === 'weapon_equipped' ? item.description : getItemDescription(item.type);
 
   return (
     <div
@@ -3112,7 +3112,170 @@ const ItemInfoModal = ({ item, onClose }) => {
         }}>
           {description}
         </p>
+
+        {/* Bonus de forge (arme équipée) */}
+        {item.type === 'weapon_equipped' && item.weapon_bonuses && item.weapon_bonuses.length > 0 && (
+          <div data-testid="item-info-weapon-bonuses" style={{ marginTop: '0.8rem' }}>
+            <h4 style={{ color: '#d4af37', marginBottom: '0.4rem' }}>Bonus de forge :</h4>
+            <ul style={{ listStyle: 'none', padding: 0, color: '#9fffb5' }}>
+              {item.weapon_bonuses.map((b, i) => {
+                const RUNE_FALLBACK = {
+                  rune_dommage: '+2 dégâts',
+                  rune_vitalite: '+8 vitalité',
+                  rune_initiative: '+3 initiative',
+                };
+
+                // Priorité : label fourni > construction "stat +value" > fallback par rune_type
+                const display =
+                  b.label ||
+                  (b.stat && b.value !== undefined ? `+${b.value} ${b.stat}` : null) ||
+                  RUNE_FALLBACK[b.rune_type] ||
+                  b.rune_type ||
+                  'Bonus inconnu';
+
+                return <li key={i}>✓ {display}</li>;
+              })}
+            </ul>
+          </div>
+        )}
+        {item.type === 'weapon_equipped' && (
+          <p style={{ color: '#fbbf24', fontStyle: 'italic', marginTop: '0.8rem' }}>
+            🔒 Cette arme est liée à votre classe et ne peut pas être déséquipée.
+          </p>
+        )}
+
+        {/* Bouton Équiper (babiole / familier) */}
+        {(item.tag === 'babiole' || item.tag === 'familier') && !item.equipped && player && sessionId && (
+          <button
+            data-testid="item-equip-btn"
+            onClick={async () => {
+              try {
+                await axios.post(`${API}/game/${sessionId}/equip_item`, {
+                  player_id: player.id,
+                  slot_index: item._slotIndex,
+                  slot_type: item.tag,
+                });
+                toast.success(`${item.name || item.type} équipé(e) !`);
+                onClose();
+              } catch (e) {
+                toast.error(e.response?.data?.detail || "Erreur");
+              }
+            }}
+            style={{
+              marginTop: '1rem',
+              backgroundColor: '#10b981', color: '#fff', fontWeight: 'bold',
+              padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+            }}
+          >
+            ⚔️ Équiper
+          </button>
+        )}
       </div>
+    </div>
+  );
+};
+
+// NEW: Equipment grid (weapon / babiole / familier)
+const CLASS_TO_WEAPON_SLUG = {
+  Assassin: 'assassin', Barbare: 'barbare', Barde: 'barde',
+  Elfe: 'elfe', Guerrier: 'knight', Mage: 'mage'
+};
+
+const EQUIPMENT_SLOT_CONDITIONS = ['weapon', 'babiole', 'familier'];
+const EQUIPMENT_SLOT_LABELS = {
+  weapon: 'Arme',
+  babiole: 'Babiole',
+  familier: 'Familier',
+};
+
+// Positions en % depuis inventory_equipement.png (730x1440, ~3 slots verticaux)
+const EQUIPMENT_SLOT_POSITIONS = [
+  { top: '10%',  left: '20%', width: '60%', height: '22%' },  // slot weapon
+  { top: '39%',  left: '20%', width: '60%', height: '22%' },  // slot babiole
+  { top: '68%',  left: '20%', width: '60%', height: '22%' },  // slot familier
+];
+
+const EquipmentGrid = ({ player, sessionId, onInspect }) => {
+  const equipment = player.equipment || {};
+  const weaponBonuses = player.weapon_bonuses || [];
+  const weaponSlug = CLASS_TO_WEAPON_SLUG[player.character_class] || 'mage';
+  const weaponSrc = `/items/Weapon_${weaponSlug}.png`;
+  const weaponName = `Arme du ${player.character_class || 'Aventurier'}`;
+  const weaponPlusLevel = weaponBonuses.length;
+
+  const weaponItem = {
+    type: 'weapon_equipped',
+    sprite: weaponSrc,
+    name: weaponPlusLevel > 0 ? `${weaponName} +${weaponPlusLevel}` : weaponName,
+    description: `Arme de classe ${player.character_class}.`,
+    weapon_bonuses: weaponBonuses,
+    locked: true,
+  };
+
+  return (
+    <div
+      data-testid="equipment-grid"
+      style={{
+        position: 'relative',
+        width: 'min(35vw, 80vh, 300px)',
+        aspectRatio: '730 / 1440',
+        backgroundImage: 'url(/inventory/inventory_equipement.png)',
+        backgroundSize: 'contain',
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'center',
+      }}
+    >
+      {EQUIPMENT_SLOT_CONDITIONS.map((cond, idx) => {
+        const pos = EQUIPMENT_SLOT_POSITIONS[idx];
+        const isWeaponSlot = cond === 'weapon';
+        const equippedItem = isWeaponSlot ? weaponItem : equipment[cond];
+
+        return (
+          <div
+            key={cond}
+            data-testid={`equipment-slot-${cond}`}
+            onClick={() => equippedItem && onInspect(equippedItem)}
+            title={equippedItem ? equippedItem.name || EQUIPMENT_SLOT_LABELS[cond] : `Slot ${EQUIPMENT_SLOT_LABELS[cond]} vide`}
+            style={{
+              position: 'absolute',
+              top: pos.top, left: pos.left,
+              width: pos.width, height: pos.height,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: equippedItem ? 'pointer' : 'default',
+            }}
+          >
+            {equippedItem ? (
+              <>
+                <img
+                  src={equippedItem.sprite || ITEM_SPRITES[equippedItem.type] || '/inventory/placeholder.png'}
+                  alt={equippedItem.name || cond}
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))', pointerEvents: 'none' }}
+                />
+                {isWeaponSlot && weaponPlusLevel > 0 && (
+                  <div style={{
+                    position: 'absolute', bottom: '4px', right: '8px',
+                    color: '#fbbf24', fontWeight: 'bold', fontSize: '1.1rem',
+                    textShadow: '0 0 4px #000, 0 0 8px #000',
+                  }}>+{weaponPlusLevel}</div>
+                )}
+                {isWeaponSlot && (
+                  <div style={{
+                    position: 'absolute', top: '2px', right: '6px',
+                    color: '#fbbf24', fontSize: '0.9rem', textShadow: '0 0 4px #000',
+                  }}>🔒</div>
+                )}
+              </>
+            ) : (
+              <div style={{
+                color: 'rgba(212, 175, 55, 0.5)', fontSize: '0.85rem',
+                fontStyle: 'italic', textAlign: 'center',
+              }}>
+                {EQUIPMENT_SLOT_LABELS[cond]}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 };
@@ -3137,7 +3300,7 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
     onClose();
   };
 
-  const handleSlotClick = async (index, item) => {
+  const handleSlotClick = (index, item) => {
     if (!item) return;
 
     // If in delete mode, select this item for confirmation
@@ -3146,26 +3309,8 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
       return;
     }
 
-    const itemType = item.type;
-
-    // Only antidote can be used directly
-    if (itemType === 'antidote') {
-      try {
-        const response = await axios.post(`${API}/game/${sessionId}/use_item`, {
-          player_id: player.id,
-          slot_index: index
-        });
-
-        if (response.data.status === 'success') {
-          toast.success(response.data.message);
-        } else if (response.data.status === 'not_poisoned') {
-          toast.info(response.data.message); // "Vous n'êtes pas empoisonné."
-        }
-      } catch (error) {
-        const errorMsg = error.response?.data?.detail || "Erreur lors de l'utilisation de l'item";
-        toast.error(errorMsg);
-      }
-    }
+    // Clic direct sur le slot ouvre le popup d'infos (remplace le bouton "i")
+    setInspectedItem({ ...item, _slotIndex: index });
   };
 
   const handleConfirmDelete = async () => {
@@ -3222,15 +3367,25 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          position: 'relative',
-          width: 'min(90vw, 90vh, 600px)',
-          aspectRatio: '1 / 1',
-          backgroundImage: 'url(/inventory/grid_background.png)',
-          backgroundSize: 'contain',
-          backgroundRepeat: 'no-repeat',
-          backgroundPosition: 'center',
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: '20px',
+          maxWidth: '95vw',
         }}
       >
+        {/* === GRILLE INVENTAIRE (existante) === */}
+        <div
+          style={{
+            position: 'relative',
+            width: 'min(70vw, 80vh, 600px)',
+            aspectRatio: '1 / 1',
+            backgroundImage: 'url(/inventory/grid_background.png)',
+            backgroundSize: 'contain',
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'center',
+          }}
+        >
         {/* Top action buttons */}
         <button
           onClick={handleToggleDeleteMode}
@@ -3334,36 +3489,6 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
                       animation: 'cursedSkullBob 1s ease-in-out infinite',
                     }}>💀</div>
                   )}
-                  <button
-                    data-testid={`inventory-slot-info-${index}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setInspectedItem(item);
-                    }}
-                    aria-label="Informations sur l'objet"
-                    style={{
-                      position: 'absolute',
-                      bottom: '-4px',
-                      left: '-4px',
-                      width: '18px',
-                      height: '18px',
-                      borderRadius: '50%',
-                      background: 'rgba(20, 14, 10, 0.85)',
-                      border: '1px solid #d4af37',
-                      color: '#d4af37',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      lineHeight: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      padding: 0,
-                      zIndex: 1,
-                    }}
-                  >
-                    i
-                  </button>
                 </>
               )}
             </div>
@@ -3451,11 +3576,19 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
           </div>
         )}
       </div>
+        {/* fermeture grille inventaire existante */}
+
+        {/* === NEW: GRILLE ÉQUIPEMENT === */}
+        <EquipmentGrid player={player} sessionId={sessionId} onInspect={setInspectedItem} />
+      {/* fin wrapper flex */}
+      </div>
 
       {inspectedItem && (
         <ItemInfoModal
           item={inspectedItem}
           onClose={() => setInspectedItem(null)}
+          player={player}
+          sessionId={sessionId}
         />
       )}
     </div>
