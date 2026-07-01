@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -10,6 +10,20 @@ import { toast } from "sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+// Goblin roulette sequence (boucle infinie, multipliée par le multiplicateur de la stat)
+const GOBLIN_ROULETTE_SEQUENCE = [1, 1, 2, 1, 3, 1, 2, 1, 2, 1];
+
+// Helpers roulette gobelin
+function getStatLabel(stat) {
+  const labels = { damage: 'Dégâts', hp: 'Vitalité', initiative: 'Initiative' };
+  return labels[stat] || stat;
+}
+
+function getStatIcon(stat) {
+  const icons = { damage: '🗡️', hp: '❤️', initiative: '⚡' };
+  return icons[stat] || '📊';
+}
 const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
 // Avatar images by role with their associated classes and descriptions
@@ -118,6 +132,13 @@ const ITEM_SPRITES = {
   relique_cubique: '/items/Relique_Cubique.png',
   relique_spherique: '/items/Relique_Spherique.png',
   amulette_tortue: '/items/amulette_tortue.png',   // 🐢 NEW
+  amulette_oignon: '/items/amulette_oignon.png',   // 🧅 NEW
+  amulette_trefle: '/items/amulette_trefle.png',   // 🍀 NEW
+  foulard_rankyr: '/items/Foulard%20Rankyr.png',   // 🏴 NEW
+  amulette_coco: '/items/AmuCoco.png',             // 🥥 NEW
+  bandana_ranja: '/items/Bandana%20Ranja.png',     // 🎯 NEW
+  lait_lew: '/items/Lait%20LEW.png',               // 🥛 NEW
+  bonnet_croblow: '/items/Bonnet%20Croblow.png',   // 🌸 NEW
 };
 
 const ITEM_NAMES = {
@@ -133,6 +154,13 @@ const ITEM_NAMES = {
   relique_cubique: 'Relique Cubique',
   relique_spherique: 'Relique Sphérique',
   amulette_tortue: 'Amulette Tortue',               // 🐢 NEW
+  amulette_oignon: 'Amulette Oignon',               // 🧅 NEW
+  amulette_trefle: 'Amulette Chanceuse',            // 🍀 NEW
+  foulard_rankyr: 'Foulard Rankyr',                 // 🏴 NEW
+  amulette_coco: 'Amulette Coco de Bouchou',         // 🥥 NEW
+  bandana_ranja: 'Bandana de Ranja',                 // 🎯 NEW
+  lait_lew: 'Lait LEW',                             // 🥛 NEW
+  bonnet_croblow: 'Bonnet Croblow',                  // 🌸 NEW
 };
 
 // Descriptions des trophées (Chaussons / Couronne / Culotte)
@@ -159,6 +187,29 @@ const ITEM_DESCRIPTIONS = {
   amulette_tortue:
     "Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !\n\n" +
     "Effet : vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat.",
+  amulette_oignon:
+    "L'oignon fait la force !\n\n" +
+    "Effet : Vous infligez 50% de dégats supplémentaires si vous êtes plusieurs aventuriers dans le combat.",
+  amulette_trefle:
+    "Vous aurez de la chance dans votre malheur.\n\n" +
+    "Effet : vous obtenez 50% d'or en plus en explorant une pièce, mais vous subissez 50% de dégâts supplémentaires en combat.",
+  foulard_rankyr:
+    "Ce foulard appartenait autrefois à un trésorier tenu de la comptabilité de son royaume.\n\n" +
+    "Effet : Dans un combat, vous infligez 50% de dégâts supplémentaires tant que vous n'avez pas subi de dégâts. L'effet se réinitialise à chaque nouveau combat.",
+  amulette_coco:
+    "Cette amulette appartenait autrefois à un aventurier globetrotteur qui l'a confectionnée à partir de morceaux de coco trouvés sur différentes îles.\n\n" +
+    "Effet : En combat, lorsque vos PV passent sous 30% de vos PV max, vos dégâts infligés sont augmentés de 75%.",
+  bandana_ranja:
+    "Son porteur n'a jamais réellement porté de bandana de sa vie, ce qui vous donne l'occasion d'enfin porter quelque chose de neuf.\n\n" +
+    "Effet : Si vous avez la plus haute initiative en combat (aventuriers compris), vos dégâts infligés sont augmentés de 50% pour le reste du combat.",
+  lait_lew:
+    "LEW, amoureux de la nature, produit le meilleur lait de la région. " +
+    "Aussi étrange que cela puisse paraître, personne ne l'a jamais vu gérer un troupeau. " +
+    "D'où ce lait mystérieux peut-il provenir ?\n\n" +
+    "Effet : 4 PV restaurés par tour, durant 3 tours (ne peut pas dépasser les PV max).",
+  bonnet_croblow:
+    "Amoureux de la nature, Croblow a porté ce bonnet sur lequel quelques fleurs trouvent miraculeusement encore racine.\n\n" +
+    "Effet : Dans un combat, vous vous soignez vous et vos alliés à hauteur de 10% des dégâts que vous infligez. L'effet se réinitialise à chaque nouveau combat.",
 };
 
 const getItemDescription = (itemType) => ITEM_DESCRIPTIONS[itemType] || "No description.";
@@ -173,10 +224,11 @@ const SELL_PRICES = {
   culotte: 500,
   antidote: 150,
   relique_triangulaire: 500,
+  lait_lew: 150,   // 🥛 NEW
 };
 
 // Items NON vendables (objets de quête)
-const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique', 'amulette_tortue']);
+const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique', 'amulette_tortue', 'amulette_oignon', 'amulette_trefle', 'foulard_rankyr', 'amulette_coco', 'bandana_ranja', 'bonnet_croblow']);
 
 const getSellPrice = (itemType) => SELL_PRICES[itemType] ?? 50;
 
@@ -1235,6 +1287,144 @@ const reduceDamageIfTurtle = (target, rawDamage) => {
   return Math.max(1, Math.round(rawDamage * 0.75));
 };
 
+// 🧅 Marque les combattants survivants qui bénéficient du bonus de dégâts.
+// Le porteur doit avoir l'amulette ET il doit y avoir au moins 2 aventuriers dans le combat.
+const applyAmuletteOignonBonus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length === 0) return recipients;
+
+  const survivors = fighters.filter(f => f.type === 'survivor');
+  if (survivors.length < 2) return recipients;
+
+  survivors.forEach(f => {
+    if (!f.has_amulette_oignon) return;
+    f.amulette_oignon_active = true;
+    recipients.push(f);
+  });
+  return recipients;
+};
+
+// 🧅 Applique +50% sur les dégâts infligés si l'attaquant bénéficie de l'amulette.
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const amplifyDamageIfOnion = (attacker, rawDamage) => {
+  if (!attacker || !attacker.amulette_oignon_active || rawDamage <= 0) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 1.5));
+};
+
+// 🍀 Amulette Chanceuse — flag les porteurs comme actifs en combat (le malus est appliqué
+// au moment où ils SUBISSENT des dégâts, via amplifyDamageTakenIfClover).
+const applyAmuletteTrefleMalus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length === 0) return recipients;
+  fighters.forEach(f => {
+    if (f.type !== 'survivor' || !f.has_amulette_trefle) return;
+    f.amulette_trefle_active = true;
+    recipients.push(f);
+  });
+  return recipients;
+};
+
+// 🍀 Applique +50% sur les dégâts SUBIS si la cible porte l'amulette chanceuse.
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const amplifyDamageTakenIfClover = (target, rawDamage) => {
+  if (!target || !target.amulette_trefle_active || rawDamage <= 0) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 1.5));
+};
+
+// 🏴 Foulard Rankyr — flag les porteurs comme actifs en début de combat.
+// Le bonus reste actif tant que le porteur n'a subi aucun dégât durant CE combat.
+const applyFoulardRankyrBonus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length === 0) return recipients;
+  fighters.forEach(f => {
+    if (f.type !== 'survivor' || !f.has_foulard_rankyr) return;
+    f.foulard_rankyr_active = true;
+    recipients.push(f);
+  });
+  return recipients;
+};
+
+// 🏴 Applique +50% sur les dégâts infligés si l'attaquant bénéficie du foulard
+// (c'est-à-dire tant qu'il n'a pas encore subi de dégâts dans ce combat).
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const amplifyDamageIfFoulard = (attacker, rawDamage) => {
+  if (!attacker || !attacker.foulard_rankyr_active || rawDamage <= 0) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 1.5));
+};
+
+// 🏴 Désactive le bonus du Foulard Rankyr dès que son porteur subit des dégâts.
+// À appeler chaque fois qu'un combattant ENCAISSE des dégâts (damage > 0).
+const breakFoulardRankyrIfHit = (target, damageTaken) => {
+  if (!target || target.type !== 'survivor' || !target.foulard_rankyr_active) return;
+  if (damageTaken > 0) {
+    target.foulard_rankyr_active = false;
+  }
+};
+
+// 🥥 Amulette Coco de Bouchou — +75% sur les dégâts infligés si le porteur est
+// actuellement sous 30% de ses PV max. Réévalué à chaque attaque (pas de flag figé :
+// si le porteur est soigné au-dessus du seuil, le bonus cesse de s'appliquer).
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const amplifyDamageIfCoco = (attacker, rawDamage) => {
+  if (!attacker || !attacker.has_amulette_coco || rawDamage <= 0) return rawDamage;
+  const maxHp = attacker.maxHp || 1;
+  const hpRatio = attacker.hp / maxHp;
+  if (hpRatio >= 0.3) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 1.75));
+};
+
+// 🎯 Bandana de Ranja — flag les porteurs ayant l'initiative STRICTEMENT la plus
+// haute du combat (tous types de combattants confondus : aventuriers, gobelins,
+// mimic, cristal...). Le bonus, une fois posé, dure pour tout le reste du combat
+// (jamais retiré, contrairement au Foulard Rankyr).
+const applyBandanaRanjaBonus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length < 2) return recipients;
+
+  const maxInit = Math.max(...fighters.map(f => f.initiative));
+  fighters.forEach(f => {
+    if (f.type !== 'survivor' || !f.has_bandana_ranja) return;
+    const isStrictlyHighest =
+      f.initiative === maxInit &&
+      fighters.every(o => o === f || o.initiative < f.initiative);
+    if (isStrictlyHighest) {
+      f.bandana_ranja_active = true;
+      recipients.push(f);
+    }
+  });
+  return recipients;
+};
+
+// 🎯 Applique +50% sur les dégâts infligés si l'attaquant bénéficie du Bandana
+// de Ranja (effet figé pour tout le combat, posé une seule fois en début de combat).
+// Math.round pour un arrondi équilibré, min 1 pour ne jamais annuler un coup.
+const amplifyDamageIfRanja = (attacker, rawDamage) => {
+  if (!attacker || !attacker.bandana_ranja_active || rawDamage <= 0) return rawDamage;
+  return Math.max(1, Math.round(rawDamage * 1.5));
+};
+
+// 🌸 Bonnet Croblow — flag les porteurs comme actifs en début de combat.
+// À chaque attaque du porteur, 10% des dégâts infligés sont convertis en soin
+// pour TOUS les aventuriers vivants du combat.
+const applyBonnetCroblowBonus = (fighters) => {
+  const recipients = [];
+  if (!fighters || fighters.length === 0) return recipients;
+  fighters.forEach(f => {
+    if (f.type !== 'survivor' || !f.has_bonnet_croblow) return;
+    f.bonnet_croblow_active = true;
+    recipients.push(f);
+  });
+  return recipients;
+};
+
+// 🌸 Calcule le soin à distribuer à tous les aventuriers vivants quand
+// l'attaquant porteur du Bonnet Croblow inflige des dégâts.
+// Retourne 0 si l'attaquant ne porte pas le bonnet ou si les dégâts sont nuls.
+const healAmountIfCroblow = (attacker, damageDone) => {
+  if (!attacker || !attacker.bonnet_croblow_active || damageDone <= 0) return 0;
+  return Math.max(1, Math.round(damageDone * 0.1));
+};
+
 // ========== MULTIPLAYER COMBAT COMPONENT ==========
 const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const isAttacker = event.attacker_id === playerId;
@@ -1286,6 +1476,12 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         alive: true,
         currentAnimation: 'idle',
         has_amulette_tortue: !!survivor.has_amulette_tortue,   // 🐢 NEW
+        has_amulette_oignon: !!survivor.has_amulette_oignon,   // 🧅 NEW
+        has_amulette_trefle: !!survivor.has_amulette_trefle,   // 🍀 NEW
+        has_foulard_rankyr: !!survivor.has_foulard_rankyr,     // 🏴 NEW
+        has_amulette_coco: !!survivor.has_amulette_coco,       // 🥥 NEW
+        has_bandana_ranja: !!survivor.has_bandana_ranja,       // 🎯 NEW
+        has_bonnet_croblow: !!survivor.has_bonnet_croblow,     // 🌸 NEW
       });
     });
     
@@ -1300,7 +1496,7 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         type: isMimic ? 'mimic' : 'goblin',
         hp: isMimic ? event.mimic_hp : event.goblin_hp,
         maxHp: isMimic ? event.mimic_hp : event.goblin_hp,
-        initiative: Math.floor((hashCode((isMimic ? 'mimic' : `goblin_${i}`) + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1),
+        initiative: Math.floor((hashCode((isMimic ? 'mimic' : `goblin_${i}`) + event.attacker_id + (event.combat_id || event.turn || Date.now())) % 20) + 1) + (isMimic ? 0 : (event.goblin_initiative_bonus || 0)),
         position: i, // Position 0-3
         alive: true,
         currentAnimation: 'idle'
@@ -1310,8 +1506,18 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     // Trier par initiative (du plus haut au plus bas)
     fighters.sort((a, b) => b.initiative - a.initiative);
 
+    // 🍀 Amulette Chanceuse : applique le malus -50% HP AVANT toute autre logique
+    const cloverRecipients = applyAmuletteTrefleMalus(fighters);
     // 🐢 Amulette Tortue : flag les bénéficiaires
     const amuletteRecipients = applyAmuletteTortueBonus(fighters);
+    // 🧅 Amulette Oignon : flag les bénéficiaires
+    const onionRecipients = applyAmuletteOignonBonus(fighters);
+    // 🏴 Foulard Rankyr : flag les bénéficiaires (actif tant qu'aucun dégât subi)
+    const foulardRecipients = applyFoulardRankyrBonus(fighters);
+    // 🎯 Bandana de Ranja : flag le/les porteur(s) avec l'initiative strictement la plus haute
+    const ranjaRecipients = applyBandanaRanjaBonus(fighters);
+    // 🌸 Bonnet Croblow : flag les porteurs (soin 10% dégâts infligés)
+    const croblowRecipients = applyBonnetCroblowBonus(fighters);
 
     setCombatants(fighters);
     
@@ -1321,6 +1527,24 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     });
     amuletteRecipients.forEach(f => {
       initLog.push(`🐢 ${f.name} a la plus basse initiative — Amulette Tortue active : dégâts reçus -25% !`);
+    });
+    onionRecipients.forEach(f => {
+      initLog.push(`🧅 ${f.name} — Amulette Oignon active : dégâts infligés +50% !`);
+    });
+    cloverRecipients.forEach(f => {
+      initLog.push(`🍀 ${f.name} — Amulette Chanceuse active : dégâts subis +50% pour ce combat !`);
+    });
+    foulardRecipients.forEach(f => {
+      initLog.push(`🏴 ${f.name} — Foulard Rankyr actif : dégâts infligés +50% tant qu'aucun dégât n'est subi !`);
+    });
+    ranjaRecipients.forEach(f => {
+      initLog.push(`🎯 ${f.name} a la plus haute initiative — Bandana de Ranja actif : dégâts infligés +50% pour tout le combat !`);
+    });
+    fighters.filter(f => f.type === 'survivor' && f.has_amulette_coco).forEach(f => {
+      initLog.push(`🥥 ${f.name} porte l'Amulette Coco de Bouchou : dégâts infligés +75% sous 30% de PV !`);
+    });
+    croblowRecipients.forEach(f => {
+      initLog.push(`🌸 ${f.name} — Bonnet Croblow actif : 10% des dégâts infligés soignent tous les aventuriers !`);
     });
     setCombatLog(initLog);
 
@@ -1476,21 +1700,73 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         // Calculer les dégâts
         const baseDamage = rng.nextInt(1, 6);
         // NEW: si l'attaquant est un aventurier, on ajoute son bonus de dégâts individuel
-        const bonusDamage = (attacker.type === 'survivor' && attacker.damageBonus) ? attacker.damageBonus : 0;
+        // GOBLIN ROULETTE: si l'attaquant est un gobelin, on ajoute le bonus de dégâts de la roulette
+        const bonusDamage = (attacker.type === 'survivor' && attacker.damageBonus)
+          ? attacker.damageBonus
+          : (attacker.type === 'goblin' ? (event.goblin_damage_bonus || 0) : 0);
         let damage = baseDamage + bonusDamage;
         // NEW: Toxine incapacitante — dégâts réduits de moitié (arrondi supérieur)
         if (attacker.type === 'survivor' && attacker.poisonDamageMalus) {
           damage = Math.ceil(damage / 2);
+        }
+        // 🧅 Amulette Oignon — +50% si l'attaquant survivant est éligible (plusieurs aventuriers)
+        const rawDamageBeforeOnion = damage;
+        if (attacker.type === 'survivor') {
+          damage = amplifyDamageIfOnion(attacker, damage);
+        }
+        // 🏴 Foulard Rankyr — +50% si l'attaquant n'a pas encore subi de dégâts ce combat
+        const rawDamageBeforeFoulard = damage;
+        if (attacker.type === 'survivor') {
+          damage = amplifyDamageIfFoulard(attacker, damage);
+        }
+        // 🥥 Amulette Coco de Bouchou — +75% si l'attaquant est sous 30% de ses PV max
+        const rawDamageBeforeCoco = damage;
+        if (attacker.type === 'survivor') {
+          damage = amplifyDamageIfCoco(attacker, damage);
+        }
+        // 🎯 Bandana de Ranja — +50% si l'attaquant a la plus haute initiative (figé tout le combat)
+        const rawDamageBeforeRanja = damage;
+        if (attacker.type === 'survivor') {
+          damage = amplifyDamageIfRanja(attacker, damage);
         }
         // 🐢 Amulette Tortue — réduction de 25% si la cible est un survivant éligible
         const rawDamageForTurtle = damage;
         if (target.type === 'survivor') {
           damage = reduceDamageIfTurtle(target, damage);
         }
+        // 🍀 Amulette Chanceuse — +50% sur les dégâts subis par la cible
+        const rawDamageBeforeClover = damage;
+        if (target.type === 'survivor') {
+          damage = amplifyDamageTakenIfClover(target, damage);
+        }
         target.hp = Math.max(0, target.hp - damage);
         
         if (target.hp <= 0) {
           target.alive = false;
+        }
+
+        // 🏴 La cible vient de subir des dégâts : son Foulard Rankyr (si actif) se désactive
+        const targetFoulardWasActive = target.type === 'survivor' && target.foulard_rankyr_active;
+        breakFoulardRankyrIfHit(target, damage);
+
+        // 🌸 Bonnet Croblow — soin 10% des dégâts infligés pour tous les aventuriers vivants
+        if (attacker.type === 'survivor') {
+          const croblowHeal = healAmountIfCroblow(attacker, damage);
+          if (croblowHeal > 0) {
+            const healedNames = [];
+            fighters.filter(f => f.type === 'survivor' && f.alive).forEach(f => {
+              const before = f.hp;
+              f.hp = Math.min(f.maxHp, f.hp + croblowHeal);
+              if (f.hp > before) healedNames.push(f.name);
+              setDamageIndicators(prev => ({ ...prev, [f.id + '_heal']: { heal: croblowHeal, timestamp: Date.now() } }));
+              setTimeout(() => {
+                setDamageIndicators(prev => { const n = { ...prev }; delete n[f.id + '_heal']; return n; });
+              }, 1500);
+            });
+            if (healedNames.length > 0) {
+              setCombatLog(prev => [...prev, `🌸 ${attacker.name} soigne l'équipe de +${croblowHeal} PV (Bonnet Croblow) ! [${healedNames.join(', ')}]`]);
+            }
+          }
         }
         
         // Afficher l'indicateur de dégâts
@@ -1520,12 +1796,26 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         
         // Log de l'action
         let logEntry;
-        if (target.type === 'survivor' && damage < rawDamageForTurtle) {
+        if (target.type === 'survivor' && damage > rawDamageBeforeClover) {
+          logEntry = `🍀 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🍀 +50%, ${rawDamageBeforeClover}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else if (target.type === 'survivor' && damage < rawDamageForTurtle) {
           logEntry = `🩸 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🐢 -25%, ${rawDamageForTurtle}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else if (attacker.type === 'survivor' && attacker.has_amulette_coco && damage > rawDamageBeforeCoco) {
+          logEntry = `🥥 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🥥 +75%, ${rawDamageBeforeCoco}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else if (attacker.type === 'survivor' && attacker.bandana_ranja_active && damage > rawDamageBeforeRanja) {
+          logEntry = `🎯 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🎯 +50%, ${rawDamageBeforeRanja}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else if (attacker.type === 'survivor' && attacker.foulard_rankyr_active && damage > rawDamageBeforeFoulard) {
+          logEntry = `🏴 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🏴 +50%, ${rawDamageBeforeFoulard}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
+        } else if (attacker.type === 'survivor' && attacker.amulette_oignon_active && damage > rawDamageBeforeOnion) {
+          logEntry = `🧅 ${attacker.name} inflige ${damage} dégâts à ${target.name} (🧅 +50%, ${rawDamageBeforeOnion}→${damage}) ! (${target.hp}/${target.maxHp} HP)`;
         } else {
           logEntry = `${attacker.name} attaque ${target.name} : ${damage} dégâts ! (${target.hp}/${target.maxHp} HP)`;
         }
         setCombatLog(prev => [...prev, logEntry]);
+        // 🏴 Le Foulard Rankyr de la cible vient de se rompre : message dédié
+        if (damage > 0 && targetFoulardWasActive && !target.foulard_rankyr_active) {
+          setCombatLog(prev => [...prev, `🏴 ${target.name} a subi des dégâts — l'effet du Foulard Rankyr est rompu pour ce combat.`]);
+        }
         
         // Broadcaster le log et les HP mis à jour
 
@@ -1614,6 +1904,31 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
         border: '4px solid #d4af37',
         overflow: 'hidden'
       }}>
+        {/* GOBLIN ROULETTE: bannière "Gobelin Renforcé" si le killer a boosté ses stats */}
+        {event.combat_type !== 'mimic' &&
+         ((event.goblin_hp || 6) > 6 || (event.goblin_damage_bonus || 0) > 0 || (event.goblin_initiative_bonus || 0) > 0) && (
+          <div style={{
+            position: 'absolute',
+            top: '12px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+            border: '2px solid #ef4444',
+            borderRadius: '8px',
+            padding: '0.5rem 1rem',
+            zIndex: 20,
+          }} data-testid="goblin-reinforced-banner">
+            <div style={{ color: '#ef4444', fontWeight: 'bold', marginBottom: '0.25rem', textAlign: 'center' }}>
+              ⚡ Gobelin Renforcé
+            </div>
+            <div style={{ display: 'flex', gap: '1.5rem', color: '#e8dcc4', fontSize: '0.9rem' }}>
+              <span>❤️ {event.goblin_hp || 6} PV</span>
+              <span>🗡️ {1 + (event.goblin_damage_bonus || 0)}-{6 + (event.goblin_damage_bonus || 0)} dégâts</span>
+              <span>⚡ +{event.goblin_initiative_bonus || 0} initiative</span>
+            </div>
+          </div>
+        )}
+
         {/* Aventuriers (à gauche) */}
         {combatants.filter(c => c.type === 'survivor').map((combatant, idx) => {
           const animationType = !combatant.alive 
@@ -1639,7 +1954,77 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                 frameDuration={animationType === 'attack' ? 33 : animationType === 'hurt' ? 80 : animationType === 'fainted' ? 100 : 100}
                 loop={animationType === 'idle'}
               />
-              
+
+              {/* 🐢 Amulette Tortue active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_tortue_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_tortue}
+                  alt="Amulette Tortue active"
+                  className="amulette-tortue-buff"
+                  data-testid={`amulette-tortue-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🧅 Amulette Oignon active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_oignon_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_oignon}
+                  alt="Amulette Oignon active"
+                  className="amulette-oignon-buff"
+                  data-testid={`amulette-oignon-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🍀 Amulette Chanceuse active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_trefle_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_trefle}
+                  alt="Amulette Chanceuse active"
+                  className="amulette-trefle-buff"
+                  data-testid={`amulette-trefle-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🏴 Foulard Rankyr actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.foulard_rankyr_active && (
+                <img
+                  src={ITEM_SPRITES.foulard_rankyr}
+                  alt="Foulard Rankyr actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`foulard-rankyr-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🥥 Amulette Coco active : sous 30% PV, effet visuel "buff" qui fade vers le haut */}
+              {combatant.type === 'survivor' && combatant.has_amulette_coco && (combatant.hp / (combatant.maxHp || 1)) < 0.3 && (
+                <img
+                  src={ITEM_SPRITES.amulette_coco}
+                  alt="Amulette Coco active"
+                  className="amulette-oignon-buff"
+                  data-testid={`amulette-coco-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🎯 Bandana de Ranja actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.bandana_ranja_active && (
+                <img
+                  src={ITEM_SPRITES.bandana_ranja}
+                  alt="Bandana de Ranja actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`bandana-ranja-buff-${combatant.id}`}
+                />
+              )}
+
+              {/* 🌸 Bonnet Croblow actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.bonnet_croblow_active && (
+                <img
+                  src={ITEM_SPRITES.bonnet_croblow}
+                  alt="Bonnet Croblow actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`bonnet-croblow-buff-${combatant.id}`}
+                />
+              )}
+
               {/* Indicateur de dégâts */}
               {damageIndicators[combatant.id] && (
                 <div style={{
@@ -1656,6 +2041,24 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
                   zIndex: 1000
                 }}>
                   -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              {/* 🌸 Indicateur de soin Bonnet Croblow (vert) */}
+              {damageIndicators[combatant.id + '_heal'] && (
+                <div style={{
+                  position: 'absolute',
+                  top: '-55px',
+                  left: '50%',
+                  transform: 'translateX(-50%) scaleX(-1)',
+                  fontSize: '22px',
+                  fontWeight: 'bold',
+                  color: '#22c55e',
+                  textShadow: '2px 2px 4px #000',
+                  animation: 'floatUp 1.5s ease-out',
+                  pointerEvents: 'none',
+                  zIndex: 1001
+                }}>
+                  +{damageIndicators[combatant.id + '_heal'].heal} 🌸
                 </div>
               )}
               {initiativeIndicators[combatant.id] !== undefined && (
@@ -2037,6 +2440,12 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
     damage_bonus: 0,
     eboulement_perturbation_active: event.eboulement_perturbation_active || false,
     has_amulette_tortue: !!(event.survivors?.[0]?.has_amulette_tortue),   // 🐢 NEW
+    has_amulette_oignon: !!(event.survivors?.[0]?.has_amulette_oignon),   // 🧅 NEW
+    has_amulette_trefle: !!(event.survivors?.[0]?.has_amulette_trefle),   // 🍀 NEW
+    has_foulard_rankyr: !!(event.survivors?.[0]?.has_foulard_rankyr),     // 🏴 NEW
+    has_amulette_coco: !!(event.survivors?.[0]?.has_amulette_coco),       // 🥥 NEW
+    has_bandana_ranja: !!(event.survivors?.[0]?.has_bandana_ranja),       // 🎯 NEW
+    has_bonnet_croblow: !!(event.survivors?.[0]?.has_bonnet_croblow),     // 🌸 NEW
   }];
   const participants = event.participants || [event.survivor_id];
   // Seul le premier participant (A) exécute la simulation et envoie le résultat
@@ -2056,6 +2465,18 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
   const [mimicDefeated, setMimicDefeated] = useState(false);
   const [damageIndicator, setDamageIndicator] = useState(null);
   const [initiativeIndicators, setInitiativeIndicators] = useState({});
+  // 🐢 Effet visuel "buff" Amulette Tortue (rendu indépendant des mutations de closure)
+  const [amuletteBuffActive, setAmuletteBuffActive] = useState(false);
+  // 🧅 Effet visuel "buff" Amulette Oignon
+  const [onionBuffActive, setOnionBuffActive] = useState(false);
+  // 🍀 Effet visuel "malus" Amulette Chanceuse
+  const [cloverBuffActive, setCloverBuffActive] = useState(false);
+  // 🏴 Effet visuel "buff" Foulard Rankyr
+  const [foulardBuffActive, setFoulardBuffActive] = useState(false);
+  // 🎯 Effet visuel "buff" Bandana de Ranja
+  const [ranjaBuffActive, setRanjaBuffActive] = useState(false);
+  // 🌸 Effet visuel "buff" Bonnet Croblow
+  const [croblowBuffActive, setCroblowBuffActive] = useState(false);
 
   const getSurvivorSpriteSheet = (animationType) => {
     return `/fight/${primarySurvivor.survivor_class}_${animationType}.webp`;
@@ -2101,6 +2522,32 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
       // 🐢 Active le flag si init strictement plus basse
       if (primarySurvivor.has_amulette_tortue && survivorInitiative < mimicInitiative) {
         primarySurvivor.amulette_tortue_active = true;
+        setAmuletteBuffActive(true);
+      }
+      // 🧅 Active le flag si plusieurs aventuriers participent au combat
+      if (primarySurvivor.has_amulette_oignon && participants.length >= 2) {
+        primarySurvivor.amulette_oignon_active = true;
+        setOnionBuffActive(true);
+      }
+      // 🍀 Active le flag si le porteur a l'amulette (toujours actif en combat)
+      if (primarySurvivor.has_amulette_trefle) {
+        primarySurvivor.amulette_trefle_active = true;
+        setCloverBuffActive(true);
+      }
+      // 🏴 Active le flag si le porteur a le foulard (toujours actif tant qu'aucun dégât subi)
+      if (primarySurvivor.has_foulard_rankyr) {
+        primarySurvivor.foulard_rankyr_active = true;
+        setFoulardBuffActive(true);
+      }
+      // 🎯 Active le flag si init strictement plus haute (figé pour tout le combat)
+      if (primarySurvivor.has_bandana_ranja && survivorInitiative > mimicInitiative) {
+        primarySurvivor.bandana_ranja_active = true;
+        setRanjaBuffActive(true);
+      }
+      // 🌸 Active le Bonnet Croblow (toujours actif en combat dès que porté)
+      if (primarySurvivor.has_bonnet_croblow) {
+        primarySurvivor.bonnet_croblow_active = true;
+        setCroblowBuffActive(true);
       }
 
       const log = [`⚔️ Combat contre le Mimic !`];
@@ -2113,6 +2560,21 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
       log.push(`Initiative : ${primarySurvivor.survivor_class} (${survivorInitiative}) vs Mimic (${mimicInitiative})`);
       if (primarySurvivor.amulette_tortue_active) {
         log.push(`🐢 Amulette Tortue active : dégâts reçus -25% pour ce combat !`);
+      }
+      if (primarySurvivor.amulette_oignon_active) {
+        log.push(`🧅 Amulette Oignon active : dégâts infligés +50% pour ce combat !`);
+      }
+      if (primarySurvivor.amulette_trefle_active) {
+        log.push(`🍀 Amulette Chanceuse active : dégâts subis +50% pour ce combat !`);
+      }
+      if (primarySurvivor.foulard_rankyr_active) {
+        log.push(`🏴 Foulard Rankyr actif : dégâts infligés +50% tant qu'aucun dégât n'est subi !`);
+      }
+      if (primarySurvivor.bandana_ranja_active) {
+        log.push(`🎯 Bandana de Ranja actif : dégâts infligés +50% pour tout le combat !`);
+      }
+      if (primarySurvivor.bonnet_croblow_active) {
+        log.push(`🌸 Bonnet Croblow actif : 10% des dégâts infligés soignent tous les aventuriers !`);
       }
       setCombatLog([...log]);
 
@@ -2130,15 +2592,53 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
 
           // Bonus de dégâts : +1d6 par participant supplémentaire
           const extraDamage = (participants.length - 1) * (Math.floor(Math.random() * 6) + 1);
-          const damage = Math.floor(Math.random() * 6) + 1 + extraDamage;
+          let damage = Math.floor(Math.random() * 6) + 1 + extraDamage;
+          // 🧅 Amulette Oignon — +50% si éligible
+          const rawDamageBeforeOnion = damage;
+          damage = amplifyDamageIfOnion(primarySurvivor, damage);
+          // 🏴 Foulard Rankyr — +50% si éligible (aucun dégât subi ce combat)
+          const rawDamageBeforeFoulard = damage;
+          damage = amplifyDamageIfFoulard(primarySurvivor, damage);
+          // 🥥 Amulette Coco de Bouchou — +75% si le survivant est sous 30% de ses PV max
+          const rawDamageBeforeCoco = damage;
+          damage = amplifyDamageIfCoco(
+            { hp: currentSurvivorHP, maxHp: primarySurvivor.survivor_max_hp, has_amulette_coco: primarySurvivor.has_amulette_coco },
+            damage
+          );
+          // 🎯 Bandana de Ranja — +50% si éligible (initiative la plus haute, figé tout le combat)
+          const rawDamageBeforeRanja = damage;
+          damage = amplifyDamageIfRanja(primarySurvivor, damage);
           currentMimicHP = Math.max(0, currentMimicHP - damage);
           setMimicHP(currentMimicHP);
+
+          // 🌸 Bonnet Croblow — soin 10% des dégâts infligés pour le(s) aventurier(s)
+          const croblowHealMimic = healAmountIfCroblow(primarySurvivor, damage);
+          if (croblowHealMimic > 0) {
+            const beforeHeal = currentSurvivorHP;
+            currentSurvivorHP = Math.min(primarySurvivor.survivor_max_hp, currentSurvivorHP + croblowHealMimic);
+            setSurvivorHP(currentSurvivorHP);
+            if (currentSurvivorHP > beforeHeal) {
+              log.push(`🌸 Bonnet Croblow : +${croblowHealMimic} PV pour ${primarySurvivor.survivor_class} !`);
+              setDamageIndicator({ type: 'croblow_heal', value: croblowHealMimic });
+              setTimeout(() => setDamageIndicator(null), 1500);
+            }
+          }
 
           setAnimatingEntity('mimic_hurt');
           setDamageIndicator({ type: 'damage', value: damage });
           setTimeout(() => setDamageIndicator(null), 1500);
 
-          log.push(`⚔️ ${primarySurvivor.survivor_class} attaque : ${damage} dégâts !`);
+          if (damage > rawDamageBeforeCoco) {
+            log.push(`🥥 ${primarySurvivor.survivor_class} attaque : ${damage} dégâts (🥥 +75%, ${rawDamageBeforeCoco}→${damage}) !`);
+          } else if (damage > rawDamageBeforeRanja) {
+            log.push(`🎯 ${primarySurvivor.survivor_class} attaque : ${damage} dégâts (🎯 +50%, ${rawDamageBeforeRanja}→${damage}) !`);
+          } else if (damage > rawDamageBeforeFoulard) {
+            log.push(`🏴 ${primarySurvivor.survivor_class} attaque : ${damage} dégâts (🏴 +50%, ${rawDamageBeforeFoulard}→${damage}) !`);
+          } else if (damage > rawDamageBeforeOnion) {
+            log.push(`⚔️ ${primarySurvivor.survivor_class} attaque : ${damage} dégâts (🧅 +50%, ${rawDamageBeforeOnion}→${damage}) !`);
+          } else {
+            log.push(`⚔️ ${primarySurvivor.survivor_class} attaque : ${damage} dégâts !`);
+          }
           setCombatLog([...log]);
 
           await new Promise(resolve => setTimeout(resolve, 800));
@@ -2153,11 +2653,27 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           await new Promise(resolve => setTimeout(resolve, 600));
 
           const rawMimicDamage = Math.floor(Math.random() * 6) + 1;
-          const damage = reduceDamageIfTurtle(primarySurvivor, rawMimicDamage);
+          const afterTurtle = reduceDamageIfTurtle(primarySurvivor, rawMimicDamage);
+          // 🍀 Amulette Chanceuse — +50% sur les dégâts subis
+          const damage = amplifyDamageTakenIfClover(primarySurvivor, afterTurtle);
           currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
           damageTaken += damage;
           setSurvivorHP(currentSurvivorHP);
           setTotalDamageTaken(damageTaken);
+
+          // 🏴 Le survivant vient de subir des dégâts : son Foulard Rankyr (si actif) se rompt
+          if (damage > 0 && primarySurvivor.foulard_rankyr_active) {
+            breakFoulardRankyrIfHit(primarySurvivor, damage);
+            setFoulardBuffActive(false);
+            log.push(`🏴 ${primarySurvivor.survivor_class} a subi des dégâts — l'effet du Foulard Rankyr est rompu pour ce combat.`);
+          }
+
+          // 🥥 Le survivant vient de passer sous le seuil de 30% PV : message dédié
+          const hpRatioBefore = (currentSurvivorHP + damage) / (primarySurvivor.survivor_max_hp || 1);
+          const hpRatioAfter = currentSurvivorHP / (primarySurvivor.survivor_max_hp || 1);
+          if (primarySurvivor.has_amulette_coco && hpRatioBefore >= 0.3 && hpRatioAfter < 0.3 && currentSurvivorHP > 0) {
+            log.push(`🥥 ${primarySurvivor.survivor_class} passe sous 30% PV — l'Amulette Coco de Bouchou augmente ses dégâts infligés de 75% !`);
+          }
 
           const goldToSteal = Math.floor(currentGold * 0.5);
           currentGold = Math.max(0, currentGold - goldToSteal);
@@ -2169,7 +2685,9 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           setDamageIndicator({ type: 'both', damage: damage, gold: goldToSteal });
           setTimeout(() => setDamageIndicator(null), 1500);
 
-          if (damage < rawMimicDamage) {
+          if (damage > afterTurtle) {
+            log.push(`💰 Le Mimic attaque : ${damage} dégâts (🍀 +50%, ${afterTurtle}→${damage}) et vole ${goldToSteal}💰 !`);
+          } else if (damage < rawMimicDamage) {
             log.push(`💰 Le Mimic attaque : ${damage} dégâts (🐢 -25%, ${rawMimicDamage}→${damage}) et vole ${goldToSteal}💰 !`);
           } else {
             log.push(`💰 Le Mimic attaque : ${damage} dégâts et vole ${goldToSteal}💰 !`);
@@ -2265,6 +2783,69 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
             frameDuration={animatingEntity === 'survivor_attack' ? 50 : animatingEntity === 'survivor_hurt' ? 80 : 100}
             loop={!animatingEntity || animatingEntity.includes('idle')}
           />
+          {/* 🐢 Amulette Tortue active : effet visuel "buff" qui fade vers le haut */}
+          {amuletteBuffActive && (
+            <img
+              src={ITEM_SPRITES.amulette_tortue}
+              alt="Amulette Tortue active"
+              className="amulette-tortue-buff"
+              data-testid={`amulette-tortue-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🧅 Amulette Oignon active : effet visuel "buff" qui fade vers le haut */}
+          {onionBuffActive && (
+            <img
+              src={ITEM_SPRITES.amulette_oignon}
+              alt="Amulette Oignon active"
+              className="amulette-oignon-buff"
+              data-testid={`amulette-oignon-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🍀 Amulette Chanceuse active : effet visuel "buff" qui fade vers le haut */}
+          {cloverBuffActive && (
+            <img
+              src={ITEM_SPRITES.amulette_trefle}
+              alt="Amulette Chanceuse active"
+              className="amulette-trefle-buff"
+              data-testid={`amulette-trefle-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🏴 Foulard Rankyr actif : effet visuel "buff" qui fade vers le haut */}
+          {foulardBuffActive && (
+            <img
+              src={ITEM_SPRITES.foulard_rankyr}
+              alt="Foulard Rankyr actif"
+              className="amulette-oignon-buff"
+              data-testid={`foulard-rankyr-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🥥 Amulette Coco active : sous 30% PV, effet visuel "buff" qui fade vers le haut */}
+          {primarySurvivor.has_amulette_coco && (survivorHP / (primarySurvivor.survivor_max_hp || 1)) < 0.3 && (
+            <img
+              src={ITEM_SPRITES.amulette_coco}
+              alt="Amulette Coco active"
+              className="amulette-oignon-buff"
+              data-testid={`amulette-coco-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🎯 Bandana de Ranja actif : effet visuel "buff" qui fade vers le haut */}
+          {ranjaBuffActive && (
+            <img
+              src={ITEM_SPRITES.bandana_ranja}
+              alt="Bandana de Ranja actif"
+              className="amulette-oignon-buff"
+              data-testid={`bandana-ranja-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
+          {/* 🌸 Bonnet Croblow actif : effet visuel "buff" qui fade vers le haut */}
+          {croblowBuffActive && (
+            <img
+              src={ITEM_SPRITES.bonnet_croblow}
+              alt="Bonnet Croblow actif"
+              className="amulette-oignon-buff"
+              data-testid={`bonnet-croblow-buff-${primarySurvivor.survivor_id}`}
+            />
+          )}
           {damageIndicator && animatingEntity === 'survivor_hurt' && (
             <div style={{ position: 'absolute', top: '-40px', left: '50%', transform: 'translateX(-50%)' }}>
               {damageIndicator.type === 'both' && (
@@ -2277,6 +2858,15 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
                   </div>
                 </>
               )}
+            </div>
+          )}
+          {/* 🌸 Indicateur de soin Bonnet Croblow (vert) */}
+          {damageIndicator && damageIndicator.type === 'croblow_heal' && (
+            <div style={{ position: 'absolute', top: '-65px', left: '50%', transform: 'translateX(-50%)',
+                          fontSize: '22px', fontWeight: 'bold', color: '#22c55e',
+                          textShadow: '2px 2px 4px #000', animation: 'floatUp 1.5s ease-out',
+                          pointerEvents: 'none', zIndex: 1001 }}>
+              +{damageIndicator.value} 🌸
             </div>
           )}
           {initiativeIndicators[primarySurvivor.survivor_id] !== undefined && (
@@ -2442,6 +3032,12 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
         poisonDamageMalus: poisonDamageMalus,
         position: idx, alive: true, currentAnimation: 'idle',
         has_amulette_tortue: !!survivor.has_amulette_tortue,   // 🐢 NEW
+        has_amulette_oignon: !!survivor.has_amulette_oignon,   // 🧅 NEW
+        has_amulette_trefle: !!survivor.has_amulette_trefle,   // 🍀 NEW
+        has_foulard_rankyr: !!survivor.has_foulard_rankyr,     // 🏴 NEW
+        has_amulette_coco: !!survivor.has_amulette_coco,       // 🥥 NEW
+        has_bandana_ranja: !!survivor.has_bandana_ranja,       // 🎯 NEW
+        has_bonnet_croblow: !!survivor.has_bonnet_croblow,     // 🌸 NEW
       });
     });
     const crystalInitiative = Math.floor(
@@ -2454,14 +3050,42 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     });
     fighters.sort((a, b) => b.initiative - a.initiative);
 
+    // 🍀 Amulette Chanceuse : applique le malus -50% HP AVANT toute autre logique
+    const cloverRecipientsCrystal = applyAmuletteTrefleMalus(fighters);
     // 🐢 Amulette Tortue : flag les bénéficiaires
     const amuletteRecipientsCrystal = applyAmuletteTortueBonus(fighters);
+    // 🧅 Amulette Oignon : flag les bénéficiaires
+    const onionRecipientsCrystal = applyAmuletteOignonBonus(fighters);
+    // 🏴 Foulard Rankyr : flag les bénéficiaires (actif tant qu'aucun dégât subi)
+    const foulardRecipientsCrystal = applyFoulardRankyrBonus(fighters);
+    // 🎯 Bandana de Ranja : flag le/les porteur(s) avec l'initiative strictement la plus haute
+    const ranjaRecipientsCrystal = applyBandanaRanjaBonus(fighters);
+    // 🌸 Bonnet Croblow : flag les porteurs (soin 10% dégâts infligés)
+    const croblowRecipientsCrystal = applyBonnetCroblowBonus(fighters);
 
     setCombatants(fighters);
     const initLog = [`💎 Combat contre le Cristal ! Ordre d'initiative :`];
     fighters.forEach(f => initLog.push(`${f.name} (${f.initiative})`));
     amuletteRecipientsCrystal.forEach(f => {
       initLog.push(`🐢 ${f.name} a la plus basse initiative — Amulette Tortue active : dégâts reçus -25% !`);
+    });
+    onionRecipientsCrystal.forEach(f => {
+      initLog.push(`🧅 ${f.name} — Amulette Oignon active : dégâts infligés +50% !`);
+    });
+    cloverRecipientsCrystal.forEach(f => {
+      initLog.push(`🍀 ${f.name} — Amulette Chanceuse active : dégâts subis +50% pour ce combat !`);
+    });
+    foulardRecipientsCrystal.forEach(f => {
+      initLog.push(`🏴 ${f.name} — Foulard Rankyr actif : dégâts infligés +50% tant qu'aucun dégât n'est subi !`);
+    });
+    ranjaRecipientsCrystal.forEach(f => {
+      initLog.push(`🎯 ${f.name} a la plus haute initiative — Bandana de Ranja actif : dégâts infligés +50% pour tout le combat !`);
+    });
+    fighters.filter(f => f.type === 'survivor' && f.has_amulette_coco).forEach(f => {
+      initLog.push(`🥥 ${f.name} porte l'Amulette Coco de Bouchou : dégâts infligés +75% sous 30% de PV !`);
+    });
+    croblowRecipientsCrystal.forEach(f => {
+      initLog.push(`🌸 ${f.name} — Bonnet Croblow actif : 10% des dégâts infligés soignent tous les aventuriers !`);
     });
     setCombatLog(initLog);
 
@@ -2523,9 +3147,39 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           await new Promise(resolve => setTimeout(resolve, 1700));
           const damage = rng.nextInt(1, 6) + (attacker.damageBonus || 0);
           // NEW: Toxine incapacitante — dégâts réduits de moitié (arrondi supérieur)
-          const finalDamage = attacker.poisonDamageMalus ? Math.ceil(damage / 2) : damage;
+          let finalDamage = attacker.poisonDamageMalus ? Math.ceil(damage / 2) : damage;
+          // 🧅 Amulette Oignon — +50% si éligible
+          const rawDamageBeforeOnion = finalDamage;
+          finalDamage = amplifyDamageIfOnion(attacker, finalDamage);
+          // 🏴 Foulard Rankyr — +50% si éligible (aucun dégât subi ce combat)
+          const rawDamageBeforeFoulard = finalDamage;
+          finalDamage = amplifyDamageIfFoulard(attacker, finalDamage);
+          // 🥥 Amulette Coco de Bouchou — +75% si l'attaquant est sous 30% de ses PV max
+          const rawDamageBeforeCoco = finalDamage;
+          finalDamage = amplifyDamageIfCoco(attacker, finalDamage);
+          // 🎯 Bandana de Ranja — +50% si l'attaquant a la plus haute initiative (figé tout le combat)
+          const rawDamageBeforeRanja = finalDamage;
+          finalDamage = amplifyDamageIfRanja(attacker, finalDamage);
           crystal.hp = Math.max(0, crystal.hp - finalDamage);
           if (crystal.hp <= 0) crystal.alive = false;
+
+          // 🌸 Bonnet Croblow — soin 10% des dégâts infligés pour tous les aventuriers vivants
+          const croblowHealCrystal = healAmountIfCroblow(attacker, finalDamage);
+          if (croblowHealCrystal > 0) {
+            const healedNamesCrystal = [];
+            fighters.filter(f => f.type === 'survivor' && f.alive).forEach(f => {
+              const before = f.hp;
+              f.hp = Math.min(f.maxHp, f.hp + croblowHealCrystal);
+              if (f.hp > before) healedNamesCrystal.push(f.name);
+              setDamageIndicators(prev => ({ ...prev, [f.id + '_heal']: { heal: croblowHealCrystal, timestamp: Date.now() } }));
+              setTimeout(() => {
+                setDamageIndicators(prev => { const n = { ...prev }; delete n[f.id + '_heal']; return n; });
+              }, 1500);
+            });
+            if (healedNamesCrystal.length > 0) {
+              setCombatLog(prev => [...prev, `🌸 ${attacker.name} soigne l'équipe de +${croblowHealCrystal} PV (Bonnet Croblow) ! [${healedNamesCrystal.join(', ')}]`]);
+            }
+          }
 
           setDamageIndicators(prev => ({ ...prev, [crystal.id]: { damage: finalDamage, timestamp: Date.now() } }));
           setTimeout(() => setDamageIndicators(prev => {
@@ -2536,7 +3190,11 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           await new Promise(resolve => setTimeout(resolve, 1000));
           setAnimatingEntity(null);
 
-          setCombatLog(prev => [...prev, `${attacker.name} attaque ${crystal.name} : ${finalDamage} dégâts${attacker.poisonDamageMalus ? ' (Toxine -50%)' : ''} ! (${crystal.hp}/${crystal.maxHp} PV)`]);
+          const onionTag = finalDamage > rawDamageBeforeOnion ? ` (🧅 +50%, ${rawDamageBeforeOnion}→${finalDamage})` : '';
+          const foulardTag = finalDamage > rawDamageBeforeFoulard ? ` (🏴 +50%, ${rawDamageBeforeFoulard}→${finalDamage})` : '';
+          const cocoTag = finalDamage > rawDamageBeforeCoco ? ` (🥥 +75%, ${rawDamageBeforeCoco}→${finalDamage})` : '';
+          const ranjaTag = finalDamage > rawDamageBeforeRanja ? ` (🎯 +50%, ${rawDamageBeforeRanja}→${finalDamage})` : '';
+          setCombatLog(prev => [...prev, `${attacker.name} attaque ${crystal.name} : ${finalDamage} dégâts${attacker.poisonDamageMalus ? ' (Toxine -50%)' : ''}${foulardTag}${ranjaTag}${cocoTag}${onionTag} ! (${crystal.hp}/${crystal.maxHp} PV)`]);
           setCombatants([...fighters]);
           await new Promise(resolve => setTimeout(resolve, 1500));
         } else {
@@ -2547,10 +3205,18 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           const rawCrystalDamage = event.crystal_damage || 3;
           const hitNames = [];
           aliveSurvivors.forEach(s => {
-            const effectiveDamage = reduceDamageIfTurtle(s, rawCrystalDamage);  // 🐢
+            const afterTurtle = reduceDamageIfTurtle(s, rawCrystalDamage);          // 🐢
+            const effectiveDamage = amplifyDamageTakenIfClover(s, afterTurtle);     // 🍀
             s.hp = Math.max(0, s.hp - effectiveDamage);
             if (s.hp <= 0) s.alive = false;
-            hitNames.push(s.name + (effectiveDamage < rawCrystalDamage ? ` (🐢 ${effectiveDamage})` : ''));
+            // 🏴 Le survivant vient de subir des dégâts AOE : son Foulard Rankyr se rompt
+            const sFoulardWasActive = s.foulard_rankyr_active;
+            breakFoulardRankyrIfHit(s, effectiveDamage);
+            let tag = '';
+            if (effectiveDamage > afterTurtle) tag = ` (🍀 ${effectiveDamage})`;
+            else if (effectiveDamage < rawCrystalDamage) tag = ` (🐢 ${effectiveDamage})`;
+            if (effectiveDamage > 0 && sFoulardWasActive && !s.foulard_rankyr_active) tag += ` (🏴 rompu)`;
+            hitNames.push(s.name + tag);
             setDamageIndicators(prev => ({ ...prev, [s.id]: { damage: effectiveDamage, timestamp: Date.now() } }));
           });
           setTimeout(() => setDamageIndicators(prev => {
@@ -2636,12 +3302,84 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                 cols={spriteParams.cols} rows={spriteParams.rows}
                 frameDuration={animationType === 'attack' ? 33 : animationType === 'hurt' ? 80 : 100}
                 loop={animationType === 'idle'} />
+              {/* 🐢 Amulette Tortue active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_tortue_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_tortue}
+                  alt="Amulette Tortue active"
+                  className="amulette-tortue-buff"
+                  data-testid={`amulette-tortue-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🧅 Amulette Oignon active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_oignon_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_oignon}
+                  alt="Amulette Oignon active"
+                  className="amulette-oignon-buff"
+                  data-testid={`amulette-oignon-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🍀 Amulette Chanceuse active : effet visuel "buff" qui fade vers le haut */}
+              {combatant.amulette_trefle_active && (
+                <img
+                  src={ITEM_SPRITES.amulette_trefle}
+                  alt="Amulette Chanceuse active"
+                  className="amulette-trefle-buff"
+                  data-testid={`amulette-trefle-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🏴 Foulard Rankyr actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.foulard_rankyr_active && (
+                <img
+                  src={ITEM_SPRITES.foulard_rankyr}
+                  alt="Foulard Rankyr actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`foulard-rankyr-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🥥 Amulette Coco active : sous 30% PV, effet visuel "buff" qui fade vers le haut */}
+              {combatant.type === 'survivor' && combatant.has_amulette_coco && (combatant.hp / (combatant.maxHp || 1)) < 0.3 && (
+                <img
+                  src={ITEM_SPRITES.amulette_coco}
+                  alt="Amulette Coco active"
+                  className="amulette-oignon-buff"
+                  data-testid={`amulette-coco-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🎯 Bandana de Ranja actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.bandana_ranja_active && (
+                <img
+                  src={ITEM_SPRITES.bandana_ranja}
+                  alt="Bandana de Ranja actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`bandana-ranja-buff-${combatant.id}`}
+                />
+              )}
+              {/* 🌸 Bonnet Croblow actif : effet visuel "buff" qui fade vers le haut */}
+              {combatant.bonnet_croblow_active && (
+                <img
+                  src={ITEM_SPRITES.bonnet_croblow}
+                  alt="Bonnet Croblow actif"
+                  className="amulette-oignon-buff"
+                  data-testid={`bonnet-croblow-buff-${combatant.id}`}
+                />
+              )}
               {damageIndicators[combatant.id] && (
                 <div style={{ position: 'absolute', top: '-30px', left: '50%',
                               transform: 'translateX(-50%)', fontSize: '28px', fontWeight: 'bold',
                               color: '#ff0000', textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
                               animation: 'floatUp 1.5s ease-out', pointerEvents: 'none', zIndex: 1000 }}>
                   -{damageIndicators[combatant.id].damage}
+                </div>
+              )}
+              {/* 🌸 Indicateur de soin Bonnet Croblow (vert) */}
+              {damageIndicators[combatant.id + '_heal'] && (
+                <div style={{ position: 'absolute', top: '-55px', left: '50%',
+                              transform: 'translateX(-50%)', fontSize: '22px', fontWeight: 'bold',
+                              color: '#22c55e', textShadow: '2px 2px 4px #000',
+                              animation: 'floatUp 1.5s ease-out', pointerEvents: 'none', zIndex: 1001 }}>
+                  +{damageIndicators[combatant.id + '_heal'].heal} 🌸
                 </div>
               )}
               {initiativeIndicators[combatant.id] !== undefined && (
@@ -3090,10 +3828,32 @@ const StatsModal = ({ player, onClose }) => {
 
 // ========== ITEM INFO MODAL COMPONENT ==========
 const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
+  // 🥛 Confirmation pour boire le Lait LEW alors qu'on est déjà au max de PV
+  const [askConfirmFullHp, setAskConfirmFullHp] = useState(false);
+
   if (!item) return null;
   const sprite = item.type === 'weapon_equipped' ? item.sprite : ITEM_SPRITES[item.type];
   const name = item.type === 'weapon_equipped' ? item.name : (ITEM_NAMES[item.type] || item.type);
   const description = item.type === 'weapon_equipped' ? item.description : getItemDescription(item.type);
+
+  // 🥛 Utilise le Lait LEW via POST /game/{session_id}/use_item (endpoint existant côté backend)
+  const handleUseLaitLew = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/use_item`, {
+        player_id: player.id,
+        slot_index: item._slotIndex,
+      });
+      if (response.data?.status === 'success') {
+        toast.success('🥛 Lait LEW bu ! Régénération en cours (4 PV / tour, 3 tours).');
+      }
+      setAskConfirmFullHp(false);
+      onClose();
+    } catch (e) {
+      const errorMsg = e.response?.data?.detail || "Erreur lors de l'utilisation du Lait LEW";
+      toast.error(errorMsg);
+      setAskConfirmFullHp(false);
+    }
+  };
 
   return (
     <div
@@ -3184,6 +3944,71 @@ const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
         }}>
           {description}
         </p>
+
+        {/* 🥛 Bouton "Utiliser" pour le Lait LEW (déclenche /use_item côté backend) */}
+        {item.type === 'lait_lew' && !item.equipped && player && sessionId && !askConfirmFullHp && (
+          <button
+            data-testid="item-use-lait-lew-btn"
+            onClick={() => {
+              const hp = player?.hp ?? 0;
+              const maxHp = player?.max_hp ?? hp;
+              if (hp >= maxHp) {
+                // PV au max → demande confirmation au joueur
+                setAskConfirmFullHp(true);
+              } else {
+                handleUseLaitLew();
+              }
+            }}
+            style={{
+              marginTop: '1rem',
+              backgroundColor: '#10b981', color: '#fff', fontWeight: 'bold',
+              padding: '8px 16px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+            }}
+          >
+            🥛 Utiliser
+          </button>
+        )}
+
+        {/* 🥛 Confirmation : utiliser le Lait LEW alors que les PV sont au max */}
+        {item.type === 'lait_lew' && askConfirmFullHp && (
+          <div
+            data-testid="lait-lew-full-hp-confirm"
+            style={{
+              marginTop: '1rem',
+              padding: '12px',
+              backgroundColor: 'rgba(212, 175, 55, 0.12)',
+              border: '2px solid #d4af37',
+              borderRadius: '8px',
+              color: '#f5e6c8',
+            }}
+          >
+            <p style={{ margin: '0 0 12px 0', fontSize: '0.95rem', lineHeight: 1.4 }}>
+              Vous avez déjà tous vos PDV, souhaitez-vous l'utiliser quand même ?
+            </p>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              <button
+                data-testid="lait-lew-full-hp-confirm-yes"
+                onClick={handleUseLaitLew}
+                style={{
+                  backgroundColor: '#10b981', color: '#fff', fontWeight: 'bold',
+                  padding: '8px 22px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                }}
+              >
+                Oui
+              </button>
+              <button
+                data-testid="lait-lew-full-hp-confirm-no"
+                onClick={() => setAskConfirmFullHp(false)}
+                style={{
+                  backgroundColor: '#374151', color: '#fff', fontWeight: 'bold',
+                  padding: '8px 22px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                }}
+              >
+                Non
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Bonus de forge (arme équipée) */}
         {item.type === 'weapon_equipped' && item.weapon_bonuses && item.weapon_bonuses.length > 0 && (
@@ -3843,6 +4668,139 @@ const RunePickupModal = ({ event, playerId, sessionId, onOpenInventory, player }
   );
 };
 
+// ========== LAIT LEW PICKUP MODAL COMPONENT ==========
+const LaitLewPickupModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
+  if (!event || event.type !== 'lait_lew_found') return null;
+
+  const inventory = player?.inventory || [];
+  const inventoryFull = inventory.filter(Boolean).length >= 9;
+
+  const handlePickup = async () => {
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/pickup_lait_lew`, {
+        player_id: playerId,
+      });
+      if (response.data.status === 'success') {
+        toast.success(`🥛 ${ITEM_NAMES.lait_lew} ajouté à l'inventaire !`);
+      }
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || 'Erreur lors du ramassage';
+      if (errorMsg === 'Inventaire plein') {
+        toast.error('❌ Inventaire plein !');
+      } else {
+        toast.error(errorMsg);
+      }
+    }
+  };
+
+  const handleDismiss = async () => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/dismiss_lait_lew`, {
+        player_id: playerId,
+      });
+    } catch (error) {
+      console.error('Error dismissing Lait LEW:', error);
+    }
+  };
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 3000,
+      }}
+    >
+      <Card
+        style={{
+          maxWidth: '500px',
+          backgroundColor: '#2a1f17',
+          borderColor: '#d4af37',
+          border: '3px solid #d4af37',
+        }}
+      >
+        <CardHeader>
+          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
+            🥛 Vous avez trouvé un objet mystérieux !
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <img
+              src={ITEM_SPRITES.lait_lew}
+              alt={ITEM_NAMES.lait_lew}
+              style={{
+                width: '150px',
+                height: '150px',
+                objectFit: 'contain',
+                margin: '0 auto',
+                filter: 'drop-shadow(0 4px 8px rgba(212, 175, 55, 0.5))',
+              }}
+            />
+            <h3 style={{ color: '#e8dcc4', marginTop: '16px', fontSize: '1.4rem' }}>
+              {ITEM_NAMES.lait_lew}
+            </h3>
+            <p style={{ color: '#bdb097', marginTop: '8px', fontSize: '0.95rem', fontStyle: 'italic' }}>
+              4 PV restaurés par tour, durant 3 tours.
+            </p>
+          </div>
+
+          {inventoryFull && (
+            <div style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '2px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              color: '#ef4444',
+              textAlign: 'center',
+              fontWeight: 'bold'
+            }}>
+              ⚠️ Inventaire plein !
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <Button
+              onClick={inventoryFull ? onOpenInventory : handlePickup}
+              style={{
+                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+              }}
+            >
+              {inventoryFull ? "🎒 Gérer l'inventaire" : '🎒 Ramasser'}
+            </Button>
+            <Button
+              onClick={handleDismiss}
+              style={{
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                padding: '12px 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+              }}
+            >
+              ❌ Ignorer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
 // ========== PIERRE QUETE PICKUP MODAL COMPONENT ==========
 const PierreQueteModal = ({ event, playerId, sessionId, targetRoom, onOpenInventory, player }) => {
   if (!event || event.type !== 'pierre_quete_found') return null;
@@ -4118,16 +5076,31 @@ const TrophyModal = ({ event, playerId, sessionId, onOpenInventory, player }) =>
 
 // ========== AMULETTE PICKUP MODAL COMPONENT ==========
 const AmulettePickupModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
-  if (!event || event.type !== 'amulette_tortue_found') return null;
-  
-  const amuletteType = 'amulette_tortue';
+  if (!event || (event.type !== 'amulette_tortue_found' && event.type !== 'amulette_oignon_found' && event.type !== 'amulette_trefle_found' && event.type !== 'foulard_rankyr_found' && event.type !== 'amulette_coco_found' && event.type !== 'bandana_ranja_found' && event.type !== 'bonnet_croblow_found')) return null;
+
+  const amuletteType =
+    event.type === 'amulette_oignon_found' ? 'amulette_oignon' :
+    event.type === 'amulette_trefle_found' ? 'amulette_trefle' :
+    event.type === 'foulard_rankyr_found' ? 'foulard_rankyr' :
+    event.type === 'amulette_coco_found' ? 'amulette_coco' :
+    event.type === 'bandana_ranja_found' ? 'bandana_ranja' :
+    event.type === 'bonnet_croblow_found' ? 'bonnet_croblow' :
+    'amulette_tortue';
+  const pickupEndpoint =
+    amuletteType === 'amulette_oignon' ? 'pickup_amulette_oignon' :
+    amuletteType === 'amulette_trefle' ? 'pickup_amulette_trefle' :
+    amuletteType === 'foulard_rankyr' ? 'pickup_foulard_rankyr' :
+    amuletteType === 'amulette_coco' ? 'pickup_amulette_coco' :
+    amuletteType === 'bandana_ranja' ? 'pickup_bandana_ranja' :
+    amuletteType === 'bonnet_croblow' ? 'pickup_bonnet_croblow' :
+    'pickup_amulette';
   // Recalculate live from actual inventory so freeing a slot immediately unlocks the button
   const inventory = player?.inventory || [];
   const inventoryFull = inventory.filter(Boolean).length >= 9;
   
   const handlePickup = async () => {
     try {
-      const response = await axios.post(`${API}/game/${sessionId}/pickup_amulette`, {
+      const response = await axios.post(`${API}/game/${sessionId}/${pickupEndpoint}`, {
         player_id: playerId
       });
       
@@ -4202,7 +5175,19 @@ const AmulettePickupModal = ({ event, playerId, sessionId, onOpenInventory, play
             
             {/* Description */}
             <p style={{ color: '#b8a488', fontSize: '1rem', marginTop: '12px', fontStyle: 'italic' }}>
-              Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !
+              {amuletteType === 'amulette_oignon'
+                ? "L'oignon fait la force !"
+                : amuletteType === 'amulette_trefle'
+                ? "Vous aurez de la chance dans votre malheur."
+                : amuletteType === 'foulard_rankyr'
+                ? "Ce foulard appartenait autrefois à un trésorier tenu de la comptabilité de son royaume."
+                : amuletteType === 'amulette_coco'
+                ? "Cette amulette appartenait autrefois à un aventurier globetrotteur qui l'a confectionnée à partir de morceaux de coco trouvés sur différentes îles."
+                : amuletteType === 'bandana_ranja'
+                ? "Son porteur n'a jamais réellement porté de bandana de sa vie, ce qui vous donne l'occasion d'enfin porter quelque chose de neuf."
+                : amuletteType === 'bonnet_croblow'
+                ? "Amoureux de la nature, Croblow a porté ce bonnet sur lequel quelques fleurs trouvent miraculeusement encore racine."
+                : "Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !"}
             </p>
             
             {/* Effet */}
@@ -4216,7 +5201,19 @@ const AmulettePickupModal = ({ event, playerId, sessionId, onOpenInventory, play
               textAlign: 'left',
               fontSize: '0.95rem'
             }}>
-              <strong>Effet :</strong> vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat.
+              <strong>Effet :</strong> {amuletteType === 'amulette_oignon'
+                ? "Vous infligez 50% de dégats supplémentaires si vous êtes plusieurs aventuriers dans le combat."
+                : amuletteType === 'amulette_trefle'
+                ? "Vous obtenez 50% d'or en plus en explorant une pièce, mais vous subissez 50% de dégâts supplémentaires en combat."
+                : amuletteType === 'foulard_rankyr'
+                ? "Dans un combat, vous infligez 50% de dégâts supplémentaires tant que vous n'avez pas subi de dégâts. L'effet se réinitialise à chaque nouveau combat."
+                : amuletteType === 'amulette_coco'
+                ? "En combat, lorsque vos PV passent sous 30% de vos PV max, vos dégâts infligés sont augmentés de 75%."
+                : amuletteType === 'bandana_ranja'
+                ? "Si vous avez la plus haute initiative en combat (aventuriers compris), vos dégâts infligés sont augmentés de 50% pour le reste du combat."
+                : amuletteType === 'bonnet_croblow'
+                ? "Dans un combat, vous vous soignez vous et vos alliés à hauteur de 10% des dégâts que vous infligez. L'effet se réinitialise à chaque nouveau combat."
+                : "vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat."}
             </div>
           </div>
           
@@ -4262,6 +5259,352 @@ const AmulettePickupModal = ({ event, playerId, sessionId, onOpenInventory, play
               ❌ Ignorer
             </Button>
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+const GoblinStatChoiceModal = ({ gameState, playerId, sessionId }) => {
+  const player = gameState?.players?.[playerId];
+  const pendingEvent = gameState?.pending_events?.[playerId];
+
+  if (!player || player.role !== 'killer') return null;
+  if (!pendingEvent || pendingEvent.type !== 'goblin_roulette_choice') return null;
+
+  const goblinStats = player.goblin_stats || {
+    damage: 0,
+    hp: 0,
+    initiative: 0,
+    multipliers: { damage: 1, hp: 1, initiative: 1 },
+  };
+
+  const handleChooseStat = async (statChosen) => {
+    try {
+      await axios.post(`${API}/game/${sessionId}/goblin_choose_stat`, {
+        player_id: playerId,
+        stat_chosen: statChosen,
+      });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Erreur lors du choix");
+    }
+  };
+
+  return (
+    <div
+      className="game-over-overlay"
+      style={{ zIndex: 3500 }}
+      data-testid="goblin-stat-choice-modal"
+    >
+      <Card style={{ maxWidth: '700px', backgroundColor: '#1a0f0a', border: '3px solid #ff6b35' }}>
+        <CardHeader>
+          <CardTitle style={{ color: '#ff6b35', textAlign: 'center', fontSize: '2rem' }}>
+            👹 Renforcez votre Gobelin !
+          </CardTitle>
+        </CardHeader>
+
+        <CardContent>
+          <p style={{ color: '#e8dcc4', textAlign: 'center', marginBottom: '2rem', fontSize: '1.1rem' }}>
+            Choisissez une statistique à améliorer. Plus vous négligez une stat, plus son multiplicateur augmente !
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+            {/* BOUTON DÉGÂTS */}
+            <button
+              onClick={() => handleChooseStat('damage')}
+              data-testid="goblin-stat-damage-btn"
+              style={{
+                background: 'linear-gradient(180deg, #ef4444 0%, #991b1b 100%)',
+                border: '3px solid #fca5a5',
+                borderRadius: '12px',
+                padding: '1.5rem 1rem',
+                color: '#fff',
+                cursor: 'pointer',
+                transition: 'transform 0.2s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
+              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+            >
+              <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🗡️</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>Dégâts</div>
+              <div style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                Actuel : +{goblinStats.damage} / 15
+              </div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem', color: '#fcd34d' }}>
+                x{goblinStats.multipliers.damage}
+              </div>
+            </button>
+
+            {/* BOUTON VITALITÉ */}
+            <button
+              onClick={() => handleChooseStat('hp')}
+              data-testid="goblin-stat-hp-btn"
+              style={{
+                background: 'linear-gradient(180deg, #ec4899 0%, #9f1239 100%)',
+                border: '3px solid #f9a8d4',
+                borderRadius: '12px',
+                padding: '1.5rem 1rem',
+                color: '#fff',
+                cursor: 'pointer',
+                transition: 'transform 0.2s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
+              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+            >
+              <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>❤️</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>Vitalité</div>
+              <div style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                Actuel : +{goblinStats.hp} / 24
+              </div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem', color: '#fcd34d' }}>
+                x{goblinStats.multipliers.hp}
+              </div>
+            </button>
+
+            {/* BOUTON INITIATIVE */}
+            <button
+              onClick={() => handleChooseStat('initiative')}
+              data-testid="goblin-stat-initiative-btn"
+              style={{
+                background: 'linear-gradient(180deg, #f59e0b 0%, #b45309 100%)',
+                border: '3px solid #fde68a',
+                borderRadius: '12px',
+                padding: '1.5rem 1rem',
+                color: '#fff',
+                cursor: 'pointer',
+                transition: 'transform 0.2s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
+              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+            >
+              <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>⚡</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>Initiative</div>
+              <div style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                Actuel : +{goblinStats.initiative} / 15
+              </div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem', color: '#fcd34d' }}>
+                x{goblinStats.multipliers.initiative}
+              </div>
+            </button>
+          </div>
+
+          <p style={{ color: '#9ca3af', textAlign: 'center', marginTop: '1.5rem', fontSize: '0.85rem', fontStyle: 'italic' }}>
+            💡 Le multiplicateur augmente de x1 → x2 → x3 pour chaque tour où la stat n'est pas choisie
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+const GoblinRouletteModal = ({ gameState, playerId, sessionId }) => {
+  const player = gameState?.players?.[playerId];
+  const pendingEvent = gameState?.pending_events?.[playerId];
+
+  const statChosen = pendingEvent?.stat_chosen;
+  const multiplier = pendingEvent?.multiplier || 1;
+
+  // ===== Config (défilement fluide, vitesse constante) =====
+  const SPIN_SPEED_MS = 200;                           // vitesse CONSTANTE
+  const SLOT_WIDTH = 110;                              // largeur d'un slot
+  const VISIBLE_SLOTS = 5;                              // 5 valeurs visibles
+  const CENTER_OFFSET = Math.floor(VISIBLE_SLOTS / 2);  // = 2
+
+  // States (hooks toujours appelés avant tout return conditionnel)
+  const [tick, setTick] = useState(0);
+  const [isSpinning, setIsSpinning] = useState(true);
+  const [stopped, setStopped] = useState(false);
+  const [showParticles, setShowParticles] = useState(false);
+
+  const isActive =
+    player && player.role === 'killer' &&
+    pendingEvent && pendingEvent.type === 'goblin_roulette_active';
+
+  // Bande de base, puis bande très longue (60 répétitions) pour défilement continu
+  const baseSequence = useMemo(
+    () => GOBLIN_ROULETTE_SEQUENCE.map((val) => val * multiplier),
+    [multiplier]
+  );
+  const strip = useMemo(() => {
+    const out = [];
+    for (let i = 0; i < 60; i++) out.push(...baseSequence);
+    return out;
+  }, [baseSequence]);
+
+  const centerIndex = (tick + CENTER_OFFSET) % strip.length;
+  const currentValue = strip[centerIndex];
+
+  const getValueColor = (value) => {
+    const baseValue = value / multiplier;
+    if (multiplier === 3) {
+      if (baseValue === 3) return '#ef4444';
+      if (baseValue === 2) return '#8b5cf6';
+      return '#06b6d4';
+    } else if (multiplier === 2) {
+      if (baseValue === 3) return '#8b5cf6';
+      if (baseValue === 2) return '#3b82f6';
+      return '#10b981';
+    } else {
+      if (baseValue === 3) return '#f59e0b';
+      if (baseValue === 2) return '#3b82f6';
+      return '#10b981';
+    }
+  };
+
+  const handleStop = async () => {
+    if (!isSpinning || stopped) return;
+
+    setStopped(true);
+    setIsSpinning(false);
+    setShowParticles(true);
+
+    const valueObtained = currentValue;
+
+    try {
+      const response = await axios.post(`${API}/game/${sessionId}/goblin_stop_roulette`, {
+        player_id: playerId,
+        stat_chosen: statChosen,
+        value_obtained: valueObtained,
+      });
+
+      const gained = response.data.gained;
+      const total = response.data.total;
+
+      setTimeout(() => {
+        toast.success(`✨ +${gained} ${getStatLabel(statChosen)} ! Total : ${total}`, {
+          duration: 4000,
+          icon: getStatIcon(statChosen),
+        });
+      }, 700);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Erreur");
+    }
+  };
+
+  // Tick à intervalle FIXE 200 ms (vitesse constante)
+  useEffect(() => {
+    if (!isActive || !isSpinning) return;
+
+    const timer = setTimeout(() => {
+      setTick((prev) => {
+        const next = prev + 1;
+        if (next >= strip.length - VISIBLE_SLOTS - 1) return next % baseSequence.length;
+        return next;
+      });
+    }, SPIN_SPEED_MS);
+
+    return () => clearTimeout(timer);
+  }, [tick, isActive, isSpinning, strip.length, baseSequence.length]);
+
+  // Gestion de la touche SPACE
+  useEffect(() => {
+    if (!isActive) return;
+    const handleKeyPress = (e) => {
+      if (e.code === 'Space' && isSpinning) {
+        e.preventDefault();
+        handleStop();
+      }
+    };
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [isActive, isSpinning, tick]);
+
+  if (!isActive) return null;
+
+  const translateX = -tick * SLOT_WIDTH;
+  const particles = Array.from({ length: 14 }, (_, i) => i);
+
+  return (
+    <div className="game-over-overlay" style={{ zIndex: 3500 }} data-testid="goblin-roulette-modal">
+      <Card style={{ maxWidth: '600px', backgroundColor: '#1a0f0a', border: '3px solid #ff6b35' }}>
+        <CardHeader>
+          <CardTitle style={{ color: '#ff6b35', textAlign: 'center', fontSize: '1.8rem' }}>
+            🎰 Roulette {getStatLabel(statChosen)} (x{multiplier})
+          </CardTitle>
+        </CardHeader>
+
+        <CardContent>
+          {/* Triangle indicateur central */}
+          <div className="goblin-roulette-pointer">
+            <div className="goblin-roulette-triangle" />
+          </div>
+
+          {/* Viewport 5 slots avec fade sur les bords */}
+          <div
+            className={`goblin-roulette-viewport ${stopped ? 'goblin-roulette-shake' : ''}`}
+            style={{ width: `${VISIBLE_SLOTS * SLOT_WIDTH}px`, margin: '0 auto 1.5rem' }}
+          >
+            {/* Halo central qui se contracte puis explose */}
+            <div
+              className={`goblin-roulette-spotlight ${stopped ? 'goblin-roulette-spotlight-burst' : ''}`}
+              style={{ width: `${SLOT_WIDTH}px` }}
+            />
+
+            {/* Particules radiales */}
+            {showParticles && particles.map((i) => (
+              <span
+                key={i}
+                className="goblin-roulette-particle"
+                style={{
+                  '--angle': `${(i / particles.length) * 360}deg`,
+                  '--burst-color': getValueColor(currentValue),
+                  animationDelay: `${i * 15}ms`,
+                }}
+              />
+            ))}
+
+            {/* Bande défilante : translateX + transition linear 200ms */}
+            <div
+              className="goblin-roulette-strip"
+              style={{
+                transform: `translateX(${translateX}px)`,
+                transition: isSpinning
+                  ? `transform ${SPIN_SPEED_MS}ms linear`
+                  : `transform ${SPIN_SPEED_MS}ms cubic-bezier(0.2, 0.85, 0.25, 1)`,
+              }}
+            >
+              {strip.map((val, i) => {
+                const isCenter = i === centerIndex;
+                return (
+                  <div
+                    key={i}
+                    className={`goblin-roulette-slot ${isCenter && stopped ? 'goblin-roulette-slot-winner' : ''}`}
+                    style={{ width: `${SLOT_WIDTH}px`, color: getValueColor(val) }}
+                  >
+                    +{val}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {isSpinning ? (
+            <Button
+              onClick={handleStop}
+              style={{
+                width: '100%',
+                padding: '1.5rem',
+                fontSize: '1.5rem',
+                fontWeight: 'bold',
+                backgroundColor: '#ef4444',
+                color: '#fff',
+                border: '3px solid #fca5a5',
+                cursor: 'pointer',
+                animation: 'goblinPulse 1s infinite',
+              }}
+              data-testid="goblin-roulette-stop-btn"
+            >
+              ⏸️ ARRÊTER (SPACE)
+            </Button>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '1.5rem', fontSize: '1.2rem', color: '#10b981' }}>
+              ✅ Bonus appliqué !
+            </div>
+          )}
+
+          <p style={{ color: '#9ca3af', textAlign: 'center', marginTop: '1rem', fontSize: '0.85rem', fontStyle: 'italic' }}>
+            💡 Visez le +{Math.max(...baseSequence)} mais attention : il est entouré de +{Math.min(...baseSequence)} !
+          </p>
         </CardContent>
       </Card>
     </div>
@@ -5755,6 +7098,18 @@ const PowerSelectionOverlay = ({
   const myPowerSelection = gameState.pending_power_selections?.[playerId];
   if (!myPowerSelection) return null;
 
+  // GOBLIN ROULETTE: bloquer la sélection de pouvoir tant que la roulette n'est pas terminée
+  const hasGoblinRoulettePending = gameState.pending_events?.[playerId]?.type?.startsWith('goblin_roulette');
+  if (hasGoblinRoulettePending) {
+    return (
+      <div className="power-selection-overlay" data-testid="power-blocked-by-goblin-roulette">
+        <div style={{ textAlign: 'center', color: '#e8dcc4', padding: '2rem' }}>
+          <p style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>⏳ Terminez d'abord la roulette gobelin...</p>
+        </div>
+      </div>
+    );
+  }
+
   const currentPlayer = gameState.players[playerId];
 
   
@@ -6962,12 +8317,31 @@ const prevPendingActionsRef = useRef('{}');
   const [observationStoneMessage, setObservationStoneMessage] = useState("");
   const [observationStoneVideoPath, setObservationStoneVideoPath] = useState("");
 
-  // NEW: Patrol killer alert popup (gobelin détecte un survivant)
-  const [showPatrolKillerAlert, setShowPatrolKillerAlert] = useState(false);
-  const [patrolKillerMessage, setPatrolKillerMessage] = useState("");
-  const [patrolKillerVideoPath, setPatrolKillerVideoPath] = useState("");
-  const [showSuffocantAlert, setShowSuffocantAlert] = useState(false);
-  const [suffocantMessage, setSuffocantMessage] = useState("");
+  // ── Killer alert queue (non-bloquant, séquentiel) ──────────────────────────
+  // Toutes les popups non-bloquantes killers passent par cette file pour éviter
+  // toute superposition. Chaque entrée : { title, icon, message, videoPath, color }
+  const [killerAlertQueue, setKillerAlertQueue] = useState([]);
+  const [activeKillerAlert, setActiveKillerAlert] = useState(null);
+
+  // Enfile une alerte killer. Si aucune n'est active, l'affiche immédiatement.
+  const enqueueKillerAlert = (alert) => {
+    setActiveKillerAlert(prev => {
+      if (prev === null) {
+        return alert; // affichage immédiat
+      }
+      setKillerAlertQueue(q => [...q, alert]);
+      return prev;
+    });
+  };
+
+  // Ferme l'alerte active et dépile la suivante (appelée au clic).
+  const dismissKillerAlert = () => {
+    setKillerAlertQueue(q => {
+      const [next, ...rest] = q;
+      setActiveKillerAlert(next ?? null);
+      return rest;
+    });
+  };
 
   // NEW: Malédiction states
   const [showMaledictionWarningPopup, setShowMaledictionWarningPopup] = useState(false);
@@ -7202,6 +8576,15 @@ const prevPendingActionsRef = useRef('{}');
         // Direct WS handler for fleeing goblin combat
         setFleeingGoblinCombatEvent(data);
         setShowFleeingGoblinCombat(true);
+      } else if (data.type === "power_specialization") {
+        // ⚠️ FIX SÉQUENCEMENT : top-level handler pour la spécialisation envoyée
+        // par `dispatch_next_player_event` APRÈS la fermeture d'un combat
+        // (cas où le killer a fouillé une pièce avec aventuriers et a déclenché
+        //  un combat en même temps que sa spécialisation niveau 1).
+        // Sans ce handler, le message WS direct serait ignoré et la modale
+        // de spec ne s'afficherait jamais après la fermeture du combat.
+        setPowerSpecializationData(data);
+        setShowPowerSpecialization(true);
       } else if (data.type === "teleportation_notification") {
         // NEW: Show teleportation popup for survivor who entered teleportation trap with video
         setTeleportationVideoPath(data.video_path || "");
@@ -7287,21 +8670,33 @@ const prevPendingActionsRef = useRef('{}');
         // NOTE: No notifyEventCompleted needed — non-blocking for killers
       } else if (data.type === "blizzard_precision_alert") {
         // Blizzard de précision : alerter le killer qu'un aventurier est pris dans son blizzard
-        setPatrolKillerMessage(`🥶 ${data.player_name} est pris dans votre blizzard (${data.room}) !`);
-        setPatrolKillerVideoPath("/powers/blizzard.mp4");
-        setShowPatrolKillerAlert(true);
+        enqueueKillerAlert({
+          title: "Blizzard de Précision !",
+          icon: "🥶",
+          message: `🥶 ${data.player_name} est pris dans votre blizzard (${data.room}) !`,
+          videoPath: "/powers/blizzard.mp4",
+          color: "#60a5fa",
+        });
       } else if (data.type === "patrol_reveal") {
         // Killers: exact position revealed by Patrouille variant → popup with video
-        setPatrolKillerMessage(`🔍 Gobelin de Patrouille : ${data.player_name} est dans "${data.room}" !`);
-        setPatrolKillerVideoPath("/powers/Patrouille.mp4");
-        setShowPatrolKillerAlert(true);
+        enqueueKillerAlert({
+          title: "Gobelin de Patrouille !",
+          icon: "🔍",
+          message: `🔍 Gobelin de Patrouille : ${data.player_name} est dans "${data.room}" !`,
+          videoPath: "/powers/Patrouille.mp4",
+          color: "#f59e0b",
+        });
       } else if (data.type === "patrol_presence") {
         // Killers: floor presence revealed by Espionnage or Vadrouille → popup with video
         const _floorLabels = { upper_floor: "Étage supérieur", ground_floor: "Rez-de-chaussée", basement: "Sous-sol" };
         const _varLabel = data.variant === "vadrouille" ? "Vadrouille" : "Espion";
-        setPatrolKillerMessage(`🔍 Gobelin ${_varLabel} : ${data.player_name} détecté au ${_floorLabels[data.floor] || data.floor} !`);
-        setPatrolKillerVideoPath(data.variant === "vadrouille" ? "/powers/Vadrouille.mp4" : "/powers/Espionnage.mp4");
-        setShowPatrolKillerAlert(true);
+        enqueueKillerAlert({
+          title: `Gobelin ${_varLabel} !`,
+          icon: "🔍",
+          message: `🔍 Gobelin ${_varLabel} : ${data.player_name} détecté au ${_floorLabels[data.floor] || data.floor} !`,
+          videoPath: data.variant === "vadrouille" ? "/powers/Vadrouille.mp4" : "/powers/Espionnage.mp4",
+          color: "#f59e0b",
+        });
       } else if (data.type === "traque_result") {
         // Show Traque popup with video (video_path and avatars vary by variant)
         setTraqueMessage(data.message);
@@ -7316,9 +8711,22 @@ const prevPendingActionsRef = useRef('{}');
         });
       } else if (data.type === "toxic_cough_popup") {
         // Toxine suffocante — notify killers of poisoned survivor's floor
-        // Server sends this only to killers (role_filter="killer")
-        setSuffocantMessage(data.message);
-        setShowSuffocantAlert(true);
+        enqueueKillerAlert({
+          title: "Toxine Suffocante",
+          icon: "😷",
+          message: data.message,
+          videoPath: "/powers/Toxine suffocante.mp4",
+          color: "#84cc16",
+        });
+      } else if (data.type === "seisme_popup") {
+        // Séisme — notify killer of floors occupied by survivors
+        enqueueKillerAlert({
+          title: "Séisme",
+          icon: "⛰️",
+          message: data.message,
+          videoPath: "/powers/Séisme.mp4",
+          color: "#a78bfa",
+        });
       } else if (data.type === "event") {
         toast.info(data.message);
       } else if (data.type === "new_turn") {
@@ -9636,57 +11044,38 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* Patrol Killer Alert Popup */}
-      {showPatrolKillerAlert && (
+      {/* ── Killer Alert Queue Popup ────────────────────────────────────────────
+           Toutes les alertes non-bloquantes pour les killers (Patrouille, Blizzard,
+           Toxine suffocante, Séisme…) passent par cette file. Une seule popup à la fois,
+           la suivante s'affiche après fermeture. */}
+      {activeKillerAlert && (
         <div
           className="game-over-overlay"
           style={{ zIndex: 1001 }}
-          onClick={() => setShowPatrolKillerAlert(false)}
-          data-testid="patrol-killer-alert-popup"
+          onClick={dismissKillerAlert}
+          data-testid="killer-alert-queue-popup"
         >
-          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#f59e0b' }}>
+          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: activeKillerAlert.color || '#f59e0b' }}>
             <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#fbbf24' }}>
-                🔍 <span>Gobelin de Patrouille !</span>
+              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: activeKillerAlert.color || '#fbbf24' }}>
+                {activeKillerAlert.icon} <span>{activeKillerAlert.title}</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {patrolKillerVideoPath && (
-                <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
-                  <source src={patrolKillerVideoPath} type="video/mp4" />
+              {activeKillerAlert.videoPath && (
+                <video key={activeKillerAlert.videoPath} autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
+                  <source src={activeKillerAlert.videoPath} type="video/mp4" />
                 </video>
               )}
               <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {patrolKillerMessage}
+                {activeKillerAlert.message}
               </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>Cliquez pour continuer</p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Toxine suffocante : popup pour les killers indiquant l'étage du survivant empoisonné */}
-      {showSuffocantAlert && (
-        <div
-          className="game-over-overlay"
-          style={{ zIndex: 1001 }}
-          onClick={() => setShowSuffocantAlert(false)}
-          data-testid="suffocant-alert-popup"
-        >
-          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#84cc16' }}>
-            <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#bef264' }}>
-                😷 <span>Toxine suffocante</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <video autoPlay muted style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}>
-                <source src="/powers/Toxine suffocante.mp4" type="video/mp4" />
-              </video>
-              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {suffocantMessage}
-              </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>Cliquez pour continuer</p>
+              {killerAlertQueue.length > 0 && (
+                <p style={{ marginTop: '0.5rem', fontSize: '0.8em', color: '#a0aec0', textAlign: 'center' }}>
+                  {killerAlertQueue.length} alerte{killerAlertQueue.length > 1 ? 's' : ''} en attente
+                </p>
+              )}
+              <p style={{ marginTop: '0.5rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>Cliquez pour continuer</p>
             </CardContent>
           </Card>
         </div>
@@ -10584,17 +11973,61 @@ const selectRoom = (roomName) => {
         />
       )}
 
+      {/* 🥛 Lait LEW Pickup Modal */}
+      {gameState.pending_events &&
+       gameState.pending_events[playerId] &&
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'lait_lew_found' && (
+        <LaitLewPickupModal
+          event={gameState.pending_events[playerId]}
+          playerId={playerId}
+          sessionId={sessionId}
+          onOpenInventory={() => setShowInventory(true)}
+          player={currentPlayer}
+        />
+      )}
+
       {/* Amulette Pickup Modal */}
       {gameState.pending_events && 
        gameState.pending_events[playerId] && 
        typeof gameState.pending_events[playerId] === 'object' &&
-       gameState.pending_events[playerId].type === 'amulette_tortue_found' && (
+       (gameState.pending_events[playerId].type === 'amulette_tortue_found' ||
+        gameState.pending_events[playerId].type === 'amulette_oignon_found' ||
+        gameState.pending_events[playerId].type === 'amulette_trefle_found' ||
+        gameState.pending_events[playerId].type === 'foulard_rankyr_found' ||
+        gameState.pending_events[playerId].type === 'amulette_coco_found' ||
+        gameState.pending_events[playerId].type === 'bandana_ranja_found' ||
+        gameState.pending_events[playerId].type === 'bonnet_croblow_found') && (
         <AmulettePickupModal
           event={gameState.pending_events[playerId]}
           playerId={playerId}
           sessionId={sessionId}
           onOpenInventory={() => setShowInventory(true)}
           player={currentPlayer}
+        />
+      )}
+
+      {/* Goblin Stat Choice Modal (killers only) */}
+      {gameState.pending_events &&
+       gameState.pending_events[playerId] &&
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'goblin_roulette_choice' && (
+        <GoblinStatChoiceModal
+          gameState={gameState}
+          playerId={playerId}
+          sessionId={sessionId}
+        />
+      )}
+
+      {/* Goblin Roulette Modal (active roulette) */}
+      {gameState.pending_events &&
+       gameState.pending_events[playerId] &&
+       typeof gameState.pending_events[playerId] === 'object' &&
+       gameState.pending_events[playerId].type === 'goblin_roulette_active' && (
+        <GoblinRouletteModal
+          gameState={gameState}
+          playerId={playerId}
+          sessionId={sessionId}
         />
       )}
 
@@ -10636,17 +12069,29 @@ const selectRoom = (roomName) => {
           (see render block above). The previous server-driven overlay was
           replaced by an event-broadcast model identical to GoblinCombat. */}
 
-      {/* Power Specialization Modal */}
-      {showPowerSpecialization && powerSpecializationData && (
-        <PowerSpecializationModal
-          data={powerSpecializationData}
-          onClose={() => {
-            setShowPowerSpecialization(false);
-            setPowerSpecializationData(null);
-          }}
-          wsRef={ws}
-        />
-      )}
+      {/* Power Specialization Modal
+          ⚠️ Affichée uniquement lorsqu'AUCUNE modale de combat n'est ouverte côté killer.
+          Cas : si un combat (goblin / multiplayer / mimic / crystal / fleeing goblin) est
+          déclenché en même temps que la spécialisation (le killer a fouillé une pièce
+          contenant des aventuriers), on attend la fermeture du combat via le bouton
+          "Cliquez pour fermer" avant d'afficher la popup de spécialisation.
+          Si aucun combat n'a été déclenché, la popup s'affiche normalement, immédiatement. */}
+      {showPowerSpecialization &&
+        powerSpecializationData &&
+        !showGoblinCombat &&
+        !showMultiplayerCombat &&
+        !showMimicCombat &&
+        !showCrystalCombat &&
+        !showFleeingGoblinCombat && (
+          <PowerSpecializationModal
+            data={powerSpecializationData}
+            onClose={() => {
+              setShowPowerSpecialization(false);
+              setPowerSpecializationData(null);
+            }}
+            wsRef={ws}
+          />
+        )}
     </div>
   );
 };

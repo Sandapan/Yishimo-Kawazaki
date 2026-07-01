@@ -108,6 +108,12 @@ class ResolveCombatRequest(BaseModel):
 # Tags d'équipement (slot dans lequel un item peut être équipé)
 ITEM_TAGS = {
     "amulette_tortue": "babiole",
+    "amulette_oignon": "babiole",   # 🧅 NEW
+    "amulette_trefle": "babiole",   # 🍀 NEW
+    "foulard_rankyr": "babiole",    # 🏴 NEW
+    "amulette_coco": "babiole",     # 🥥 NEW
+    "bandana_ranja": "babiole",     # 🎯 NEW
+    "bonnet_croblow": "babiole",    # 🌸 NEW
     # futurs items: "amulette_xxx": "babiole", "familier_yyy": "familier", ...
 }
 
@@ -269,6 +275,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "role": host_role,  # "survivor" or "killer"
                 "immobilized_next_turn": False,  # NEW: for piege power
                 "poisoned_countdown": 0,  # NEW: for toxine power (0-10 turns, 0 = not poisoned)
+                "lait_lew_buff_countdown": 0,  # 🥛 NEW: Lait LEW (heal 4 HP/turn pendant 3 tours)
                 "gold": 0,  # NEW: gold accumulated by survivors
                 "hp": 36 if host_role == "survivor" else None,  # PV pour les aventuriers (36 au départ)
                 "max_hp": 36 if host_role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
@@ -290,6 +297,12 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                     "eboulement": {"level": 1, "variant": None},
                     "patrouille": {"level": 1, "variant": None},
                     "traque": {"level": 1, "variant": None}
+                } if host_role == "killer" else None,
+                "goblin_stats": {
+                    "damage": 0,
+                    "hp": 0,
+                    "initiative": 0,
+                    "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
                 } if host_role == "killer" else None,
             }
         },
@@ -786,6 +799,18 @@ async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: 
             "poisoned_countdown": s.get("poisoned_countdown", 0),
             # 🐢 NEW
             "has_amulette_tortue": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
+            # 🧅 NEW
+            "has_amulette_oignon": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_oignon",
+            # 🍀 NEW
+            "has_amulette_trefle": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_trefle",
+            # 🏴 NEW
+            "has_foulard_rankyr": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "foulard_rankyr",
+            # 🥥 NEW
+            "has_amulette_coco": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_coco",
+            # 🎯 NEW
+            "has_bandana_ranja": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "bandana_ranja",
+            # 🌸 NEW
+            "has_bonnet_croblow": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "bonnet_croblow",
         })
 
     combat_id = f"mimic_{attacker_id}_{int(combat_window['expires_at'])}"
@@ -1063,7 +1088,7 @@ def get_random_powers(exclude_powers: list = [], game_state: dict = None) -> lis
         excluded.append("vision")
 
     # Exclude malediction if no survivor has a cursable item
-    CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
+    CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons", "lait_lew"}
     if game_state:
         has_cursable = False
         for p in game_state.get("players", {}).values():
@@ -1835,6 +1860,17 @@ async def apply_powers(session_id: str):
                 game["events"].append({"message": seisme_msg, "type": "seisme_detection", "for_role": "killer"})
                 await broadcast_to_session(session_id, {"type": "event", "message": seisme_msg}, role_filter="killer")
                 logger.info(f"⛰️ Séisme : étages avec aventuriers → {occupied_floors}")
+                # Popup dédiée pour le killer (non-bloquante, file d'attente côté frontend)
+                killer_ws = active_connections.get(session_id, {}).get(player_id)
+                if killer_ws:
+                    try:
+                        await killer_ws.send_json({
+                            "type": "seisme_popup",
+                            "message": seisme_msg,
+                            "video_path": "/powers/Séisme.mp4"
+                        })
+                    except Exception:
+                        pass
 
             # ── Variant: Perturbation — apply initiative malus and double damage to survivors ──
             if eboulement_variant == "perturbation":
@@ -2441,6 +2477,15 @@ async def try_advance_to_killer_phase(session_id: str) -> bool:
             "action_complete": False
         }
 
+    # ========== GOBLIN ROULETTE: Create pending event for killers ==========
+    # Before killers choose their powers, give them the roulette to boost their goblin
+    for killer in alive_killers:
+        killer_id = killer["id"]
+        game["pending_events"][killer_id] = {
+            "type": "goblin_roulette_choice",
+            "stats": killer.get("goblin_stats", {})
+        }
+
     # OBSERVATION STONE ALERT: if any alive survivor carries the stone, alert each killer individually (non-blocking)
     survivors_with_stone = [
         p for p in game["players"].values()
@@ -2637,6 +2682,18 @@ async def process_turn(session_id: str):
                                 "poisoned_countdown": surv_player.get("poisoned_countdown", 0),  # NEW: pour toxine incapacitante
                                 # 🐢 NEW
                                 "has_amulette_tortue": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
+                                # 🧅 NEW
+                                "has_amulette_oignon": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_oignon",
+                                # 🍀 NEW
+                                "has_amulette_trefle": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_trefle",
+                                # 🏴 NEW
+                                "has_foulard_rankyr": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "foulard_rankyr",
+                                # 🥥 NEW
+                                "has_amulette_coco": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_coco",
+                                # 🎯 NEW
+                                "has_bandana_ranja": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "bandana_ranja",
+                                # 🌸 NEW
+                                "has_bonnet_croblow": ((surv_player.get("equipment") or {}).get("babiole") or {}).get("type") == "bonnet_croblow",
                             })
 
                 if survivors_in_room:
@@ -2652,6 +2709,12 @@ async def process_turn(session_id: str):
                                 _tox_incap = True
                                 break
 
+                    # GOBLIN ROULETTE: apply killer's goblin stat bonuses to this combat
+                    _goblin_stats = killer.get("goblin_stats") or {}
+                    _goblin_damage_bonus = _goblin_stats.get("damage", 0)
+                    _goblin_hp_bonus = _goblin_stats.get("hp", 0)
+                    _goblin_initiative_bonus = _goblin_stats.get("initiative", 0)
+
                     combat_event = {
                         "type": "multiplayer_combat",
                         "attacker_id": killer_id,
@@ -2659,7 +2722,9 @@ async def process_turn(session_id: str):
                         "attacker_name": killer.get("name", "Orc"),
                         "survivors": survivors_in_room,  # Liste des survivants
                         "num_goblins": num_goblins,
-                        "goblin_hp": 6,  # HP par gobelin
+                        "goblin_hp": 6 + _goblin_hp_bonus,  # HP par gobelin (+ bonus roulette)
+                        "goblin_damage_bonus": _goblin_damage_bonus,  # NEW: bonus dégâts roulette
+                        "goblin_initiative_bonus": _goblin_initiative_bonus,  # NEW: bonus initiative roulette
                         "turn": game["turn"],  # NOUVEAU : numéro du tour pour seed unique
                         "combat_id": f"{killer_id}_{killer_room}_{game['turn']}",  # NOUVEAU : ID unique du combat
                         "toxine_incapacitante_active": _tox_incap  # NEW: malus dégâts sur survivants empoisonnés
@@ -2838,6 +2903,34 @@ async def process_turn(session_id: str):
                         except:
                             pass
     
+            # 🥛 LAIT LEW : régénération 4 PV par tour, pendant 3 tours (cap = max_hp)
+            if (player["role"] == "survivor"
+                    and not player["eliminated"]
+                    and player.get("lait_lew_buff_countdown", 0) > 0
+                    and player.get("hp") is not None):
+                _max = player.get("max_hp") or player["hp"]
+                _before = player["hp"]
+                player["hp"] = min(_max, player["hp"] + 4)
+                player["lait_lew_buff_countdown"] -= 1
+                _healed = player["hp"] - _before
+                logger.info(
+                    f"[LAIT LEW] {player.get('name')} +{_healed} PV "
+                    f"(remaining turns: {player['lait_lew_buff_countdown']})"
+                )
+                if player_id in active_connections.get(session_id, {}):
+                    try:
+                        await active_connections[session_id][player_id].send_json({
+                            "type": "lait_lew_tick",
+                            "healed": _healed,
+                            "remaining": player["lait_lew_buff_countdown"],
+                            "message": (
+                                f"🥛 Lait LEW : +{_healed} PV restaurés. "
+                                f"Reste {player['lait_lew_buff_countdown']} tour(s)."
+                            )
+                        })
+                    except:
+                        pass
+
     # Eliminate poisoned players
     for player_id in players_to_eliminate:
         player = game["players"][player_id]
@@ -2896,10 +2989,16 @@ async def process_turn(session_id: str):
     # NEW: Trigger pending specializations before starting new turn
     if "pending_specializations" in game and len(game["pending_specializations"]) > 0:
         for spec_killer_id, specialization_data in game["pending_specializations"].items():
-            game["pending_events"][spec_killer_id] = {
+            spec_event = {
                 "type": "power_specialization",
                 **specialization_data
             }
+            await enqueue_player_event(
+                session_id,
+                spec_killer_id,
+                spec_event,
+                spec_event,
+            )
 
         # Clear pending specializations
         game["pending_specializations"] = {}
@@ -2907,6 +3006,16 @@ async def process_turn(session_id: str):
         # Passer en phase "killer_specialization" pour que le frontend affiche
         # la modale sans bloquer sur "Traitement en cours..."
         game["phase"] = "killer_specialization"
+
+        # ⚠️ FIX SÉQUENCEMENT (combat fantôme post-spec) :
+        # Les actions du tour (fouilles, combats killer↔survivants) ont déjà
+        # été entièrement traitées plus haut dans process_turn(). On vide donc
+        # `pending_actions` avant le return pour qu'au prochain appel de
+        # process_turn() — déclenché par `select_power_specialization` une fois
+        # que tous les killers ont validé leur spécialisation — la boucle
+        # d'encounters killer↔survivants ne re-déclenche PAS un second combat
+        # identique au premier (qui vient d'être résolu).
+        game["pending_actions"] = {}
 
         # Broadcast state to trigger modals
         await broadcast_to_session(session_id, {
@@ -3145,6 +3254,34 @@ async def process_rage_second_selections(session_id: str):
                         except:
                             pass
     
+            # 🥛 LAIT LEW : régénération 4 PV par tour, pendant 3 tours (cap = max_hp)
+            if (player["role"] == "survivor"
+                    and not player["eliminated"]
+                    and player.get("lait_lew_buff_countdown", 0) > 0
+                    and player.get("hp") is not None):
+                _max = player.get("max_hp") or player["hp"]
+                _before = player["hp"]
+                player["hp"] = min(_max, player["hp"] + 4)
+                player["lait_lew_buff_countdown"] -= 1
+                _healed = player["hp"] - _before
+                logger.info(
+                    f"[LAIT LEW] {player.get('name')} +{_healed} PV "
+                    f"(remaining turns: {player['lait_lew_buff_countdown']})"
+                )
+                if player_id in active_connections.get(session_id, {}):
+                    try:
+                        await active_connections[session_id][player_id].send_json({
+                            "type": "lait_lew_tick",
+                            "healed": _healed,
+                            "remaining": player["lait_lew_buff_countdown"],
+                            "message": (
+                                f"🥛 Lait LEW : +{_healed} PV restaurés. "
+                                f"Reste {player['lait_lew_buff_countdown']} tour(s)."
+                            )
+                        })
+                    except:
+                        pass
+
     # Eliminate poisoned players
     for player_id in players_to_eliminate:
         player = game["players"][player_id]
@@ -3306,6 +3443,7 @@ async def join_game(session_id: str, request: JoinGameRequest):
         "role": request.role,                      # peut être None (choisi dans le lobby)
         "immobilized_next_turn": False,
         "poisoned_countdown": 0,
+        "lait_lew_buff_countdown": 0,  # 🥛 NEW: Lait LEW (heal 4 HP/turn pendant 3 tours)
         "gold": 0,
         "hp": 36 if request.role == "survivor" else None,
         "max_hp": 36 if request.role == "survivor" else None,
@@ -3325,9 +3463,13 @@ async def join_game(session_id: str, request: JoinGameRequest):
             "patrouille": {"level": 1, "variant": None},
             "traque": {"level": 1, "variant": None}
         } if request.role == "killer" else None,
+        "goblin_stats": {
+            "damage": 0,
+            "hp": 0,
+            "initiative": 0,
+            "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
+        } if request.role == "killer" else None,
     }
-
-    # Broadcast new player joined
     await broadcast_to_session(matching_session, {
         "type": "player_joined",
         "player": game["players"][player_id]
@@ -3533,6 +3675,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["weapon_bonuses"] = []  # NEW: reset weapon bonuses
                 game["players"][player_id]["inventory"] = [None] * 9
                 game["players"][player_id]["equipment"] = {"babiole": None, "familier": None}  # NEW
+                game["players"][player_id]["goblin_stats"] = None
                 logger.info(f"Assigned survivor class {avatar_data['class']} to player {game['players'][player_id]['name']}")
             else:
                 # Assigner le rôle orc
@@ -3551,6 +3694,12 @@ async def start_game(session_id: str):
                 game["players"][player_id]["pending_forge_room"] = None  # NEW
                 game["players"][player_id]["inventory"] = None
                 game["players"][player_id]["equipment"] = None  # NEW
+                game["players"][player_id]["goblin_stats"] = {
+                    "damage": 0,
+                    "hp": 0,
+                    "initiative": 0,
+                    "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
+                }
                 logger.info(f"Assigned killer class {avatar_data['class']} to player {game['players'][player_id]['name']}")
         
         logger.info(f"Conspiracy mode: Assigned {distribution['survivors']} aventuriers et orcs avec classes aventurier uniques")
@@ -3733,6 +3882,12 @@ async def reset_game(session_id: str):
         player["pending_forge_room"] = None  # NEW: reset pending forge
         player["inventory"] = [None] * 9 if player.get("role") == "survivor" else None
         player["equipment"] = {"babiole": None, "familier": None} if player.get("role") == "survivor" else None  # NEW
+        player["goblin_stats"] = {
+            "damage": 0,
+            "hp": 0,
+            "initiative": 0,
+            "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
+        } if player.get("role") == "killer" else None
         
         # FIXED: Ensure is_host is preserved
         player["is_host"] = is_host
@@ -3885,6 +4040,12 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["pending_forge_room"] = None  # NEW
     game["players"][player_id]["inventory"] = [None] * 9 if request.role == "survivor" else None
     game["players"][player_id]["equipment"] = {"babiole": None, "familier": None} if request.role == "survivor" else None  # NEW
+    game["players"][player_id]["goblin_stats"] = {
+        "damage": 0,
+        "hp": 0,
+        "initiative": 0,
+        "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
+    } if request.role == "killer" else None
     
     logger.info(f"Player {player_id} updated profile in session {session_id}, is_host={is_host}")
     
@@ -3989,6 +4150,8 @@ SELL_PRICES = {
     "rune_dommage": 100,
     "rune_initiative": 100,
     "rune_vitalite": 100,
+    # 🥛 Lait LEW
+    "lait_lew": 150,
     # Trophées : 500 pièces
     "chaussons": 500,
     "couronne": 500,
@@ -4348,6 +4511,88 @@ async def dismiss_rune(session_id: str, request: DismissRuneRequest):
     return {"status": "success", "message": "Rune ignorée"}
 
 
+# 🥛 ────────────────────────────────────────────────────────────────────
+# Lait LEW pickup / dismiss (même flow que les runes)
+# ──────────────────────────────────────────────────────────────────────
+class PickupLaitLewRequest(BaseModel):
+    player_id: str
+
+
+class DismissLaitLewRequest(BaseModel):
+    player_id: str
+
+
+@api_router.post("/game/{session_id}/pickup_lait_lew")
+async def pickup_lait_lew(session_id: str, request: PickupLaitLewRequest):
+    """Add Lait LEW to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup Lait LEW")
+
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="No Lait LEW to pickup")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "lait_lew_found":
+        raise HTTPException(status_code=400, detail="No Lait LEW to pickup")
+
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    if not add_item(player, "lait_lew"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter le Lait LEW")
+
+    del game["pending_events"][request.player_id]
+
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up Lait LEW")
+
+    return {"status": "success", "message": "Lait LEW ramassé !"}
+
+
+@api_router.post("/game/{session_id}/dismiss_lait_lew")
+async def dismiss_lait_lew(session_id: str, request: DismissLaitLewRequest):
+    """Dismiss/ignore the found Lait LEW"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} dismissed Lait LEW")
+
+    return {"status": "success", "message": "Lait LEW ignoré"}
+
+
 @api_router.post("/game/{session_id}/pickup_amulette")
 async def pickup_amulette(session_id: str, request: DismissAmuletteRequest):
     """Add the Amulette Tortue to player's inventory, or refuse if full"""
@@ -4400,6 +4645,294 @@ async def pickup_amulette(session_id: str, request: DismissAmuletteRequest):
 
     return {"status": "success", "message": "Amulette ramassée !"}
 
+@api_router.post("/game/{session_id}/pickup_amulette_oignon")
+async def pickup_amulette_oignon(session_id: str, request: DismissAmuletteRequest):
+    """Add the Amulette Oignon to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "amulette_oignon_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add amulette to inventory
+    if not add_item(player, "amulette_oignon"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: amulette_oignon")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/pickup_amulette_trefle")
+async def pickup_amulette_trefle(session_id: str, request: DismissAmuletteRequest):
+    """Add the Amulette Trefle to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "amulette_trefle_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add amulette to inventory
+    if not add_item(player, "amulette_trefle"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: amulette_trefle")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/pickup_foulard_rankyr")
+async def pickup_foulard_rankyr(session_id: str, request: DismissAmuletteRequest):
+    """Add the Foulard Rankyr to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "foulard_rankyr_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add foulard to inventory
+    if not add_item(player, "foulard_rankyr"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: foulard_rankyr")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/pickup_amulette_coco")
+async def pickup_amulette_coco(session_id: str, request: DismissAmuletteRequest):
+    """Add the Amulette Coco de Bouchou to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "amulette_coco_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add amulette to inventory
+    if not add_item(player, "amulette_coco"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: amulette_coco")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/pickup_bandana_ranja")
+async def pickup_bandana_ranja(session_id: str, request: DismissAmuletteRequest):
+    """Add the Bandana de Ranja to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    # Check if there's a pending amulette event
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "bandana_ranja_found":
+        raise HTTPException(status_code=400, detail="Aucune amulette à ramasser")
+
+    # Check if inventory is full
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    # Add bandana to inventory
+    if not add_item(player, "bandana_ranja"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter l'amulette")
+
+    # Remove pending event
+    del game["pending_events"][request.player_id]
+
+    # Dépiler le prochain événement en attente
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    # Broadcast state update
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up amulette: bandana_ranja")
+
+    return {"status": "success", "message": "Amulette ramassée !"}
+
+@api_router.post("/game/{session_id}/pickup_bonnet_croblow")
+async def pickup_bonnet_croblow(session_id: str, request: DismissAmuletteRequest):
+    """Add the Bonnet Croblow to player's inventory, or refuse if full"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can pickup the amulette")
+
+    if request.player_id not in game["pending_events"]:
+        raise HTTPException(status_code=400, detail="Aucune babiole à ramasser")
+
+    event = game["pending_events"][request.player_id]
+    if not isinstance(event, dict) or event.get("type") != "bonnet_croblow_found":
+        raise HTTPException(status_code=400, detail="Aucune babiole à ramasser")
+
+    if is_inventory_full(player):
+        raise HTTPException(status_code=400, detail="Inventaire plein")
+
+    if not add_item(player, "bonnet_croblow"):
+        raise HTTPException(status_code=400, detail="Impossible d'ajouter la babiole")
+
+    del game["pending_events"][request.player_id]
+
+    await dispatch_next_player_event(session_id, request.player_id)
+    await _trigger_pending_forge(session_id, request.player_id)
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    logger.info(f"Player {request.player_id} picked up babiole: bonnet_croblow")
+
+    return {"status": "success", "message": "Bonnet Croblow ramassé !"}
+
 @api_router.post("/game/{session_id}/dismiss_amulette")
 async def dismiss_amulette(session_id: str, request: DismissAmuletteRequest):
     """Dismiss/ignore the found amulette"""
@@ -4428,6 +4961,101 @@ async def dismiss_amulette(session_id: str, request: DismissAmuletteRequest):
     logger.info(f"Player {request.player_id} dismissed amulette")
 
     return {"status": "success", "message": "Amulette ignorée"}
+
+
+# ========== GOBLIN ROULETTE ENDPOINTS ==========
+class GoblinChooseStatRequest(BaseModel):
+    player_id: str
+    stat_chosen: str  # "damage", "hp", or "initiative"
+
+class GoblinStopRouletteRequest(BaseModel):
+    player_id: str
+    stat_chosen: str
+    value_obtained: int
+
+@api_router.post("/game/{session_id}/goblin_choose_stat")
+async def goblin_choose_stat(session_id: str, request: GoblinChooseStatRequest):
+    """Killer chooses which stat to improve, triggers roulette frontend"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player = game["players"][request.player_id]
+    
+    if player["role"] != "killer":
+        raise HTTPException(status_code=400, detail="Only killers can use roulette")
+    
+    if request.stat_chosen not in ["damage", "hp", "initiative"]:
+        raise HTTPException(status_code=400, detail="Invalid stat")
+    
+    # Store the choice in pending_events (will be consumed by stop_roulette)
+    game["pending_events"][request.player_id] = {
+        "type": "goblin_roulette_active",
+        "stat_chosen": request.stat_chosen,
+        "multiplier": player["goblin_stats"]["multipliers"][request.stat_chosen]
+    }
+    
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    
+    logger.info(f"Player {request.player_id} chose stat {request.stat_chosen} for goblin roulette")
+    
+    return {"status": "success", "multiplier": player["goblin_stats"]["multipliers"][request.stat_chosen]}
+
+
+@api_router.post("/game/{session_id}/goblin_stop_roulette")
+async def goblin_stop_roulette(session_id: str, request: GoblinStopRouletteRequest):
+    """Killer stops the roulette, applies bonus and updates multipliers"""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    game = game_sessions[session_id]
+    
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player = game["players"][request.player_id]
+    
+    if player["role"] != "killer":
+        raise HTTPException(status_code=400, detail="Only killers can use roulette")
+    
+    if request.stat_chosen not in ["damage", "hp", "initiative"]:
+        raise HTTPException(status_code=400, detail="Invalid stat")
+    
+    # Apply caps
+    MAX_CAPS = {"damage": 15, "hp": 24, "initiative": 15}
+    current_value = player["goblin_stats"][request.stat_chosen]
+    max_cap = MAX_CAPS[request.stat_chosen]
+    
+    actual_gain = min(request.value_obtained, max_cap - current_value)
+    player["goblin_stats"][request.stat_chosen] += actual_gain
+    
+    # Reset the chosen stat's multiplier to 1
+    player["goblin_stats"]["multipliers"][request.stat_chosen] = 1
+    
+    # Increase multipliers of the 2 other stats (max 3)
+    for stat in ["damage", "hp", "initiative"]:
+        if stat != request.stat_chosen:
+            current_mult = player["goblin_stats"]["multipliers"][stat]
+            player["goblin_stats"]["multipliers"][stat] = min(current_mult + 1, 3)
+    
+    # Remove pending event
+    if request.player_id in game["pending_events"]:
+        del game["pending_events"][request.player_id]
+    
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    
+    logger.info(f"Player {request.player_id} gained +{actual_gain} {request.stat_chosen} (total: {player['goblin_stats'][request.stat_chosen]})")
+    
+    return {
+        "status": "success",
+        "gained": actual_gain,
+        "total": player["goblin_stats"][request.stat_chosen],
+        "new_multipliers": player["goblin_stats"]["multipliers"]
+    }
 
 # ========== OBSERVATION STONE ENDPOINTS ==========
 class PickupPierreQueteRequest(BaseModel):
@@ -4655,7 +5283,35 @@ async def use_item(session_id: str, request: UseItemRequest):
         logger.info(f"Player {request.player_id} used antidote from slot {request.slot_index}")
         
         return {"status": "success", "message": "Antidote utilisé !"}
-    
+
+    # 🥛 Handle Lait LEW usage (4 PV restaurés / tour pendant 3 tours)
+    elif item_type == "lait_lew":
+        # Active (ou rafraîchit) le buff de soin sur 3 tours
+        player["lait_lew_buff_countdown"] = 3
+
+        inventory[request.slot_index] = None
+
+        # MALÉDICTION: lever la malédiction si ce slot était maudit
+        lifted_variant_lait = try_lift_curse(game, request.player_id, request.slot_index)
+        await broadcast_curse_lifted(session_id, game, lifted_variant_lait)
+
+        event_msg = f"🥛 {player['name']} boit le Lait LEW : régénération en cours !"
+        game["events"].append({"message": event_msg, "type": "lait_lew_used"})
+
+        await broadcast_to_session(session_id, {
+            "type": "lait_lew_used",
+            "message": event_msg
+        })
+
+        await broadcast_to_session(session_id, {
+            "type": "state_update",
+            "game": game
+        })
+
+        logger.info(f"Player {request.player_id} used Lait LEW from slot {request.slot_index}")
+
+        return {"status": "success", "message": "Lait LEW bu !"}
+
     else:
         raise HTTPException(status_code=400, detail="Cet item ne peut pas être utilisé directement")
 
@@ -4787,6 +5443,7 @@ async def delete_item(session_id: str, request: DeleteItemRequest):
         "rune_dommage": "Rune de Dommage",
         "rune_initiative": "Rune d'Initiative",
         "rune_vitalite": "Rune de Vitalité",
+        "lait_lew": "Lait LEW",
         "medikit": "Médikit",
         "antidote": "Antidote",
         "pierre_quete": "Pierre d'observation",
@@ -5137,6 +5794,18 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
                 "damage_bonus": p.get("damage_bonus", 0),
                 # 🐢 NEW
                 "has_amulette_tortue": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
+                # 🧅 NEW
+                "has_amulette_oignon": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_oignon",
+                # 🍀 NEW
+                "has_amulette_trefle": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_trefle",
+                # 🏴 NEW
+                "has_foulard_rankyr": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "foulard_rankyr",
+                # 🥥 NEW
+                "has_amulette_coco": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_coco",
+                # 🎯 NEW
+                "has_bandana_ranja": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "bandana_ranja",
+                # 🌸 NEW
+                "has_bonnet_croblow": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "bonnet_croblow",
             })
 
     if not participants:
@@ -5403,7 +6072,17 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
         survivor_id = survivor_result["id"]
         if survivor_id in game.get("pending_events", {}):
             del game["pending_events"][survivor_id]
-    
+
+    # ⚠️ FIX SÉQUENCEMENT : dépiler l'éventuel popup mis en file d'attente
+    # derrière ce combat (typiquement le popup de spécialisation du killer
+    # quand sa fouille a déclenché le combat dans la même phase).
+    # Sans cet appel, `pending_events_queue[attacker_id]` reste plein
+    # indéfiniment et le killer ne voit jamais sa spécialisation.
+    await dispatch_next_player_event(session_id, attacker_id)
+    for survivor_result in request.survivors_results:
+        survivor_id = survivor_result["id"]
+        await dispatch_next_player_event(session_id, survivor_id)
+
     # Broadcast updated state
     await broadcast_to_session(session_id, {
         "type": "state_update",
@@ -6093,6 +6772,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             killer_class_for_combat = killer_player.get("character_class", "Orc") if killer_player else "Orc"
                             killer_name_for_combat = killer_player.get("name", "Poursuite") if killer_player else "Poursuite"
 
+                            # GOBLIN ROULETTE: apply killer's goblin stat bonuses to this combat
+                            _goblin_stats = (killer_player.get("goblin_stats") if killer_player else None) or {}
+                            _goblin_damage_bonus = _goblin_stats.get("damage", 0)
+                            _goblin_hp_bonus = _goblin_stats.get("hp", 0)
+                            _goblin_initiative_bonus = _goblin_stats.get("initiative", 0)
+
                             combat_event = {
                                 "type": "multiplayer_combat",
                                 "attacker_id": killer_id_for_combat,
@@ -6110,7 +6795,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     "poisoned_countdown": player.get("poisoned_countdown", 0),
                                 }],
                                 "num_goblins": 1,
-                                "goblin_hp": 6,
+                                "goblin_hp": 6 + _goblin_hp_bonus,
+                                "goblin_damage_bonus": _goblin_damage_bonus,  # NEW: bonus dégâts roulette
+                                "goblin_initiative_bonus": _goblin_initiative_bonus,  # NEW: bonus initiative roulette
                                 "turn": game["turn"],
                                 "combat_id": f"poursuite_{player_id}_{room_name}_{game['turn']}",
                                 "toxine_incapacitante_active": _tox_incap
@@ -6433,6 +7120,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         gold_amount, gold_image = generate_gold_reward()
                         if is_lucky:
                             gold_amount *= 2  # NEW: doubled for lucky search
+                        # 🍀 NEW: Amulette Chanceuse — +50% d'or à l'exploration
+                        has_trefle = ((player.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_trefle"
+                        if has_trefle:
+                            gold_amount = max(1, int(round(gold_amount * 1.5)))
                         player["gold"] += gold_amount
 
                         # NEW: always show the gold popup — even after a lucky search.
@@ -6441,7 +7132,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         gold_message = (
                             f"✨ Fouille miraculeuse ! Vous trouvez {gold_amount} pièces d'or (x2) !"
                             if is_lucky
-                            else f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !"
+                            else (
+                                f"🍀 Coup de chance ! Vous fouillez la pièce et trouvez {gold_amount} pièces d'or (+50%) !"
+                                if has_trefle
+                                else f"Vous fouillez la pièce et trouvez {gold_amount} pièces d'or !"
+                            )
                         )
                         try:
                             await enqueue_player_event(session_id, player_id, "gold_found", {
@@ -6502,6 +7197,96 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 None
                             )
                             logger.info(f"Player {player_id} found Amulette Tortue (lucky search)")
+                            # 🧅 NEW: Amulette Oignon garantie (100%) en supplément des 2 runes
+                            # Même flow que l'Amulette Tortue : l'ajout réel à l'inventaire se fait
+                            # via /pickup_amulette_oignon quand le joueur clique sur "Ramasser".
+                            amu_oignon_msg = f"🧅 {player['name']} découvre une Amulette Oignon !"
+                            game["events"].append({
+                                "message": amu_oignon_msg,
+                                "type": "amulette_oignon_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "amulette_oignon_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Amulette Oignon (lucky search)")
+                            # 🍀 NEW: Amulette Chanceuse garantie (100%) en supplément
+                            # Même flow que les autres amulettes : l'ajout réel à l'inventaire se fait
+                            # via /pickup_amulette_trefle quand le joueur clique sur "Ramasser".
+                            amu_trefle_msg = f"🍀 {player['name']} découvre une Amulette Chanceuse !"
+                            game["events"].append({
+                                "message": amu_trefle_msg,
+                                "type": "amulette_trefle_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "amulette_trefle_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Amulette Trefle (lucky search)")
+                            # 🏴 NEW: Foulard Rankyr garanti (100%) en supplément
+                            # Même flow que les autres babioles : l'ajout réel à l'inventaire se fait
+                            # via /pickup_foulard_rankyr quand le joueur clique sur "Ramasser".
+                            foulard_msg = f"🏴 {player['name']} découvre un Foulard Rankyr !"
+                            game["events"].append({
+                                "message": foulard_msg,
+                                "type": "foulard_rankyr_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "foulard_rankyr_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Foulard Rankyr (lucky search)")
+                            # 🥥 NEW: Amulette Coco de Bouchou garantie (100%) en supplément
+                            coco_msg = f"🥥 {player['name']} découvre l'Amulette Coco de Bouchou !"
+                            game["events"].append({
+                                "message": coco_msg,
+                                "type": "amulette_coco_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "amulette_coco_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Amulette Coco (lucky search)")
+                            # 🎯 NEW: Bandana de Ranja garanti (100%) en supplément
+                            ranja_msg = f"🎯 {player['name']} découvre le Bandana de Ranja !"
+                            game["events"].append({
+                                "message": ranja_msg,
+                                "type": "bandana_ranja_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "bandana_ranja_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Bandana de Ranja (lucky search)")
+                            # 🌸 NEW: Bonnet Croblow garanti (100%) en supplément
+                            croblow_msg = f"🌸 {player['name']} découvre le Bonnet Croblow !"
+                            game["events"].append({
+                                "message": croblow_msg,
+                                "type": "bonnet_croblow_found",
+                                "for_role": "survivor"
+                            })
+                            await enqueue_player_event(
+                                session_id,
+                                player_id,
+                                {"type": "bonnet_croblow_found"},
+                                None
+                            )
+                            logger.info(f"Player {player_id} found Bonnet Croblow (lucky search)")
                         else:
                             # RUNE DROP SYSTEM (after gold)
                             roll = random.random()
@@ -6528,6 +7313,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 )
                                 logger.info(f"Player {player_id} found rune: {rune_type}")
                                 # Track for Vision Vigilante (survivor picked up an item)
+                                if "turn_survivors_items_gained" not in game:
+                                    game["turn_survivors_items_gained"] = {}
+                                game["turn_survivors_items_gained"][player_id] = room_name
+
+                            # 🥛 LAIT LEW DROP SYSTEM (tirage indépendant, même taux qu'une rune = 15%)
+                            if random.random() < 0.15:
+                                await enqueue_player_event(
+                                    session_id,
+                                    player_id,
+                                    {
+                                        "type": "lait_lew_found",
+                                        "inventory_full": is_inventory_full(player)
+                                    },
+                                    None
+                                )
+                                logger.info(f"Player {player_id} found Lait LEW")
                                 if "turn_survivors_items_gained" not in game:
                                     game["turn_survivors_items_gained"] = {}
                                 game["turn_survivors_items_gained"][player_id] = room_name
@@ -6806,7 +7607,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     # NEW: For Malediction, send the list of survivors with cursable items
                     if power_name == "malediction":
-                        CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
+                        CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons", "lait_lew"}
                         cursable_survivors = []
                         for pid, p in game["players"].items():
                             if p.get("role") == "survivor" and not p.get("eliminated", False):
@@ -7021,7 +7822,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if not item:
                     continue
 
-                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons", "lait_lew"}
                 if item.get("type") not in CURSABLE_TYPES:
                     continue
 
@@ -7087,7 +7888,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if not (killer_evolution.get("level") == 2 and killer_evolution.get("variant") == "masse"):
                     continue
 
-                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons"}
+                CURSABLE_TYPES = {"rune_dommage", "rune_initiative", "rune_vitalite", "antidote", "couronne", "culotte", "chaussons", "lait_lew"}
 
                 selections = data.get("selections", [])
                 if not isinstance(selections, list):
