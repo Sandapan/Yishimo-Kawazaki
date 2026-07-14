@@ -842,8 +842,25 @@ async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: 
             "combat_id": combat_id,
         }
 
-        for sid in participants:
-            await enqueue_player_event(session_id, sid, "crystal_combat", combat_event)
+        # BUG FIX: send `crystal_combat` DIRECTLY to each participant's websocket
+        # instead of via `enqueue_player_event`. The queue-based dispatch would
+        # silently drop the message when a participant still has an active
+        # `pending_events` entry (typically the "crystal" popup for the initiator),
+        # leaving them stuck on the waiting screen after the timer expires.
+        logger.info(
+            f"💎 [FINALIZE] Cristal combat: participants={participants}, "
+            f"hp={combat_window['crystal_hp']}/{combat_window['crystal_max_hp']}"
+        )
+        for pid in participants:
+            # Clear any lingering popup event so the client doesn't ignore the combat
+            if pid in game.get("pending_events", {}):
+                del game["pending_events"][pid]
+            ws = active_connections.get(session_id, {}).get(pid)
+            if ws is not None:
+                try:
+                    await ws.send_json(combat_event)
+                except Exception as exc:
+                    logger.warning(f"Failed to send crystal_combat to {pid}: {exc}")
 
         del game["combat_help_windows"][attacker_id]
         await broadcast_to_session(session_id, {"type": "state_update", "game": game})
@@ -5857,44 +5874,17 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
     if game.get("crystal_combat") and game["crystal_combat"].get("phase") == "active":
         return {"status": "already_started", "combat": game["crystal_combat"]}
 
-    # Gather every alive survivor present in the crystal room
-    participants = []
+    # BUG FIX: The initiator (A) is the ONLY participant at the start of the help
+    # window. Every other alive survivor becomes an "eligible ally" who receives the
+    # `combat_help_available` popup and must actively accept via `join_combat` to be
+    # added to the participants list (same behaviour as the Mimic help window).
+    initiator = None
     for p in game["players"].values():
-        if (
-            p["role"] == "survivor"
-            and not p.get("eliminated")
-            and (
-                p.get("current_room") == crystal_room
-                or (game.get("pending_actions", {}).get(p["id"], {}) or {}).get("room") == crystal_room
-                or discovered
-            )
-        ):
-            participants.append({
-                "id": p["id"],
-                "name": p["name"],
-                "class": p.get("character_class", "Survivor"),
-                "hp": p.get("hp", 36),
-                "max_hp": p.get("max_hp", 36),
-                "initiative_bonus": p.get("initiative_bonus", 0),
-                "damage_bonus": p.get("damage_bonus", 0),
-                # 🐢 NEW
-                "has_amulette_tortue": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
-                # 🧅 NEW
-                "has_amulette_oignon": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_oignon",
-                # 🍀 NEW
-                "has_amulette_trefle": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_trefle",
-                # 🏴 NEW
-                "has_foulard_rankyr": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "foulard_rankyr",
-                # 🥥 NEW
-                "has_amulette_coco": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_coco",
-                # 🎯 NEW
-                "has_bandana_ranja": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "bandana_ranja",
-                # 🌸 NEW
-                "has_bonnet_croblow": ((p.get("equipment") or {}).get("babiole") or {}).get("type") == "bonnet_croblow",
-            })
-
-    if not participants:
-        raise HTTPException(status_code=400, detail="Aucun survivant dans la salle")
+        if p["id"] == request.player_id:
+            initiator = p
+            break
+    if not initiator:
+        raise HTTPException(status_code=400, detail="Initiator not found")
 
     # NEW: utiliser les HP persistants (si non initialisé, fallback sur calcul dynamique)
     if game.get("crystal_current_hp") is None:
@@ -5910,12 +5900,19 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
     game.setdefault("combat_help_windows", {})[request.player_id] = {
         "combat_type": "crystal",
         "room": crystal_room,
-        "participants": [s["id"] for s in participants],  # tous les survivants déjà présents
+        "participants": [request.player_id],  # BUG FIX: initiator only
         "crystal_hp": game["crystal_current_hp"],
         "crystal_max_hp": game["crystal_max_hp"],
         "expires_at": expires_at,
         "finalized": False,
     }
+
+    # BUG FIX: L'initiateur (A) avait un popup "crystal" actif quand il a lancé
+    # l'attaque — il faut vider cette entrée `pending_events` pour que la
+    # notification `crystal_combat` envoyée en fin de fenêtre soit dispatchée
+    # immédiatement au lieu d'être mise en file d'attente (et perdue).
+    if request.player_id in game.get("pending_events", {}):
+        del game["pending_events"][request.player_id]
 
     # Marquer l'initiateur comme "ayant agi" (fouille = attaque du cristal)
     game.setdefault("pending_actions", {})[request.player_id] = {
@@ -5924,10 +5921,11 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
         "room": crystal_room,
     }
 
-    already_in = {s["id"] for s in participants}
+    # Alliés éligibles : tous les autres aventuriers vivants qui n'ont pas encore
+    # sélectionné de pièce ce tour-ci (peu importe leur emplacement).
     eligible_B = []
     for pid, p in game["players"].items():
-        if pid in already_in:
+        if pid == request.player_id:
             continue
         if p.get("role") != "survivor":
             continue
@@ -8172,7 +8170,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "room": combat_window["room"],
                     }
 
-                    logger.info(f"✅ {player['name']} rejoint le combat Mimic de {attacker_id}")
+                    logger.info(f"✅ {player['name']} rejoint le combat {combat_window.get('combat_type', 'mimic')} de {attacker_id}")
 
                     # Broadcast : informer tous les joueurs (A voit B rejoindre)
                     await broadcast_to_session(session_id, {
