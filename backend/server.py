@@ -248,6 +248,7 @@ def generate_rooms_state() -> dict:
             "resurrection_stele_discovered": False,
             "has_trophy": None,
             "has_fleeing_goblin": False,
+            "searched_by_survivors": False,  # NEW: True dès qu'un survivant fouille cette pièce
         }
     return rooms_state
 
@@ -307,6 +308,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
             }
         },
         "rooms": rooms_state,
+        "killer_knows_pillaged": {},  # NEW: {killer_id: [room_names]} - pièces dont le killer sait qu'elles sont pillées
         "keys_collected": 0,
         "keys_needed": 1,
         "game_started": False,
@@ -344,6 +346,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "enabled_powers": list(POWERS.keys()),  # NEW: liste des pouvoirs disponibles (tous par défaut)
         "crystal_room": None,
         "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
+        "crystal_current_hp": None,  # NEW: HP persistant du cristal (calculé au démarrage, décrémenté entre combats)
+        "crystal_max_hp": None,      # NEW: HP max du cristal (50 × nb survivants au start)
         "crystal_room": None,                # NEW
         "relique_triangulaire_sold": False,  # NEW: whether the relique has been sold (unique item)
         "cartographer_placed": False,  # NEW: whether cartographer has been placed
@@ -812,6 +816,39 @@ async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: 
             # 🌸 NEW
             "has_bonnet_croblow": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "bonnet_croblow",
         })
+
+    combat_type = combat_window.get("combat_type", "mimic")
+
+    if combat_type == "crystal":
+        # NEW: combat cristal — même fenêtre d'aide, entité AOE unique
+        combat_id = f"crystal_{attacker_id}_{int(combat_window['expires_at'])}"
+        combat_event = {
+            "type": "crystal_combat",
+            "combat_type": "crystal",
+            "attacker_id": attacker_id,
+            "room": combat_window["room"],
+            "survivors": survivors,
+            "participants": participants,
+            "crystal_hp": combat_window["crystal_hp"],
+            "crystal_max_hp": combat_window["crystal_max_hp"],
+            "crystal_damage": CRYSTAL_DAMAGE,
+            "combat_id": combat_id,
+            "turn": game.get("turn", 0),
+        }
+
+        game["crystal_combat"] = {
+            "phase": "active",
+            "participants": participants,
+            "combat_id": combat_id,
+        }
+
+        for sid in participants:
+            await enqueue_player_event(session_id, sid, "crystal_combat", combat_event)
+
+        del game["combat_help_windows"][attacker_id]
+        await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+        logger.info(f"💎 Combat Cristal finalisé : {len(participants)} participant(s) vs Cristal {combat_window['crystal_hp']}HP")
+        return
 
     combat_id = f"mimic_{attacker_id}_{int(combat_window['expires_at'])}"
     combat_event = {
@@ -2741,6 +2778,23 @@ async def process_turn(session_id: str):
                     found_survivor = True
                     # IMPORTANT: Sortir de la boucle après avoir créé le combat
                     break# Check if this killer has rage power and found a survivor
+
+        if not found_survivor:
+            # NEW: si la pièce a déjà été pillée par les survivants, mémoriser + notifier le killer
+            if game["rooms"][killer_room].get("searched_by_survivors", False):
+                if killer_id not in game.get("killer_knows_pillaged", {}):
+                    game.setdefault("killer_knows_pillaged", {})[killer_id] = []
+                if killer_room not in game["killer_knows_pillaged"][killer_id]:
+                    game["killer_knows_pillaged"][killer_id].append(killer_room)
+                # Envoyer un WS event pour déclencher l'overlay côté client
+                # (target_player_id non supporté par broadcast_to_session : on envoie à
+                # tous les killers, le frontend filtre sur killer_id === playerId)
+                await broadcast_to_session(session_id, {
+                    "type": "room_pillaged_discovered",
+                    "killer_id": killer_id,
+                    "room_name": killer_room,
+                }, role_filter="killer")
+
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
             if rage_data and not rage_data.get("used_second_chance", False):
@@ -3566,6 +3620,8 @@ async def select_role(session_id: str, request: SelectRoleRequest):
         player["max_hp"] = 36
         player["inventory"] = [None] * 9
         player["equipment"] = {"babiole": None, "familier": None}  # NEW
+        # 🔧 FIX: passer de killer → survivor doit remettre goblin_stats à None
+        player["goblin_stats"] = None
     else:
         player["hp"] = None
         player["max_hp"] = None
@@ -3584,6 +3640,16 @@ async def select_role(session_id: str, request: SelectRoleRequest):
                 "eboulement": {"level": 1, "variant": None},
                 "patrouille": {"level": 1, "variant": None},
                 "traque": {"level": 1, "variant": None}
+            }
+        # 🔧 FIX: goblin_stats manquait ici (cause du bug "Erreur lors du choix")
+        # Un joueur ayant rejoint sans rôle puis choisi "killer" via ce endpoint
+        # se retrouvait avec goblin_stats = None → crash au premier choix de stat.
+        if not player.get("goblin_stats"):
+            player["goblin_stats"] = {
+                "damage": 0,
+                "hp": 0,
+                "initiative": 0,
+                "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
             }
 
     await broadcast_to_session(matching_session, {
@@ -3825,6 +3891,13 @@ async def start_game(session_id: str):
     else:
         logger.info("Fleeing goblin NOT placed (Relique Sphérique disabled by host)")
 
+    # NEW: initialiser les HP du cristal (50 × nb survivants au démarrage)
+    survivor_count = sum(1 for p in game["players"].values() if p["role"] == "survivor")
+    crystal_total_hp = CRYSTAL_HP_PER_SURVIVOR * max(1, survivor_count)
+    game["crystal_max_hp"] = crystal_total_hp
+    game["crystal_current_hp"] = crystal_total_hp
+    logger.info(f"💎 Cristal initialisé : {crystal_total_hp} HP ({survivor_count} survivants × {CRYSTAL_HP_PER_SURVIVOR})")
+
     await broadcast_to_session(session_id, {
         "type": "game_started",
         "keys_needed": game["keys_needed"],
@@ -3905,6 +3978,7 @@ async def reset_game(session_id: str):
     game["phase"] = "waiting"
     game["events"] = []
     game["pending_actions"] = {}
+    game["combat_help_windows"] = {}  # NEW: vider les fenêtres d'aide (mimic/cristal) au reset
     game["should_place_next_key"] = False
     game["quests"] = []
     game["active_quest"] = None
@@ -4992,6 +5066,17 @@ async def goblin_choose_stat(session_id: str, request: GoblinChooseStatRequest):
     if request.stat_chosen not in ["damage", "hp", "initiative"]:
         raise HTTPException(status_code=400, detail="Invalid stat")
     
+    # 🛡️ Safeguard : garantit que goblin_stats existe même si un chemin d'init
+    # a été oublié quelque part (defense in depth). Corrige aussi les parties
+    # déjà en cours au moment du déploiement du fix.
+    if not player.get("goblin_stats"):
+        player["goblin_stats"] = {
+            "damage": 0,
+            "hp": 0,
+            "initiative": 0,
+            "multipliers": {"damage": 1, "hp": 1, "initiative": 1}
+        }
+    
     # Store the choice in pending_events (will be consumed by stop_roulette)
     game["pending_events"][request.player_id] = {
         "type": "goblin_roulette_active",
@@ -5724,7 +5809,7 @@ async def crystal_place_relic(session_id: str, request: CrystalActionRequest):
         "all_placed": all_placed,
     }
 
-CRYSTAL_MAX_HP = 30
+CRYSTAL_HP_PER_SURVIVOR = 50  # NEW: 50 HP par survivant (scalable difficulté)
 CRYSTAL_DAMAGE = 9
 SURVIVOR_BASE_DAMAGE = 5
 
@@ -5811,30 +5896,90 @@ async def crystal_attack(session_id: str, request: CrystalActionRequest):
     if not participants:
         raise HTTPException(status_code=400, detail="Aucun survivant dans la salle")
 
-    combat_event = {
-        "type": "crystal_combat",
-        "survivors": participants,
-        "crystal_hp": CRYSTAL_MAX_HP,
-        "crystal_damage": CRYSTAL_DAMAGE,
-        "turn": game["turn"],
-        "combat_id": f"crystal_{crystal_room}_{game['turn']}_{int(time.time()*1000)}",
+    # NEW: utiliser les HP persistants (si non initialisé, fallback sur calcul dynamique)
+    if game.get("crystal_current_hp") is None:
+        survivor_count = sum(1 for p in game["players"].values() if p["role"] == "survivor")
+        game["crystal_max_hp"] = CRYSTAL_HP_PER_SURVIVOR * max(1, survivor_count)
+        game["crystal_current_hp"] = game["crystal_max_hp"]
+
+    # NEW: au lieu de démarrer le combat immédiatement, on ouvre une fenêtre
+    # d'aide de 10s (même mécanique que le Mimic) pendant laquelle les autres
+    # survivants présents peuvent rejoindre l'assaut.
+    HELP_WINDOW_SECONDS = 10.0
+    expires_at = time.time() + HELP_WINDOW_SECONDS
+    game.setdefault("combat_help_windows", {})[request.player_id] = {
+        "combat_type": "crystal",
+        "room": crystal_room,
+        "participants": [s["id"] for s in participants],  # tous les survivants déjà présents
+        "crystal_hp": game["crystal_current_hp"],
+        "crystal_max_hp": game["crystal_max_hp"],
+        "expires_at": expires_at,
+        "finalized": False,
     }
 
-    game["crystal_combat"] = {
-        "phase": "active",
-        "participants": [s["id"] for s in participants],
-        "combat_id": combat_event["combat_id"],
+    # Marquer l'initiateur comme "ayant agi" (fouille = attaque du cristal)
+    game.setdefault("pending_actions", {})[request.player_id] = {
+        "type": "attack_crystal",
+        "attacker_id": request.player_id,
+        "room": crystal_room,
     }
 
-    # Push the event to every participant via pending_events (same as goblin combat)
-    for s in participants:
-        game["pending_events"][s["id"]] = combat_event
+    already_in = {s["id"] for s in participants}
+    eligible_B = []
+    for pid, p in game["players"].items():
+        if pid in already_in:
+            continue
+        if p.get("role") != "survivor":
+            continue
+        if p.get("eliminated", False):
+            continue
+        if pid in game.get("pending_actions", {}):
+            continue
+        eligible_B.append(pid)
+
+    # Notifier l'initiateur : il doit attendre
+    ws_a = active_connections.get(session_id, {}).get(request.player_id)
+    if ws_a:
+        try:
+            await ws_a.send_json({
+                "type": "combat_help_waiting",
+                "combat_type": "crystal",
+                "room": crystal_room,
+                "expires_at": expires_at,
+                "message": "💎 Vous attaquez le Cristal ! Vos alliés peuvent vous rejoindre...",
+            })
+        except Exception:
+            pass
+
+    # Notifier les alliés éligibles
+    for pid in eligible_B:
+        ws_b = active_connections.get(session_id, {}).get(pid)
+        if ws_b:
+            try:
+                await ws_b.send_json({
+                    "type": "combat_help_available",
+                    "combat_type": "crystal",
+                    "attacker_id": request.player_id,
+                    "attacker_name": player["name"],
+                    "room": crystal_room,
+                    "expires_at": expires_at,
+                    "crystal_hp": game["crystal_current_hp"],
+                    "crystal_max_hp": game["crystal_max_hp"],
+                })
+            except Exception:
+                pass
 
     await broadcast_to_session(session_id, {"type": "state_update", "game": game})
-    await broadcast_to_session(session_id, combat_event)
 
-    logger.info(f"⚔️ Combat Cristal déclenché : {[s['name'] for s in participants]} VS Cristal")
-    return {"status": "success", "combat_event": combat_event}
+    # ⚡ Si aucun allié éligible → lancer le combat directement (pas d'attente inutile)
+    if not eligible_B:
+        logger.info(f"💎 Cristal solo : pas d'allié éligible, combat immédiat pour {player['name']}")
+        asyncio.create_task(finalize_combat_help_window(session_id, request.player_id, 0.0))
+    else:
+        asyncio.create_task(finalize_combat_help_window(session_id, request.player_id, HELP_WINDOW_SECONDS))
+        logger.info(f"💎 Fenêtre d'aide Cristal ouverte par {player['name']} dans {crystal_room} ({len(eligible_B)} allié(s) éligible(s))")
+
+    return {"status": "help_window_opened", "expires_at": expires_at}
 
 @api_router.post("/game/{session_id}/crystal_close")
 async def crystal_close(session_id: str, request: CrystalActionRequest):
@@ -6118,6 +6263,7 @@ async def resolve_multiplayer_combat(session_id: str, request: MultiPlayerCombat
 class ResolveCrystalCombatRequest(BaseModel):
     survivors_results: List[dict]  # [{"id": str, "damage_dealt": int, "eliminated": bool}]
     crystal_defeated: bool
+    crystal_hp_remaining: Optional[int] = None  # NEW: HP restants du cristal à la fin du combat
     combat_log: List[str] = []
 
 
@@ -6192,6 +6338,15 @@ async def resolve_crystal_combat(session_id: str, request: ResolveCrystalCombatR
 
     alive_survivors = [p for p in game["players"].values()
                        if p["role"] == "survivor" and not p["eliminated"]]
+
+    # NEW: persister les HP restants du cristal (pour le prochain combat)
+    if request.crystal_hp_remaining is not None:
+        game["crystal_current_hp"] = max(0, request.crystal_hp_remaining)
+        logger.info(f"💎 HP restants du Cristal après combat : {game['crystal_current_hp']}/{game['crystal_max_hp']}")
+    else:
+        # Fallback : soustraire les dégâts totaux si le front n'envoie pas le HP restant
+        total_damage = sum(r.get("damage_dealt", 0) for r in request.survivors_results)
+        game["crystal_current_hp"] = max(0, (game.get("crystal_current_hp") or 0) - total_damage)
 
     combat_state["phase"] = "defeat" if not alive_survivors else "ended"
     game["crystal_combat"] = combat_state
@@ -6919,6 +7074,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
 
                     # Check for quest immediately when survivor selects room
                     if player["role"] == "survivor":
+                        # NEW: marquer la pièce comme fouillée par les survivants
+                        game["rooms"][room_name]["searched_by_survivors"] = True
                         room = game["rooms"][room_name]
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         

@@ -2305,7 +2305,7 @@ const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, onExp
         padding: '2rem 3rem', maxWidth: 600, textAlign: 'center', color: '#fff',
       }}>
         <h2 style={{ color: '#d4af37', fontSize: '1.8rem', marginBottom: '1rem' }}>
-          💰 Combat Mimic — En attente
+          {data.combat_type === "crystal" ? "💎 Assaut sur le Cristal — En attente" : "💰 Combat Mimic — En attente"}
         </h2>
         <p style={{ fontSize: '1.1rem', marginBottom: '1.5rem' }}>
           Vos alliés peuvent vous rejoindre dans <strong>{data.room}</strong>...
@@ -2391,10 +2391,16 @@ const CombatHelpAvailablePopup = ({ data, ws, onClose }) => {
         }}
       >
         <h3 style={{ color: '#d4af37', marginBottom: '0.8rem' }}>
-          ⚔️ {data.attacker_name} combat un Mimic dans {data.room} !
+          {data.combat_type === "crystal"
+            ? `💎 ${data.attacker_name} attaque le Cristal dans ${data.room} !`
+            : `⚔️ ${data.attacker_name} combat un Mimic dans ${data.room} !`}
         </h3>
         <p style={{ marginBottom: '0.8rem', fontSize: '0.95rem', color: '#ccc' }}>
-          Rejoignez le combat pour aider votre allié.
+          {data.combat_type === "crystal"
+            ? (data.crystal_hp != null
+                ? `Rejoignez l'assaut pour aider votre allié. (${data.crystal_hp}/${data.crystal_max_hp} HP)`
+                : `Rejoignez l'assaut pour aider votre allié.`)
+            : "Rejoignez le combat pour aider votre allié."}
         </p>
         <div style={{ fontWeight: 'bold', fontSize: '1.4rem', color: '#ff7a18', marginBottom: '0.4rem' }}>
           {timeLeft.toFixed(1)}s
@@ -3045,7 +3051,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
     );
     fighters.push({
       id: 'crystal', name: 'Le Cristal', class: 'Cristal', type: 'crystal',
-      hp: event.crystal_hp, maxHp: event.crystal_hp,
+      hp: event.crystal_hp, maxHp: event.crystal_max_hp || event.crystal_hp,  // NEW: max envoyé par le backend
       initiative: crystalInitiative, position: 0, alive: true, currentAnimation: 'idle',
     });
     fighters.sort((a, b) => b.initiative - a.initiative);
@@ -3127,6 +3133,7 @@ const CrystalCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
               await axios.post(`${API}/game/${sessionId}/resolve_crystal_combat`, {
                 survivors_results: survivorsResults,
                 crystal_defeated: !crystal.alive,
+                crystal_hp_remaining: Math.max(0, crystal.hp),  // NEW: HP restants du cristal
                 combat_log: combatLog,
               });
             } catch (error) {
@@ -3560,272 +3567,6 @@ const InventoryHUD = ({ player, onClick }) => {
   );
 };
 
-// ========== STATS HUD BUTTON COMPONENT ==========
-const StatsHUD = ({ player, onClick }) => {
-  if (!player || player.role !== "survivor") return null;
-  
-  return (
-    <button
-      onClick={onClick}
-      data-testid="stats-hud-button"
-      style={{
-        position: 'fixed',
-        top: '80px',  // En dessous de l'inventaire
-        right: '20px',
-        backgroundColor: 'rgba(42, 31, 23, 0.95)',
-        border: '2px solid #d4af37',
-        borderRadius: '8px',
-        padding: '12px 20px',
-        color: '#d4af37',
-        fontSize: '18px',
-        fontWeight: 'bold',
-        cursor: 'pointer',
-        zIndex: 100,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        transition: 'all 0.2s ease',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.5)'
-      }}
-      onMouseEnter={(e) => {
-        e.target.style.backgroundColor = 'rgba(52, 41, 33, 0.95)';
-        e.target.style.transform = 'scale(1.05)';
-      }}
-      onMouseLeave={(e) => {
-        e.target.style.backgroundColor = 'rgba(42, 31, 23, 0.95)';
-        e.target.style.transform = 'scale(1)';
-      }}
-    >
-      ⚔️ Stats
-    </button>
-  );
-};
-
-// ========== STATS MODAL COMPONENT ==========
-const StatsModal = ({ player, onClose }) => {
-  if (!player || player.role !== "survivor") return null;
-  
-  // Calculer les bonus des runes
-  const inventory = player.inventory || [];
-  let damageBonus = 0;
-  let healthBonus = 0;
-  let initiativeBonus = 0;
-  
-  inventory.forEach(item => {
-    if (item && item.type === 'rune_dommage') damageBonus += 2;
-    if (item && item.type === 'rune_vitalite') healthBonus += 8;
-    if (item && item.type === 'rune_initiative') initiativeBonus += 3;
-  });
-
-  // NEW: include forged bonuses (persistent on the weapon)
-  damageBonus += player.damage_bonus || 0;
-  initiativeBonus += player.initiative_bonus || 0;
-  healthBonus += Math.max(0, (player.max_hp || 36) - 36);
-  
-  // Stats de base
-  const baseDamage = 3;  // 1d6 = moyenne 3.5 ≈ 3
-  const baseHealth = 36;
-  const baseInitiative = 10;  // 1d20 = moyenne 10.5 ≈ 10
-  
-  // Stats totales
-  const totalDamage = `1d6 ${damageBonus > 0 ? `+${damageBonus}` : ''}`;
-  const totalHealth = baseHealth + healthBonus;
-  const totalInitiative = `1d20 ${initiativeBonus > 0 ? `+${initiativeBonus}` : ''}`;
-  
-  // HP actuels
-  const currentHP = player.hp || baseHealth;
-  const maxHP = totalHealth;
-  
-  return (
-    <div
-      className="game-over-overlay"
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.85)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 3000,
-      }}
-      onClick={onClose}
-      data-testid="stats-modal-overlay"
-    >
-      <Card
-        style={{
-          maxWidth: '500px',
-          width: '90%',
-          backgroundColor: '#2a1f17',
-          borderColor: '#d4af37',
-          border: '3px solid #d4af37',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <CardHeader>
-          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
-            ⚔️ Caractéristiques
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {/* Nom et classe */}
-          <div style={{ 
-            textAlign: 'center', 
-            marginBottom: '24px',
-            paddingBottom: '16px',
-            borderBottom: '2px solid rgba(212, 175, 55, 0.3)'
-          }}>
-            <h3 style={{ color: '#e8dcc4', fontSize: '1.4rem', marginBottom: '8px' }}>
-              {player.name}
-            </h3>
-            <p style={{ color: '#b8956a', fontSize: '1.1rem' }}>
-              {player.character_class}
-            </p>
-          </div>
-          
-          {/* Stats */}
-          <div style={{ 
-            display: 'flex', 
-            flexDirection: 'column', 
-            gap: '16px',
-            marginBottom: '24px'
-          }}>
-            {/* Vitalité */}
-            <div style={{ 
-              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
-              padding: '16px', 
-              borderRadius: '8px',
-              border: '1px solid rgba(212, 175, 55, 0.2)'
-            }}>
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                marginBottom: '8px'
-              }}>
-                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
-                  ❤️ Vitalité
-                </span>
-                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
-                  {currentHP}/{maxHP}
-                </span>
-              </div>
-              {healthBonus > 0 && (
-                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
-                  +{healthBonus} PV (Runes de vitalité)
-                </div>
-              )}
-            </div>
-            
-            {/* Dégâts */}
-            <div style={{ 
-              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
-              padding: '16px', 
-              borderRadius: '8px',
-              border: '1px solid rgba(212, 175, 55, 0.2)'
-            }}>
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                marginBottom: '8px'
-              }}>
-                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
-                  ⚔️ Dégâts de base
-                </span>
-                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
-                  {totalDamage}
-                </span>
-              </div>
-              {damageBonus > 0 && (
-                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
-                  +{damageBonus} dégâts (Runes de dommage)
-                </div>
-              )}
-            </div>
-            
-            {/* Initiative */}
-            <div style={{ 
-              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
-              padding: '16px', 
-              borderRadius: '8px',
-              border: '1px solid rgba(212, 175, 55, 0.2)'
-            }}>
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                marginBottom: '8px'
-              }}>
-                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
-                  ⚡ Initiative
-                </span>
-                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
-                  {totalInitiative}
-                </span>
-              </div>
-              {initiativeBonus > 0 && (
-                <div style={{ color: '#10b981', fontSize: '0.9rem' }}>
-                  +{initiativeBonus} initiative (Runes d'initiative)
-                </div>
-              )}
-            </div>
-            
-            {/* Or */}
-            <div style={{ 
-              backgroundColor: 'rgba(0, 0, 0, 0.3)', 
-              padding: '16px', 
-              borderRadius: '8px',
-              border: '1px solid rgba(212, 175, 55, 0.2)'
-            }}>
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center'
-              }}>
-                <span style={{ color: '#d4af37', fontSize: '1.1rem', fontWeight: 'bold' }}>
-                  💰 Or
-                </span>
-                <span style={{ color: '#e8dcc4', fontSize: '1.2rem', fontWeight: 'bold' }}>
-                  {player.gold || 0}
-                </span>
-              </div>
-            </div>
-          </div>
-          
-          {/* Bouton fermer */}
-          <button
-            onClick={onClose}
-            data-testid="stats-modal-close"
-            style={{
-              width: '100%',
-              padding: '12px',
-              backgroundColor: '#d4af37',
-              border: 'none',
-              borderRadius: '8px',
-              color: '#1a1410',
-              fontSize: '16px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = '#c9a033';
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = '#d4af37';
-            }}
-          >
-            Fermer
-          </button>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
-
 // ========== ITEM INFO MODAL COMPONENT ==========
 const ItemInfoModal = ({ item, onClose, player, sessionId }) => {
   // 🥛 Confirmation pour boire le Lait LEW alors qu'on est déjà au max de PV
@@ -4219,6 +3960,113 @@ const EquipmentGrid = ({ player, sessionId, onInspect }) => {
   );
 };
 
+// ========== STATS PANEL (version embarquée, sans overlay) ==========
+// Même logique que StatsModal mais rendue en-ligne à côté de l'inventaire.
+const StatsPanel = ({ player }) => {
+  if (!player || player.role !== "survivor") return null;
+
+  const inventory = player.inventory || [];
+  let damageBonus = 0;
+  let healthBonus = 0;
+  let initiativeBonus = 0;
+
+  inventory.forEach(item => {
+    if (item && item.type === 'rune_dommage')    damageBonus     += 2;
+    if (item && item.type === 'rune_vitalite')   healthBonus     += 8;
+    if (item && item.type === 'rune_initiative') initiativeBonus += 3;
+  });
+
+  // Bonus permanents (forge) déjà stockés sur le joueur
+  damageBonus     += player.damage_bonus     || 0;
+  initiativeBonus += player.initiative_bonus || 0;
+  healthBonus     += Math.max(0, (player.max_hp || 36) - 36);
+
+  const baseHealth = 36;
+  const DAMAGE_MIN = 1, DAMAGE_MAX = 6;
+  const INIT_MIN   = 1, INIT_MAX   = 20;
+
+  const totalDamage     = `${DAMAGE_MIN + damageBonus} à ${DAMAGE_MAX + damageBonus}`;
+  const totalHealth     = baseHealth + healthBonus;
+  const totalInitiative = `${INIT_MIN + initiativeBonus} à ${INIT_MAX + initiativeBonus}`;
+
+  const currentHP = player.hp || baseHealth;
+  const maxHP     = totalHealth;
+
+  const rowStyle = {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    padding: '14px',
+    borderRadius: '8px',
+    border: '1px solid rgba(212, 175, 55, 0.2)',
+  };
+  const rowHeaderStyle = {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: '6px',
+  };
+  const labelStyle = { color: '#d4af37', fontSize: '1rem', fontWeight: 'bold' };
+  const valueStyle = { color: '#e8dcc4', fontSize: '1.1rem', fontWeight: 'bold' };
+  const bonusStyle = { color: '#10b981', fontSize: '0.85rem' };
+
+  return (
+    <div
+      data-testid="stats-panel"
+      style={{
+        width: 'min(28vw, 80vh, 320px)',
+        backgroundColor: '#2a1f17',
+        border: '3px solid #d4af37',
+        borderRadius: 12,
+        padding: '18px',
+        color: '#f5e6c8',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '14px',
+        boxShadow: '0 0 20px rgba(212, 175, 55, 0.25)',
+      }}
+    >
+      {/* En-tête */}
+      <div style={{ textAlign: 'center', paddingBottom: '10px', borderBottom: '2px solid rgba(212, 175, 55, 0.3)' }}>
+        <div style={{ color: '#d4af37', fontSize: '1.3rem', fontWeight: 'bold' }}>⚔️ Caractéristiques</div>
+        <div style={{ color: '#e8dcc4', fontSize: '1.05rem', marginTop: 4 }}>{player.name}</div>
+        <div style={{ color: '#b8956a', fontSize: '0.95rem' }}>{player.character_class}</div>
+      </div>
+
+      {/* Vitalité */}
+      <div style={rowStyle}>
+        <div style={rowHeaderStyle}>
+          <span style={labelStyle}>❤️ Vitalité</span>
+          <span style={valueStyle}>{currentHP}/{maxHP}</span>
+        </div>
+        {healthBonus > 0 && <div style={bonusStyle}>+{healthBonus} PV (Runes de vitalité)</div>}
+      </div>
+
+      {/* Dégâts */}
+      <div style={rowStyle}>
+        <div style={rowHeaderStyle}>
+          <span style={labelStyle}>⚔️ Dégâts de base</span>
+          <span style={valueStyle}>{totalDamage}</span>
+        </div>
+        {damageBonus > 0 && <div style={bonusStyle}>+{damageBonus} dégâts (Runes de dommage)</div>}
+      </div>
+
+      {/* Initiative */}
+      <div style={rowStyle}>
+        <div style={rowHeaderStyle}>
+          <span style={labelStyle}>⚡ Initiative</span>
+          <span style={valueStyle}>{totalInitiative}</span>
+        </div>
+        {initiativeBonus > 0 && <div style={bonusStyle}>+{initiativeBonus} initiative (Runes d'initiative)</div>}
+      </div>
+
+      {/* Or */}
+      <div style={rowStyle}>
+        <div style={rowHeaderStyle}>
+          <span style={labelStyle}>💰 Or</span>
+          <span style={valueStyle}>{player.gold || 0}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ========== INVENTORY MODAL COMPONENT ==========
 const InventoryModal = ({ player, onClose, sessionId }) => {
   const [deleteMode, setDeleteMode] = useState(false);
@@ -4517,8 +4365,11 @@ const InventoryModal = ({ player, onClose, sessionId }) => {
       </div>
         {/* fermeture grille inventaire existante */}
 
-        {/* === NEW: GRILLE ÉQUIPEMENT === */}
+        {/* === GRILLE ÉQUIPEMENT === */}
         <EquipmentGrid player={player} sessionId={sessionId} onInspect={setInspectedItem} />
+
+        {/* === NEW: PANNEAU CARACTÉRISTIQUES (à droite de l'équipement) === */}
+        <StatsPanel player={player} />
       {/* fin wrapper flex */}
       </div>
 
@@ -5405,7 +5256,7 @@ const GoblinRouletteModal = ({ gameState, playerId, sessionId }) => {
   const multiplier = pendingEvent?.multiplier || 1;
 
   // ===== Config (défilement fluide, vitesse constante) =====
-  const SPIN_SPEED_MS = 200;                           // vitesse CONSTANTE
+  const SPIN_SPEED_MS = 150;                           // ⚡ +25% vitesse (était 200 ms)
   const SLOT_WIDTH = 110;                              // largeur d'un slot
   const VISIBLE_SLOTS = 5;                              // 5 valeurs visibles
   const CENTER_OFFSET = Math.floor(VISIBLE_SLOTS / 2);  // = 2
@@ -5481,7 +5332,7 @@ const GoblinRouletteModal = ({ gameState, playerId, sessionId }) => {
     }
   };
 
-  // Tick à intervalle FIXE 200 ms (vitesse constante)
+  // Tick à intervalle FIXE 150 ms (vitesse constante)
   useEffect(() => {
     if (!isActive || !isSpinning) return;
 
@@ -8368,9 +8219,6 @@ const prevPendingActionsRef = useRef('{}');
   // NEW: Inventory system states
   const [showInventory, setShowInventory] = useState(false);
 
-  // NEW: Character stats modal state
-  const [showStats, setShowStats] = useState(false);
-
   const ws = useRef(null);
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false);
@@ -8566,8 +8414,12 @@ const prevPendingActionsRef = useRef('{}');
           setShowMimicCombat(true);
         }
       } else if (data.type === "crystal_combat") {
-        // Direct WS handler for the crystal combat (broadcasted by crystal_attack)
+        // Direct WS handler for the crystal combat (sent via enqueue_player_event
+        // once the 10s help window closes, or broadcasted by crystal_attack).
         // Only show the overlay to participants of the combat.
+        setCombatHelpWaiting(null);
+        setCombatHelpAvailable(null);
+        setCombatHelpParticipants([]);
         if (Array.isArray(data.survivors) && data.survivors.some(s => s.id === storedPlayerId)) {
           setCrystalCombatEvent(data);
           setShowCrystalCombat(true);
@@ -8668,6 +8520,13 @@ const prevPendingActionsRef = useRef('{}');
         setObservationStoneVideoPath(data.video_path);
         setShowObservationStoneAlert(true);
         // NOTE: No notifyEventCompleted needed — non-blocking for killers
+      } else if (data.type === "room_pillaged_discovered") {
+        // NEW: le killer découvre qu'une pièce a déjà été pillée par les survivants
+        if (data.killer_id === storedPlayerId) {
+          toast.info(`🏚️ ${data.room_name} a déjà été pillée par les aventuriers.`, {
+            duration: 4000,
+          });
+        }
       } else if (data.type === "blizzard_precision_alert") {
         // Blizzard de précision : alerter le killer qu'un aventurier est pris dans son blizzard
         enqueueKillerAlert({
@@ -10465,10 +10324,10 @@ const selectRoom = (roomName) => {
         const attackCrystal = async () => {
           try {
             await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
-            // Close the crystal popup — the combat overlay will be opened by
-            // the `crystal_combat` WS event broadcasted by the backend.
+            // Close the crystal popup — a 10s help window opens for allies to
+            // join, then the `crystal_combat` WS event is sent by the backend.
             setShowCrystalPopup(false);
-            toast.info("⚔️ Le combat contre le cristal commence !");
+            toast.info("💎 Vous attaquez le Cristal ! Vos alliés ont 10s pour vous rejoindre...");
           } catch (e) {
             toast.error(e.response?.data?.detail || "Erreur");
           }
@@ -10550,10 +10409,10 @@ const selectRoom = (roomName) => {
         const attackCrystal = async () => {
           try {
             await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
-            // Close the crystal popup — the combat overlay will be opened by
-            // the `crystal_combat` WS event broadcasted by the backend.
+            // Close the crystal popup — a 10s help window opens for allies to
+            // join, then the `crystal_combat` WS event is sent by the backend.
             setShowCrystalPopup(false);
-            toast.info("⚔️ Le combat contre le cristal commence !");
+            toast.info("💎 Vous attaquez le Cristal ! Vos alliés ont 10s pour vous rejoindre...");
           } catch (e) {
             toast.error(e.response?.data?.detail || "Erreur");
           }
@@ -11614,11 +11473,21 @@ const selectRoom = (roomName) => {
                           selectedRoom === room.name ? 'selected' :
                           isPreSelected ? 'pre-selected' :
                           room.locked ? 'locked' : ''
-                         } ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''} ${isAnimatingDiscovery ? 'room-discovery-animation' : ''}`}
+                         } ${flashingRooms.has(room.name) ? 'room-teammate-flash' : ''} ${isAnimatingDiscovery ? 'room-discovery-animation' : ''} ${
+                          currentPlayerRole === "killer" &&
+                          (gameState.killer_knows_pillaged?.[playerId] || []).includes(room.name)
+                            ? 'room-pillaged' : ''
+                         }`}
                         onClick={() => selectRoom(room.name)}
                         disabled={isEliminated || hasSelectedRoom || room.locked}
                       >
                         <div className="room-name">{displayName}</div>
+                        {currentPlayerRole === "killer" &&
+                         (gameState.killer_knows_pillaged?.[playerId] || []).includes(room.name) && (
+                          <div className="room-pillaged-banner" data-testid={`pillaged-banner-${room.name}`}>
+                            PIÈCE PILLÉE
+                          </div>
+                        )}
                         {/* Poursuite de Précision : indiquer les salles sans survivants aux killers */}
                         {currentPlayerRole === "killer" &&
                          (gameState.poursuite_precision_empty_rooms || []).includes(room.name) && (
@@ -11934,28 +11803,12 @@ const selectRoom = (roomName) => {
         />
       )}
 
-      {/* Stats HUD */}
-      {currentPlayer && (
-        <StatsHUD 
-          player={currentPlayer}
-          onClick={() => setShowStats(true)}
-        />
-      )}
-
       {/* Inventory Modal */}
       {showInventory && currentPlayer && (
         <InventoryModal
           player={currentPlayer}
           onClose={() => setShowInventory(false)}
           sessionId={sessionId}
-        />
-      )}
-
-      {/* Stats Modal */}
-      {showStats && currentPlayer && (
-        <StatsModal
-          player={currentPlayer}
-          onClose={() => setShowStats(false)}
         />
       )}
 

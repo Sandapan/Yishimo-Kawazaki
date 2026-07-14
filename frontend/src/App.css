@@ -3452,3 +3452,50 @@ body {
   60%  { opacity:1; }
   100% { transform: translate(-50%,-50%) rotate(var(--angle,0deg)) translateX(180px) scale(0.2); opacity:0; }
 }
+
+/* NEW: Bandeau "PIÈCE PILLÉE" pour le killer */
+.room-pillaged-banner {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-2deg);
+  background: linear-gradient(90deg, #8b0000, #c1440e, #8b0000);
+  color: #fff8dc;
+  font-family: 'Cinzel', 'Georgia', serif;
+  font-weight: 900;
+  font-size: 0.65rem;
+  letter-spacing: 1.5px;
+  padding: 2px 10px;
+  border: 1px solid #d4af37;
+  border-radius: 2px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  z-index: 5;
+  white-space: nowrap;
+
+  /* Animation : visible 1s, invisible 2s, en boucle */
+  animation: pillagedBannerBlink 3s ease-in-out infinite;
+}
+
+@keyframes pillagedBannerBlink {
+  0%   { opacity: 0; transform: translateX(-50%) rotate(-2deg) scale(0.85); }
+  10%  { opacity: 1; transform: translateX(-50%) rotate(-2deg) scale(1); }
+  33%  { opacity: 1; transform: translateX(-50%) rotate(-2deg) scale(1); }
+  50%  { opacity: 0; transform: translateX(-50%) rotate(-2deg) scale(0.85); }
+  100% { opacity: 0; transform: translateX(-50%) rotate(-2deg) scale(0.85); }
+}
+
+/* Léger overlay sombre pour indiquer que la pièce est "vidée" */
+.room-card.room-pillaged {
+  position: relative;
+}
+.room-card.room-pillaged::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(60, 20, 20, 0.15);
+  pointer-events: none;
+  z-index: 1;
+  border-radius: inherit;
+}
