@@ -6858,7 +6858,9 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
         </div>
 
         {!Object.values(localRequiredRelics).some(v => v) && (
-          <p className="warning-text">⚠️ Au moins une relique doit être requise</p>
+          <p className="relic-desc" style={{ color: '#9fd0ff', marginTop: '8px' }}>
+            ℹ️ Aucune relique n'est requise : les aventuriers pourront attaquer le cristal directement.
+          </p>
         )}
 
         <div className="modal-actions">
@@ -6879,7 +6881,6 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
           </button>
           <button
             data-testid="save-settings-btn"
-            disabled={!Object.values(localRequiredRelics).some(v => v)}
             onClick={async () => {
               try {
                 const enabledPowersList = ALL_POWERS.filter(p => localEnabledPowers[p.key]).map(p => p.key);
@@ -10434,22 +10435,34 @@ const selectRoom = (roomName) => {
                 <p style={{ color: '#fff', textAlign: 'center', marginBottom: '1rem' }}>{crystalMessage}</p>
 
                 <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
-                  {requiredRelicsList.map(r => (
-                    <span key={r} style={{
-                      padding: '0.3rem 0.6rem', borderRadius: '6px',
-                      backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
-                      color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
+                  {requiredRelicsList.length === 0 ? (
+                    <span style={{
+                      padding: '0.3rem 0.8rem', borderRadius: '6px',
+                      backgroundColor: '#1f3a4d', color: '#9fd0ff', fontSize: '0.85rem',
+                      fontStyle: 'italic',
                     }}>
-                      {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
+                      ℹ️ Aucune relique n'est requise — le cristal est directement vulnérable.
                     </span>
-                  ))}
+                  ) : (
+                    requiredRelicsList.map(r => (
+                      <span key={r} style={{
+                        padding: '0.3rem 0.6rem', borderRadius: '6px',
+                        backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
+                        color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
+                      }}>
+                        {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
+                      </span>
+                    ))
+                  )}
                 </div>
 
                 <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                  <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
-                    style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
-                    Placer une relique
-                  </Button>
+                  {requiredRelicsList.length > 0 && (
+                    <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
+                      style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
+                      Placer une relique
+                    </Button>
+                  )}
                   {allPlaced && (
                     <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
                       style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>

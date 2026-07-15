@@ -3577,10 +3577,11 @@ async def update_game_settings(session_id: str, request: UpdateGameSettingsReque
         else:
             new_settings[key] = game.get("required_relics", {}).get(key, True)
     
-    # Au moins une relique doit rester requise
-    if not any(new_settings.values()):
-        raise HTTPException(status_code=400, detail="Au moins une relique doit être requise")
-    
+    # NEW: it is now allowed to have zero required relics
+    # (the host can decide to skip the relic ritual entirely — the crystal
+    # will be directly vulnerable). The previous "at least one" restriction
+    # has been removed on purpose.
+
     game["required_relics"] = new_settings
 
     # Valider et mettre à jour dungeon_size
