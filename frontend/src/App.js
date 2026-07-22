@@ -87,13 +87,6 @@ const KILLER_AVATARS = [
   }
 ];
 
-// Helper function to get class from avatar path
-const getAvatarClass = (avatarPath) => {
-  const allAvatars = [...SURVIVOR_AVATARS, ...KILLER_AVATARS];
-  const avatar = allAvatars.find(a => a.path === avatarPath);
-  return avatar ? avatar.class : null;
-};
-
 const FLOOR_NAMES = {
   "basement": "🕳️ Sous-sol",
   "ground_floor": "🏰 Rez-de-chaussée",
@@ -124,13 +117,9 @@ const ITEM_SPRITES = {
   rune_initiative: '/inventory/rune_initiative.png',
   rune_vitalite: '/inventory/rune_vitalite.png',
   antidote: '/inventory/antidote.png',
-  pierre_quete: '/items/Pierre_Quete.png',
   chaussons: '/items/Chaussons.png',
   couronne: '/items/Couronne.png',
   culotte: '/items/Culotte.png',
-  relique_triangulaire: '/items/Relique_Triangulaire.png',
-  relique_cubique: '/items/Relique_Cubique.png',
-  relique_spherique: '/items/Relique_Spherique.png',
   amulette_tortue: '/items/amulette_tortue.png',   // 🐢 NEW
   amulette_oignon: '/items/amulette_oignon.png',   // 🧅 NEW
   amulette_trefle: '/items/amulette_trefle.png',   // 🍀 NEW
@@ -146,13 +135,9 @@ const ITEM_NAMES = {
   rune_initiative: "Rune d'Initiative",
   rune_vitalite: 'Rune de Vitalité',
   antidote: 'Antidote',
-  pierre_quete: "Pierre d'observation",
   chaussons: 'Chaussons du Roi Orc',
   couronne: 'Couronne de rechange du Roi Orc',
   culotte: 'Culotte du Roi Orc',
-  relique_triangulaire: 'Relique Triangulaire',
-  relique_cubique: 'Relique Cubique',
-  relique_spherique: 'Relique Sphérique',
   amulette_tortue: 'Amulette Tortue',               // 🐢 NEW
   amulette_oignon: 'Amulette Oignon',               // 🧅 NEW
   amulette_trefle: 'Amulette Chanceuse',            // 🍀 NEW
@@ -176,14 +161,10 @@ const ITEM_DESCRIPTIONS = {
   rune_initiative: "Passez probablement prioritaire en début de combat si vous l'appliquez correctement à votre arme grâce à la forge.",
   rune_dommage: "Gagnez en puissance si vous l'appliquez correctement à votre arme grâce à la forge.",
   antidote: "S'utilise pour vous soigner de la toxine.",
-  relique_spherique: "Obtenue sur le gobelin fuyard, cette étrange relique est nécessaire pour venir à bout du cristal.",
-  relique_cubique: "Obtenue suite à la quête de la pierre d'observation, cette étrange relique est nécessaire pour venir à bout du cristal.",
-  relique_triangulaire: "Obtenue auprès du marchand, cette étrange relique est nécessaire pour venir à bout du cristal.",
   // Conservation des descriptions existantes
   chaussons: TROPHY_DESCRIPTIONS.chaussons,
   couronne: TROPHY_DESCRIPTIONS.couronne,
   culotte: TROPHY_DESCRIPTIONS.culotte,
-  // pierre_quete: pas de description ajoutée → fallback "No description."
   amulette_tortue:
     "Être lent n'est pas forcément un vilain défaut. Vous saurez en tirer profit pour cette fois !\n\n" +
     "Effet : vous réduisez de 25% tous dégâts reçus si vous avez l'initiative la plus basse durant le combat.",
@@ -223,12 +204,11 @@ const SELL_PRICES = {
   couronne: 500,
   culotte: 500,
   antidote: 150,
-  relique_triangulaire: 500,
   lait_lew: 150,   // 🥛 NEW
 };
 
 // Items NON vendables (objets de quête)
-const NON_SELLABLE_ITEMS = new Set(['pierre_quete', 'relique_triangulaire', 'relique_cubique', 'relique_spherique', 'amulette_tortue', 'amulette_oignon', 'amulette_trefle', 'foulard_rankyr', 'amulette_coco', 'bandana_ranja', 'bonnet_croblow']);
+const NON_SELLABLE_ITEMS = new Set(['amulette_tortue', 'amulette_oignon', 'amulette_trefle', 'foulard_rankyr', 'amulette_coco', 'bandana_ranja', 'bonnet_croblow']);
 
 const getSellPrice = (itemType) => SELL_PRICES[itemType] ?? 50;
 
@@ -283,7 +263,6 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   const [survivorAttacking, setSurvivorAttacking] = useState(false);
   const [orcAttacking, setOrcAttacking] = useState(false);
   const [canClose, setCanClose] = useState(false);
-  const [totalDamageToSurvivor, setTotalDamageToSurvivor] = useState(0);
   const [initiativeIndicators, setInitiativeIndicators] = useState({});
 
   // Classes et noms
@@ -391,7 +370,6 @@ const GoblinCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
           currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
           damageToSurvivor += damage;
           setSurvivorHP(currentSurvivorHP);
-          setTotalDamageToSurvivor(damageToSurvivor);
           logEntry = `🩸 L'Orc inflige ${damage} dégâts !`;
           log.push(logEntry);
           setCombatLog([...log]);
@@ -929,336 +907,6 @@ class SeededRandom {
   }
 }
 
-// ========== FLEEING GOBLIN COMBAT COMPONENT ==========
-// Même système que MultiPlayerCombat, mais simplifié :
-//   - Gobelin Fuyard : 1 PdV, initiative 10, N'ATTAQUE PAS, pas de sprite "hurt"
-//   - Si gobelin > initiative survivant → flee (animation inversée), pas de récompense
-//   - Si survivant ≥ initiative gobelin → survivant attaque, gobelin tombe (fainted), relique obtenue
-const FleeingGoblinCombat = ({ event, playerId, sessionId, onClose }) => {
-  const goblinData   = event.goblin;
-  const survivorData = event.survivor;
-  const survivorWins = survivorData.initiative >= goblinData.initiative;
-
-  // ── État du combat ───────────────────────────────────────────────────────────
-  const [combatants, setCombatants]           = useState([]);
-  const [survivorAnim, setSurvivorAnim]       = useState('idle'); // 'idle' | 'attack'
-  const [goblinAnim,   setGoblinAnim]         = useState('idle'); // 'idle' | 'flee' | 'fainted'
-  const [survivorLeft, setSurvivorLeft]       = useState('10%'); // position pour animer l'avance
-  const [damageIndicators, setDamageIndicators] = useState({});
-  const [initiativeIndicators, setInitiativeIndicators] = useState({});
-  const [combatLog,   setCombatLog]           = useState([]);
-  const [combatOver,  setCombatOver]          = useState(false);
-  const [canClose,    setCanClose]            = useState(false);
-  const [resultMessage, setResultMessage]     = useState('');
-
-  // ── Init combattants ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    const fighters = [
-      {
-        id: survivorData.id,
-        name: survivorData.name,
-        survivorClass: survivorData.survivorClass || survivorData.name, // classe pour les sprites
-        type: 'survivor',
-        hp: survivorData.hp,
-        maxHp: survivorData.maxHp,
-        initiative: survivorData.initiative,
-        alive: true,
-      },
-      {
-        id: 'fleeing_goblin',
-        name: 'Gobelin Fuyard',
-        type: 'fleeing_goblin',
-        hp: goblinData.hp,
-        maxHp: goblinData.maxHp,
-        initiative: goblinData.initiative,
-        alive: true,
-      },
-    ];
-    fighters.sort((a, b) => b.initiative - a.initiative);
-    setCombatants(fighters);
-
-    setCombatLog([
-      `⚔️ Un Gobelin Fuyard surgit !`,
-      `📊 Initiatives — ${survivorData.name} : ${survivorData.initiative} | Gobelin : ${goblinData.initiative}`,
-    ]);
-
-    setInitiativeIndicators({ [survivorData.id]: survivorData.initiative, fleeing_goblin: goblinData.initiative });
-    setTimeout(() => setInitiativeIndicators({}), 2000);
-  }, [event]);
-
-  // ── Simulation du combat ─────────────────────────────────────────────────────
-  useEffect(() => {
-    if (combatants.length === 0) return;
-    let mounted = true;
-
-    const runCombat = async () => {
-      await new Promise(r => setTimeout(r, 800)); // pause intro
-      if (!mounted) return;
-
-      if (!survivorWins) {
-        // ── CAS : Gobelin fuit ───────────────────────────────────────────────
-        setGoblinAnim('flee');
-        setCombatLog(prev => [...prev,
-          `💨 Le Gobelin Fuyard est plus rapide (${goblinData.initiative} > ${survivorData.initiative}) et prend la fuite !`
-        ]);
-        await new Promise(r => setTimeout(r, 2200)); // durée animation flee (20 frames × 100ms + marge)
-        if (!mounted) return;
-        setGoblinAnim('idle');
-        setResultMessage('💨 Le Gobelin Fuyard vous a échappé… Pas de récompense.');
-
-      } else {
-        // ── CAS : Survivant attaque ──────────────────────────────────────────
-        setCombatLog(prev => [...prev,
-          `⚔️ ${survivorData.name} a l'initiative (${survivorData.initiative} ≥ ${goblinData.initiative}) et charge !`
-        ]);
-
-        // 1. Avance du survivant
-        setSurvivorAnim('attack');
-        setSurvivorLeft('30%');
-        await new Promise(r => setTimeout(r, 1700)); // 30 frames × ~50ms + marge
-        if (!mounted) return;
-
-        // 2. Impact + dégâts
-        const damage = goblinData.hp; // 1 PdV → mort immédiate
-        setDamageIndicators({ fleeing_goblin: { damage, timestamp: Date.now() } });
-        setTimeout(() => setDamageIndicators({}), 1500);
-
-        setCombatants(prev => prev.map(f =>
-          f.id === 'fleeing_goblin' ? { ...f, hp: 0, alive: false } : f
-        ));
-
-        // 3. Retour survivant + gobelin fainted
-        setSurvivorLeft('10%');
-        setSurvivorAnim('idle');
-        setGoblinAnim('fainted');
-
-        setCombatLog(prev => [...prev,
-          `💥 ${survivorData.name} assène ${damage} dégât(s) au Gobelin Fuyard (0/${goblinData.maxHp} PV) !`
-        ]);
-        await new Promise(r => setTimeout(r, 3200)); // 30 frames × 100ms + marge
-        if (!mounted) return;
-
-        setCombatLog(prev => [...prev, `🎁 Vous obtenez la Relique Sphérique !`]);
-        setResultMessage('🎁 Vous avez vaincu le Gobelin Fuyard ! Relique Sphérique obtenue !');
-      }
-
-      // ── Résoudre côté backend ─────────────────────────────────────────────
-      setCombatOver(true);
-      try {
-        await axios.post(`${API}/game/${sessionId}/resolve_fleeing_goblin_combat`, {
-          survivor_id: survivorData.id,
-          result: survivorWins ? 'survivor_win' : 'goblin_fled',
-        });
-      } catch (err) {
-        console.error('Erreur résolution gobelin fuyard:', err);
-      }
-      if (!mounted) return;
-      await new Promise(r => setTimeout(r, 1500));
-      setCanClose(true);
-    };
-
-    runCombat();
-    return () => { mounted = false; };
-  }, [combatants.length]);
-
-  // ── Paramètres spritesheets ───────────────────────────────────────────────────
-  // Règle : frameWidth = 1000÷5 = 200 | frameHeight = hauteur÷rows = toujours 115
-  // GobelinFuyard :  idle 1000×690 (5×6, 30f) | flee 1000×460 (5×4, 20f) | fainted 1000×690 (5×6, 30f)
-  // Survivant      : idle 1000×690 (5×6, 30f) | attack 1000×690 (5×6, 30f)
-
-  const survivorClass = survivorData.survivorClass || survivorData.name;
-
-  const SURVIVOR_PARAMS = {
-    idle:   { spriteSheet: `/fight/${survivorClass}_idle.webp`,   cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: true  },
-    attack: { spriteSheet: `/fight/${survivorClass}_attack.webp`, cols: 5, rows: 6, totalFrames: 30, frameDuration: 50,  loop: false },
-  };
-  const GOBLIN_PARAMS = {
-    idle:    { spriteSheet: '/fight/GobelinFuyard_idle.webp',    cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: true  },
-    flee:    { spriteSheet: '/fight/GobelinFuyard_flee.webp',    cols: 5, rows: 4, totalFrames: 20, frameDuration: 100, loop: false },
-    fainted: { spriteSheet: '/fight/GobelinFuyard_fainted.webp', cols: 5, rows: 6, totalFrames: 30, frameDuration: 100, loop: false },
-  };
-
-  const sp = SURVIVOR_PARAMS[survivorAnim] || SURVIVOR_PARAMS.idle;
-  const gp = GOBLIN_PARAMS[goblinAnim]     || GOBLIN_PARAMS.idle;
-
-  const survivorF = combatants.find(c => c.id === survivorData.id);
-  const goblinF   = combatants.find(c => c.id === 'fleeing_goblin');
-
-  return (
-    <div
-      className="game-over-overlay"
-      style={{ zIndex: 3000, cursor: canClose ? 'pointer' : 'default' }}
-      onClick={() => canClose && onClose && onClose()}
-      data-testid="fleeing-goblin-combat"
-    >
-      <div style={{
-        position: 'relative',
-        width: '90%',
-        maxWidth: '1000px',
-        height: '75vh',
-        backgroundImage: 'url(/fight/Ground.jpg)',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        borderRadius: '12px',
-        border: '4px solid #d4af37',
-        overflow: 'hidden',
-      }}>
-
-        {/* ── Survivant (gauche) ─────────────────────────────────────────── */}
-        <div style={{
-          position: 'absolute',
-          left: survivorLeft,
-          bottom: '20%',
-          opacity: survivorF?.alive !== false ? 1 : 0.35,
-          transition: 'left 0.4s ease-out',
-        }}>
-          <SpriteSheetAnimator
-            key={`survivor-${survivorAnim}`}
-            spriteSheet={sp.spriteSheet}
-            frameWidth={200}
-            frameHeight={115}
-            cols={sp.cols}
-            rows={sp.rows}
-            totalFrames={sp.totalFrames}
-            frameDuration={sp.frameDuration}
-            loop={sp.loop}
-          />
-          {initiativeIndicators[survivorData.id] !== undefined && (
-            <div
-              data-testid={`initiative-indicator-${survivorData.id}`}
-              style={{
-                position: 'absolute',
-                top: '-40px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                color: '#3b82f6',
-                fontSize: '1.8rem',
-                fontWeight: 'bold',
-                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
-                pointerEvents: 'none',
-                animation: 'initiativeFadeUp 2s ease-out forwards',
-                zIndex: 10,
-              }}
-            >
-              🎲 {survivorData.initiative}
-            </div>
-          )}
-          {/* Barre de vie */}
-          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37' }}>
-            <div style={{ width: `${((survivorF?.hp ?? 0) / (survivorF?.maxHp ?? 1)) * 100}%`, height: '100%', backgroundColor: '#10b981', transition: 'width 0.3s' }} />
-          </div>
-          <div style={{ color: '#fff', textAlign: 'center', fontSize: '13px', fontWeight: 'bold', textShadow: '2px 2px 4px #000' }}>
-            {survivorData.name} ({survivorF?.hp ?? 0}/{survivorF?.maxHp ?? 0}) — Init: {survivorData.initiative}
-          </div>
-        </div>
-
-        {/* ── Gobelin Fuyard (droite) ────────────────────────────────────── */}
-        <div style={{
-          position: 'absolute',
-          right: '10%',
-          bottom: '20%',
-          opacity: goblinF?.alive !== false ? 1 : 0.35,
-          // En mode "flee" → court vers la droite (sans miroir)
-          // Sinon → fait face au survivant (miroir)
-          transform: goblinAnim === 'flee' ? 'scaleX(1)' : 'scaleX(-1)',
-          transition: 'opacity 0.3s',
-        }}>
-          <SpriteSheetAnimator
-            key={`goblin-${goblinAnim}`}
-            spriteSheet={gp.spriteSheet}
-            frameWidth={200}
-            frameHeight={115}
-            cols={gp.cols}
-            rows={gp.rows}
-            totalFrames={gp.totalFrames}
-            frameDuration={gp.frameDuration}
-            loop={gp.loop}
-          />
-          {/* Indicateur de dégâts (re-miroir pour être lisible malgré le scaleX(-1)) */}
-          {damageIndicators['fleeing_goblin'] && (
-            <div style={{
-              position: 'absolute', top: '-30px', left: '50%',
-              transform: 'translateX(-50%) scaleX(-1)',
-              fontSize: '28px', fontWeight: 'bold', color: '#ff0000',
-              textShadow: '2px 2px 4px #000, -1px -1px 2px #fff',
-              animation: 'floatUpMirrored 1.5s ease-out',
-              pointerEvents: 'none', zIndex: 1000,
-            }}>
-              -{damageIndicators['fleeing_goblin'].damage}
-            </div>
-          )}
-          {initiativeIndicators['fleeing_goblin'] !== undefined && (
-            <div
-              data-testid="initiative-indicator-fleeing_goblin"
-              style={{
-                position: 'absolute',
-                top: '-40px',
-                left: '50%',
-                transform: 'translateX(-50%) scaleX(-1)',
-                color: '#3b82f6',
-                fontSize: '1.8rem',
-                fontWeight: 'bold',
-                textShadow: '0 0 8px rgba(59,130,246,0.9), 0 2px 4px rgba(0,0,0,0.8)',
-                pointerEvents: 'none',
-                animation: 'initiativeFadeUp 2s ease-out forwards',
-                zIndex: 10,
-              }}
-            >
-              🎲 {goblinData.initiative}
-            </div>
-          )}
-          {/* Barre de vie (re-miroir) */}
-          <div style={{ width: '200px', height: '12px', backgroundColor: '#333', borderRadius: '6px', overflow: 'hidden', marginTop: '5px', border: '2px solid #d4af37', transform: 'scaleX(-1)' }}>
-            <div style={{ width: `${((goblinF?.hp ?? 0) / (goblinF?.maxHp ?? 1)) * 100}%`, height: '100%', backgroundColor: '#ef4444', transition: 'width 0.3s' }} />
-          </div>
-          <div style={{ color: '#fff', textAlign: 'center', fontSize: '13px', fontWeight: 'bold', textShadow: '2px 2px 4px #000', transform: 'scaleX(-1)' }}>
-            Gobelin Fuyard ({goblinF?.hp ?? 0}/{goblinF?.maxHp ?? 0}) — Init: {goblinData.initiative}
-          </div>
-        </div>
-
-        {/* ── Combat log ────────────────────────────────────────────────── */}
-        <div style={{
-          position: 'absolute', bottom: '10px', left: '50%', transform: 'translateX(-50%)',
-          width: '80%', maxHeight: '140px',
-          backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: '8px',
-          padding: '10px', overflowY: 'auto', border: '2px solid #d4af37',
-        }}>
-          {combatLog.map((entry, idx) => (
-            <div key={idx} style={{ color: '#e8dcc4', fontSize: '12px', marginBottom: '3px' }}>{entry}</div>
-          ))}
-        </div>
-
-        {/* ── Résultat ──────────────────────────────────────────────────── */}
-        {combatOver && resultMessage && (
-          <div style={{
-            position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)',
-            backgroundColor: 'rgba(0,0,0,0.9)', padding: '16px 32px', borderRadius: '12px',
-            border: `3px solid ${survivorWins ? '#10b981' : '#f59e0b'}`,
-          }}>
-            <div style={{ color: survivorWins ? '#10b981' : '#f59e0b', fontSize: '20px', fontWeight: 'bold', textAlign: 'center' }}>
-              {resultMessage}
-            </div>
-          </div>
-        )}
-
-        {/* ── Bouton fermer ─────────────────────────────────────────────── */}
-        {canClose && (
-          <div style={{
-            position: 'absolute', top: '50%', left: '50%',
-            transform: 'translate(-50%, -50%)',
-            color: '#d4af37', fontSize: '18px', fontWeight: 'bold', textAlign: 'center',
-            backgroundColor: 'rgba(0,0,0,0.8)', padding: '15px 30px',
-            borderRadius: '8px', border: '2px solid #d4af37', cursor: 'pointer',
-          }}
-          onClick={(e) => { e.stopPropagation(); if (onClose) onClose(); }}
-          >
-            Cliquez pour fermer
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
 
 // 🐢 Marque les combattants qui bénéficient de la réduction de dégâts.
 // Le porteur doit avoir STRICTEMENT la plus basse initiative parmi TOUS les combattants.
@@ -1437,7 +1085,6 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
   
   // État du combat
   const [combatants, setCombatants] = useState([]);
-  const [currentTurnIndex, setCurrentTurnIndex] = useState(0);
   const [combatLog, setCombatLog] = useState([]);
   const [combatOver, setCombatOver] = useState(false);
   const [canClose, setCanClose] = useState(false);
@@ -2466,7 +2113,6 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
   const [combatOver, setCombatOver] = useState(false);
   const [canClose, setCanClose] = useState(false);
   const [animatingEntity, setAnimatingEntity] = useState(null);
-  const [totalDamageTaken, setTotalDamageTaken] = useState(0);
   const [totalGoldStolen, setTotalGoldStolen] = useState(0);
   const [mimicDefeated, setMimicDefeated] = useState(false);
   const [damageIndicator, setDamageIndicator] = useState(null);
@@ -2665,7 +2311,6 @@ const MimicCombat = ({ event, playerId, sessionId, onClose }) => {
           currentSurvivorHP = Math.max(0, currentSurvivorHP - damage);
           damageTaken += damage;
           setSurvivorHP(currentSurvivorHP);
-          setTotalDamageTaken(damageTaken);
 
           // 🏴 Le survivant vient de subir des dégâts : son Foulard Rankyr (si actif) se rompt
           if (damage > 0 && primarySurvivor.foulard_rankyr_active) {
@@ -4652,142 +4297,6 @@ const LaitLewPickupModal = ({ event, playerId, sessionId, onOpenInventory, playe
   );
 };
 
-// ========== PIERRE QUETE PICKUP MODAL COMPONENT ==========
-const PierreQueteModal = ({ event, playerId, sessionId, targetRoom, onOpenInventory, player }) => {
-  if (!event || event.type !== 'pierre_quete_found') return null;
-
-  const inventory = player?.inventory || [];
-  const inventoryFull = inventory.filter(Boolean).length >= 9;
-
-  const handlePickup = async () => {
-    try {
-      const response = await axios.post(`${API}/game/${sessionId}/pickup_pierre_quete`, {
-        player_id: playerId,
-      });
-      if (response.data.status === 'success') {
-        toast.success('✨ Pierre d\'observation ajoutée à l\'inventaire !');
-      }
-    } catch (error) {
-      const errorMsg = error.response?.data?.detail || 'Erreur lors du ramassage';
-      if (errorMsg === 'Inventaire plein') {
-        toast.error('❌ Inventaire plein !');
-      } else {
-        toast.error(errorMsg);
-      }
-    }
-  };
-
-  const handleDismiss = async () => {
-    try {
-      await axios.post(`${API}/game/${sessionId}/dismiss_pierre_quete`, {
-        player_id: playerId,
-      });
-    } catch (error) {
-      console.error('Error dismissing pierre quete:', error);
-    }
-  };
-
-  return (
-    <div
-      className="game-over-overlay"
-      style={{
-        position: 'fixed',
-        top: 0, left: 0, right: 0, bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.85)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 3000,
-      }}
-    >
-      <Card
-        style={{
-          maxWidth: '500px',
-          backgroundColor: '#1a1a2e',
-          borderColor: '#d4af37',
-          border: '3px solid #d4af37',
-        }}
-      >
-        <CardHeader>
-          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
-            ✨ Vous avez trouvé la pierre d'observation !
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-            <img
-              src="/items/Pierre_Quete.png"
-              alt="Pierre d'observation"
-              style={{
-                width: '150px',
-                height: '150px',
-                objectFit: 'contain',
-                margin: '0 auto',
-                filter: 'drop-shadow(0 4px 12px rgba(212, 175, 55, 0.6))',
-              }}
-            />
-            <h3 style={{ color: '#e8dcc4', marginTop: '12px', fontSize: '1.3rem' }}>
-              Pierre d'observation
-            </h3>
-            <p style={{ color: '#a0aec0', fontSize: '0.95rem', margin: '8px 0 0' }}>
-              La Pierre d'observation révèle la position de son porteur aux Orcs.
-              {targetRoom && (
-                <span style={{ display: 'block', marginTop: '6px', color: '#f6c90e', fontWeight: 'bold' }}>
-                  Vous devez la jeter à {targetRoom}.
-                </span>
-              )}
-            </p>
-          </div>
-
-          {inventoryFull && (
-            <div style={{
-              backgroundColor: 'rgba(239, 68, 68, 0.2)',
-              border: '2px solid #ef4444',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-              color: '#ef4444',
-              textAlign: 'center',
-              fontWeight: 'bold'
-            }}>
-              ⚠️ Inventaire plein !
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-            <Button
-              onClick={inventoryFull ? onOpenInventory : handlePickup}
-              data-testid="pierre-quete-pickup-btn"
-              style={{
-                backgroundColor: inventoryFull ? '#b45309' : '#10b981',
-                color: '#fff',
-                padding: '12px 24px',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-              }}
-            >
-              {inventoryFull ? '🎒 Gérer l\'inventaire' : '🎒 Ramasser'}
-            </Button>
-            <Button
-              onClick={handleDismiss}
-              data-testid="pierre-quete-dismiss-btn"
-              style={{
-                backgroundColor: '#ef4444',
-                color: '#fff',
-                padding: '12px 24px',
-                fontSize: '16px',
-                fontWeight: 'bold',
-              }}
-            >
-              ✖ Ignorer
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
 
 // ========== TROPHY PICKUP MODAL COMPONENT (Chaussons / Couronne / Culotte) ==========
 const TrophyModal = ({ event, playerId, sessionId, onOpenInventory, player }) => {
@@ -5476,7 +4985,6 @@ const Home = () => {
   const [joinSessionId, setJoinSessionId] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
-  const [createdSessionId, setCreatedSessionId] = useState(null);
   const [showJoinInput, setShowJoinInput] = useState(false);
   // True when the user comes back from the lobby to change their role/class.
   // In that case the configure form must still expose role + avatar selection
@@ -6011,7 +5519,7 @@ const Home = () => {
 
         {/* Back button */}
         <button
-          onClick={() => { setStep("menu"); setCreatedSessionId(null); }}
+          onClick={() => { setStep("menu"); }}
           style={{
             background: 'none',
             border: 'none',
@@ -6280,11 +5788,6 @@ const Lobby = () => {
 
   // NEW: Game settings modal (host only)
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [localRequiredRelics, setLocalRequiredRelics] = useState({
-    relique_spherique: true,
-    relique_cubique: true,
-    relique_triangulaire: true,
-  });
   const [localDungeonSize, setLocalDungeonSize] = useState(12);
 
   const ALL_POWERS = [
@@ -6485,9 +5988,6 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
 
   // NEW: sync local settings with backend state (must be before any early return)
   useEffect(() => {
-    if (gameState?.required_relics) {
-      setLocalRequiredRelics(gameState.required_relics);
-    }
     if (gameState?.dungeon_size !== undefined) {
       setLocalDungeonSize(gameState.dungeon_size);
     }
@@ -6496,7 +5996,7 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
         Object.fromEntries(ALL_POWERS.map(p => [p.key, gameState.enabled_powers.includes(p.key)]))
       );
     }
-  }, [gameState?.required_relics, gameState?.dungeon_size, gameState?.enabled_powers]);
+  }, [gameState?.dungeon_size, gameState?.enabled_powers]);
 
   if (!gameState) {
     return <div className="loading">Chargement...</div>;
@@ -6726,14 +6226,8 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
   )}
 
   {/* Affichage en lecture seule pour les non-hôtes */}
-  {!isHost && gameState.required_relics && (
+  {!isHost && gameState.dungeon_size && (
     <div className="settings-readonly">
-      <h4>Reliques requises pour ce donjon :</h4>
-      <ul>
-        <li>{gameState.required_relics.relique_spherique ? "✅" : "❌"} Relique Sphérique</li>
-        <li>{gameState.required_relics.relique_cubique ? "✅" : "❌"} Relique Cubique</li>
-        <li>{gameState.required_relics.relique_triangulaire ? "✅" : "❌"} Relique Triangulaire</li>
-      </ul>
       <p><strong>Taille du donjon :</strong> {gameState.dungeon_size || 12} pièces</p>
       {gameState.enabled_powers && gameState.enabled_powers.length < ALL_POWERS.length && (
         <div>
@@ -6753,58 +6247,6 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
     <div className="modal-overlay" onClick={() => setShowSettingsModal(false)}>
       <div className="modal-content settings-modal" onClick={(e) => e.stopPropagation()}>
         <h2>⚙️ Paramètres de la partie</h2>
-        <p className="modal-subtitle">
-          Choisissez les reliques nécessaires pour débloquer le cristal.
-          Décocher une relique réduit la difficulté.
-        </p>
-
-        <div className="relic-setting">
-          <label>
-            <input
-              type="checkbox"
-              data-testid="toggle-relique-spherique"
-              checked={localRequiredRelics.relique_spherique}
-              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_spherique: e.target.checked }))}
-            />
-            <strong>🔮 Relique Sphérique</strong>
-          </label>
-          <p className="relic-desc">
-            Vaincre le <strong>Gobelin Fuyard</strong> caché dans une salle.
-            Initiative ≥ 10 recommandée. Augmentez-la avec des runes à la forge.
-          </p>
-        </div>
-
-        <div className="relic-setting">
-          <label>
-            <input
-              type="checkbox"
-              data-testid="toggle-relique-cubique"
-              checked={localRequiredRelics.relique_cubique}
-              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_cubique: e.target.checked }))}
-            />
-            <strong>🧊 Relique Cubique</strong>
-          </label>
-          <p className="relic-desc">
-            Trouver la <strong>Pierre d'Observation</strong> et l'apporter à sa salle de destination.
-            Attention : la pierre révèle votre position dès qu'elle est en inventaire.
-          </p>
-        </div>
-
-        <div className="relic-setting">
-          <label>
-            <input
-              type="checkbox"
-              data-testid="toggle-relique-triangulaire"
-              checked={localRequiredRelics.relique_triangulaire}
-              onChange={(e) => setLocalRequiredRelics(prev => ({ ...prev, relique_triangulaire: e.target.checked }))}
-            />
-            <strong>🔺 Relique Triangulaire</strong>
-          </label>
-          <p className="relic-desc">
-            Achat unique auprès du <strong>Marchand</strong> pour 1000 pièces d'or.
-            Revendez des objets précieux pour réunir la somme.
-          </p>
-        </div>
 
         {/* Sélecteur taille du donjon */}
         <div className="relic-setting">
@@ -6857,17 +6299,10 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
           </button>
         </div>
 
-        {!Object.values(localRequiredRelics).some(v => v) && (
-          <p className="relic-desc" style={{ color: '#9fd0ff', marginTop: '8px' }}>
-            ℹ️ Aucune relique n'est requise : les aventuriers pourront attaquer le cristal directement.
-          </p>
-        )}
-
         <div className="modal-actions">
           <button
             data-testid="cancel-settings-btn"
             onClick={() => {
-              setLocalRequiredRelics(gameState.required_relics || localRequiredRelics);
               setLocalDungeonSize(gameState.dungeon_size || 12);
               if (gameState.enabled_powers) {
                 setLocalEnabledPowers(Object.fromEntries(ALL_POWERS.map(p => [p.key, gameState.enabled_powers.includes(p.key)])));
@@ -6885,7 +6320,6 @@ sessionStorage.setItem('updating_player_id', targetPlayerId);
               try {
                 const enabledPowersList = ALL_POWERS.filter(p => localEnabledPowers[p.key]).map(p => p.key);
                 await axios.post(`${API}/game/${sessionId}/update_settings`, {
-                  required_relics: localRequiredRelics,
                   dungeon_size: localDungeonSize,
                   enabled_powers: enabledPowersList,
                 });
@@ -6928,22 +6362,16 @@ const PowerSelectionOverlay = ({
   powerActionData,
   secousseEvents = [],
   maledictionSurvivors = [],
-  cursePowerItem,
   cursePowerItemMasse
 }) => {
   const [tempRoomSelections, setTempRoomSelections] = useState([]);
-  const [selectedFloor, setSelectedFloor] = useState(null);
-  const [teleportationStep, setTeleportationStep] = useState(1); // 1 = trap room, 2 = exit room
-  const [trapRoom, setTrapRoom] = useState(null);
-  // Variant "masse": multiple trap rooms (up to 3) before choosing exit
+  const [teleportationStep, setTeleportationStep] = useState(1); // 1 = trap room(s), 2 = exit room
+  // Entry rooms for the teleportation trap (1 to 3, depending on dungeon size)
   const [masseTrapRooms, setMasseTrapRooms] = useState([]);
   // NEW: Secousse - currently picked event and confirmation modal toggle
   const [secousseSelected, setSecousseSelected] = useState(null);
   const [secousseConfirming, setSecousseConfirming] = useState(false);
-  // NEW: Malédiction - selected target player + item
-  const [maledictionTarget, setMaledictionTarget] = useState(null); // {player_id, player_name, slot_index, item_type}
-  const [maledictionConfirming, setMaledictionConfirming] = useState(false);
-  // NEW: Malédiction de Masse - one selection per survivor + recap step
+  // NEW: Malédiction - one selection per survivor + recap step
   const [maledictionMasseSelections, setMaledictionMasseSelections] = useState({}); // {player_id: {slot_index, item_type, player_name}}
   const [maledictionMasseRecap, setMaledictionMasseRecap] = useState(false);
   
@@ -6973,46 +6401,12 @@ const PowerSelectionOverlay = ({
   const _powerEvolution = selectedPower ? currentPlayer?.powers_evolution?.[selectedPower] : null;
   const selectedPowerDef = _basePowerDef ? {
     ..._basePowerDef,
-    // Si niveau 2 : surcharger nom, description et rooms_count selon la variante
-    ...(_powerEvolution?.level === 2 && _powerEvolution.variant === "invasive" ? {
-      name: _powerEvolution.variant_name || _basePowerDef.name,
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      rooms_count: 5,
-    } : _powerEvolution?.level === 2 && _powerEvolution.variant === "masse" && selectedPower === "teleportation" ? {
-      name: _powerEvolution.variant_name || _basePowerDef.name,
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      masse_trap_count: 3,
-    } : _powerEvolution?.level === 2 && selectedPower === "traque" && _powerEvolution.variant === "masse" ? {
-      // Traque de masse : pas de sélection d'étage, le pouvoir s'active directement
-      name: _powerEvolution.variant_name || "🔊 Traque de masse",
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      requires_action: false,
-      action_type: null,
-    } : _powerEvolution?.level === 2 && selectedPower === "traque" && _powerEvolution.variant === "precision" ? {
-      // Traque de précision : toujours sélection d'étage, libellé mis à jour
-      name: _powerEvolution.variant_name || "🔍 Traque de précision",
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      requires_action: true,
-      action_type: "select_floor",
-    } : _powerEvolution?.level === 2 && selectedPower === "piege" && _powerEvolution.variant === "masse" ? {
-      // Blizzard de masse : sélection étendue selon dungeon_size + tours écoulés
-      name: _powerEvolution.variant_name || "🥶 Blizzard de masse",
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      requires_action: true,
-      action_type: "select_rooms_blizzard",
-      blizzard_masse: true,
-    } : _powerEvolution?.level === 2 && selectedPower === "piege" && _powerEvolution.variant === "precision" ? {
-      // Blizzard de précision : même sélection, alerte si quelqu'un tombe dedans
-      name: _powerEvolution.variant_name || "🎯 Blizzard de précision",
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      requires_action: true,
-      action_type: "select_rooms_blizzard",
-    } : _powerEvolution?.level === 2 && selectedPower === "malediction" && _powerEvolution.variant === "masse" ? {
-      // Malédiction de Masse : sélection d'un objet par aventurier puis récapitulatif
-      name: _powerEvolution.variant_name || "🔮 Malédiction de Masse",
-      description: _powerEvolution.variant_description || _basePowerDef.description,
-      requires_action: true,
-      action_type: "select_cursed_item_masse",
+    // Téléportation : nombre de pièges d'entrée dépend de la taille du donjon
+    ...(selectedPower === "teleportation" ? {
+      masse_trap_count: (() => {
+        const dungeonSize = gameState?.dungeon_size || 12;
+        return dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+      })(),
     } : _powerEvolution?.level === 2 && _powerEvolution.variant_name ? {
       name: _powerEvolution.variant_name,
       description: _powerEvolution.variant_description || _basePowerDef.description,
@@ -7023,12 +6417,11 @@ const PowerSelectionOverlay = ({
   
   const handleRoomSelection = (roomName) => {
     if (actionType === "select_rooms_blizzard") {
-      // Blizzard (base + masse + precision) : N pièces selon dungeon_size (+ tours pour masse)
+      // Blizzard (masse + précision combinées) : N pièces selon dungeon_size, + 1 par tour écoulé (jusqu'au double)
       const dungeonSize = gameState?.dungeon_size || 12;
-      const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
-      const isMasse = selectedPowerDef?.blizzard_masse;
-      const turnsPassed = isMasse ? Math.max(0, (gameState?.turn || 1) - 1) : 0;
-      const maxRooms = isMasse ? Math.min(baseCount * 2, baseCount + turnsPassed) : baseCount;
+      const baseCount = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+      const turnsPassed = Math.max(0, (gameState?.turn || 1) - 1);
+      const maxRooms = Math.min(baseCount * 2, baseCount + turnsPassed);
       if (tempRoomSelections.includes(roomName)) {
         setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
       } else if (tempRoomSelections.length < maxRooms) {
@@ -7047,32 +6440,51 @@ const PowerSelectionOverlay = ({
       } else {
         setTempRoomSelections([...tempRoomSelections, roomName]);
       }
+    } else if (actionType === "select_rooms_toxine") {
+      // Toxine (suffocante + incapacitante combinées) : N pièces selon dungeon_size
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const maxRooms = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+      if (tempRoomSelections.includes(roomName)) {
+        setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
+      } else if (tempRoomSelections.length < maxRooms) {
+        setTempRoomSelections([...tempRoomSelections, roomName]);
+      }
+    } else if (actionType === "select_rooms_mimic") {
+      // Mimic (robuste + invasive combinées) : N pièces selon dungeon_size
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const maxRooms = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      if (tempRoomSelections.includes(roomName)) {
+        setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
+      } else if (tempRoomSelections.length < maxRooms) {
+        setTempRoomSelections([...tempRoomSelections, roomName]);
+      }
     } else if (actionType === "select_room") {
-      // Toxine: 1 room
+      // Toxine legacy (au cas où) : 1 room
       setTempRoomSelections([roomName]);
     } else if (actionType === "select_rooms") {
-      // Barricade: 2 rooms
-      const roomsCount = selectedPowerDef.rooms_count || 2;
+      // Barricade : nombre de pièces adaptatif selon dungeon_size (6→2, 9→3, 12→4)
+      // Les autres pouvoirs (ex : Mimic) gardent leur rooms_count statique.
+      let roomsCount;
+      if (selectedPower === "barricade") {
+        const dungeonSize = gameState?.dungeon_size || 12;
+        roomsCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      } else {
+        roomsCount = selectedPowerDef.rooms_count || 2;
+      }
       if (tempRoomSelections.includes(roomName)) {
         setTempRoomSelections(tempRoomSelections.filter(r => r !== roomName));
       } else if (tempRoomSelections.length < roomsCount) {
         setTempRoomSelections([...tempRoomSelections, roomName]);
       }
     } else if (actionType === "select_two_rooms") {
-      // Teleportation: 2 rooms in sequence (trap then exit)
-      // Variant "masse": up to 3 trap rooms then exit
-      const isMasse = selectedPowerDef?.masse_trap_count > 0;
+      // Teleportation: 1 à 3 pièges d'entrée (selon dungeon_size) puis une sortie
       if (teleportationStep === 1) {
-        if (isMasse) {
-          // Toggle trap room in masseTrapRooms list (max 3)
-          const maxTraps = selectedPowerDef.masse_trap_count || 3;
-          if (masseTrapRooms.includes(roomName)) {
-            setMasseTrapRooms(masseTrapRooms.filter(r => r !== roomName));
-          } else if (masseTrapRooms.length < maxTraps) {
-            setMasseTrapRooms([...masseTrapRooms, roomName]);
-          }
-        } else {
-          setTrapRoom(roomName);
+        // Toggle trap room in masseTrapRooms list (max selectedPowerDef.masse_trap_count)
+        const maxTraps = selectedPowerDef.masse_trap_count || 1;
+        if (masseTrapRooms.includes(roomName)) {
+          setMasseTrapRooms(masseTrapRooms.filter(r => r !== roomName));
+        } else if (masseTrapRooms.length < maxTraps) {
+          setMasseTrapRooms([...masseTrapRooms, roomName]);
         }
       } else {
         setTempRoomSelections([roomName]);
@@ -7080,32 +6492,41 @@ const PowerSelectionOverlay = ({
     }
   };
   
-  const handleFloorSelection = (floor) => {
-    setSelectedFloor(floor);
-  };
-  
   const canConfirmAction = () => {
     if (actionType === "select_rooms_blizzard") {
       const dungeonSize = gameState?.dungeon_size || 12;
-      const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      const baseCount = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
       return tempRoomSelections.length >= 1 && tempRoomSelections.length <= baseCount * 2;
     } else if (actionType === "select_rooms_per_floor") {
       // Must select from at least one floor
       return tempRoomSelections.length > 0;
     } else if (actionType === "select_rooms") {
-      // Must select exactly the required number
-      return tempRoomSelections.length === (selectedPowerDef.rooms_count || 2);
+      // Barricade : cible adaptative selon dungeon_size (6→2, 9→3, 12→4)
+      let roomsCount;
+      if (selectedPower === "barricade") {
+        const dungeonSize = gameState?.dungeon_size || 12;
+        roomsCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      } else {
+        roomsCount = selectedPowerDef.rooms_count || 2;
+      }
+      return tempRoomSelections.length === roomsCount;
+    } else if (actionType === "select_rooms_toxine") {
+      // Toxine : doit sélectionner exactement N pièces selon dungeon_size
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const maxRooms = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+      return tempRoomSelections.length === maxRooms;
+    } else if (actionType === "select_rooms_mimic") {
+      // Mimic : doit sélectionner exactement N pièces selon dungeon_size
+      const dungeonSize = gameState?.dungeon_size || 12;
+      const maxRooms = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+      return tempRoomSelections.length === maxRooms;
     } else if (actionType === "select_room") {
       // Must select exactly one room (for toxine)
       return tempRoomSelections.length === 1;
-    } else if (actionType === "select_floor") {
-      // Must select one floor
-      return selectedFloor !== null;
     } else if (actionType === "select_two_rooms") {
-      // Teleportation: step 1 needs trap room, step 2 needs exit room
-      const isMasse = selectedPowerDef?.masse_trap_count > 0;
+      // Teleportation: step 1 needs at least one trap room, step 2 needs exit room
       if (teleportationStep === 1) {
-        return isMasse ? masseTrapRooms.length > 0 : trapRoom !== null;
+        return masseTrapRooms.length > 0;
       } else {
         return tempRoomSelections.length === 1;
       }
@@ -7375,104 +6796,6 @@ const PowerSelectionOverlay = ({
       );
     }
 
-    // Malédiction: select a cursable item in a survivor's inventory
-    if (actionType === "select_cursed_item") {
-      // Confirmation step
-      if (maledictionConfirming && maledictionTarget) {
-        return (
-          <div className="power-selection-overlay" data-testid="malediction-confirm-overlay">
-            <Card className="power-action-card">
-              <CardHeader>
-                <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-center mb-4" style={{ fontSize: '1.1rem', lineHeight: '1.5' }}>
-                  Maudire <strong>{ITEM_NAMES[maledictionTarget.item_type] || maledictionTarget.item_type}</strong> de <strong>{maledictionTarget.player_name}</strong> ?
-                  <br/><span style={{ opacity: 0.8, fontSize: '0.95rem' }}>S'il ne s'en débarrasse pas avant la fin du tour, tous les survivants perdront 10 PV.</span>
-                </p>
-                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
-                  <Button
-                    data-testid="malediction-confirm-btn"
-                    onClick={() => {
-                      cursePowerItem(maledictionTarget.player_id, maledictionTarget.slot_index);
-                      setMaledictionConfirming(false);
-                    }}
-                    style={{ backgroundColor: '#7c3aed', padding: '0.75rem 1.5rem' }}
-                  >
-                    🔮 Maudire
-                  </Button>
-                  <Button
-                    data-testid="malediction-cancel-btn"
-                    onClick={() => { setMaledictionConfirming(false); setMaledictionTarget(null); }}
-                    style={{ backgroundColor: '#555', padding: '0.75rem 1.5rem' }}
-                  >
-                    Annuler
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        );
-      }
-
-      // Item selection list
-      return (
-        <div className="power-selection-overlay" data-testid="malediction-select-overlay">
-          <Card className="power-action-card">
-            <CardHeader>
-              <CardTitle className="text-center">{selectedPowerDef.name}</CardTitle>
-              <CardDescription className="text-center">{selectedPowerDef.description}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {maledictionSurvivors.length === 0 ? (
-                <p className="text-center mb-4">Aucun aventurier ne possède d'objet maudissable.</p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
-                  {maledictionSurvivors.map((survivor) => (
-                    <div key={survivor.player_id} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '10px', padding: '0.75rem 1rem', border: '1px solid rgba(124,58,237,0.4)' }}>
-                      <div style={{ fontWeight: 'bold', color: '#c4b5fd', marginBottom: '0.5rem' }}>🧙 {survivor.player_name}</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        {survivor.items.map((item) => {
-                          const isSel = maledictionTarget && maledictionTarget.player_id === survivor.player_id && maledictionTarget.slot_index === item.slot_index;
-                          return (
-                            <button
-                              key={`${survivor.player_id}-${item.slot_index}`}
-                              data-testid={`malediction-item-${survivor.player_id}-${item.slot_index}`}
-                              onClick={() => setMaledictionTarget({ player_id: survivor.player_id, player_name: survivor.player_name, slot_index: item.slot_index, item_type: item.type })}
-                              style={{
-                                display: 'flex', alignItems: 'center', gap: '0.5rem',
-                                backgroundColor: isSel ? '#7c3aed' : '#3b2a5a',
-                                border: isSel ? '2px solid #c4b5fd' : '2px solid transparent',
-                                borderRadius: '8px', padding: '6px 12px',
-                                color: '#fff', cursor: 'pointer', fontSize: '0.95rem', transition: 'all 0.2s'
-                              }}
-                            >
-                              <img src={ITEM_SPRITES[item.type] || '/inventory/placeholder.png'} alt={ITEM_NAMES[item.type] || item.type} style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
-                              {ITEM_NAMES[item.type] || item.type}
-                              {isSel && ' ✓'}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <Button
-                data-testid="malediction-next-btn"
-                onClick={() => setMaledictionConfirming(true)}
-                disabled={!maledictionTarget}
-                className="w-full mt-4"
-                style={{ backgroundColor: maledictionTarget ? '#7c3aed' : '#555', marginTop: '1.5rem' }}
-              >
-                Suivant
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      );
-    }
-
     // Show room selection interface
     return (
       <div className="power-selection-overlay">
@@ -7486,50 +6809,38 @@ const PowerSelectionOverlay = ({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {actionType === "select_floor" ? (
-              <>
-                <p className="text-center mb-4">Choisissez un niveau à traquer:</p>
-                <div className="floor-selection-buttons" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {["upper_floor", "ground_floor", "basement"].map(floor => (
-                    <Button
-                      key={floor}
-                      onClick={() => handleFloorSelection(floor)}
-                      className="w-full"
-                      style={{
-                        backgroundColor: selectedFloor === floor ? '#8b5cf6' : '#555',
-                        padding: '1.5rem',
-                        fontSize: '1.2rem'
-                      }}
-                    >
-                      {FLOOR_NAMES[floor]} {selectedFloor === floor && " ✓"}
-                    </Button>
-                  ))}
-                </div>
-                <Button
-                  onClick={() => confirmPowerAction({ floor: selectedFloor })}
-                  disabled={!canConfirmAction()}
-                  className="w-full mt-4"
-                  style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
-                >
-                  Confirmer
-                </Button>
-              </>
-            ) : (
-              <>
+            <>
                 <p className="text-center mb-4">
                   {actionType === "select_rooms_blizzard" && (() => {
                     const dungeonSize = gameState?.dungeon_size || 12;
-                    const baseCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
-                    const isMasse = selectedPowerDef?.blizzard_masse;
-                    const turnsPassed = isMasse ? Math.max(0, (gameState?.turn || 1) - 1) : 0;
-                    const maxRooms = isMasse ? Math.min(baseCount * 2, baseCount + turnsPassed) : baseCount;
+                    const baseCount = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+                    const turnsPassed = Math.max(0, (gameState?.turn || 1) - 1);
+                    const maxRooms = Math.min(baseCount * 2, baseCount + turnsPassed);
                     return `Sélectionnez jusqu'à ${maxRooms} pièce${maxRooms > 1 ? "s" : ""} à piéger par le blizzard (${tempRoomSelections.length}/${maxRooms}) :`;
                   })()}
                   {actionType === "select_rooms_per_floor" && "Sélectionnez une pièce par étage à piéger:"}
-                  {actionType === "select_rooms" && `Sélectionnez ${selectedPowerDef.rooms_count} pièces à verrouiller:`}
+                  {actionType === "select_rooms" && (() => {
+                    let roomsCount;
+                    if (selectedPower === "barricade") {
+                      const dungeonSize = gameState?.dungeon_size || 12;
+                      roomsCount = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+                      return `Sélectionnez ${roomsCount} pièce${roomsCount > 1 ? "s" : ""} à verrouiller pendant 2 tours (${tempRoomSelections.length}/${roomsCount}) :`;
+                    }
+                    roomsCount = selectedPowerDef.rooms_count || 2;
+                    return `Sélectionnez ${roomsCount} pièces à verrouiller (${tempRoomSelections.length}/${roomsCount}) :`;
+                  })()}
+                  {actionType === "select_rooms_toxine" && (() => {
+                    const dungeonSize = gameState?.dungeon_size || 12;
+                    const maxRooms = dungeonSize === 6 ? 1 : dungeonSize === 9 ? 2 : 3;
+                    return `Sélectionnez ${maxRooms} pièce${maxRooms > 1 ? "s" : ""} à empoisonner (${tempRoomSelections.length}/${maxRooms}) :`;
+                  })()}
+                  {actionType === "select_rooms_mimic" && (() => {
+                    const dungeonSize = gameState?.dungeon_size || 12;
+                    const maxRooms = dungeonSize === 6 ? 2 : dungeonSize === 9 ? 3 : 4;
+                    return `Sélectionnez ${maxRooms} pièces pour placer vos mimics (${tempRoomSelections.length}/${maxRooms}) :`;
+                  })()}
                   {actionType === "select_room" && "Sélectionnez une pièce à empoisonner:"}
-                  {actionType === "select_two_rooms" && teleportationStep === 1 && !selectedPowerDef?.masse_trap_count && "Posez votre piège de téléportation dans la pièce que vous souhaitez ➡️🌀"}
-                  {actionType === "select_two_rooms" && teleportationStep === 1 && selectedPowerDef?.masse_trap_count > 0 && `Sélectionnez jusqu'à ${selectedPowerDef.masse_trap_count} pièces d'entrée ➡️🌀 (${masseTrapRooms.length}/${selectedPowerDef.masse_trap_count} choisies)`}
+                  {actionType === "select_two_rooms" && teleportationStep === 1 && `Sélectionnez jusqu'à ${selectedPowerDef.masse_trap_count} pièce${selectedPowerDef.masse_trap_count > 1 ? "s" : ""} d'entrée ➡️🌀 (${masseTrapRooms.length}/${selectedPowerDef.masse_trap_count} choisies)`}
                   {actionType === "select_two_rooms" && teleportationStep === 2 && "Posez votre portail de sortie dans la pièce que vous souhaitez. Les joueurs téléportés arriveront dans cette pièce 🌀➡️"}
                 </p>
                 
@@ -7542,7 +6853,7 @@ const PowerSelectionOverlay = ({
                           .filter(([_, data]) => data.floor === floor)
                           .map(([roomName, roomData]) => {
                             const isSelected = actionType === "select_two_rooms" && teleportationStep === 1
-                              ? (selectedPowerDef?.masse_trap_count > 0 ? masseTrapRooms.includes(roomName) : trapRoom === roomName)
+                              ? masseTrapRooms.includes(roomName)
                               : tempRoomSelections.includes(roomName);
                             const isLocked = roomData.locked;
                             const isTrapped = roomData.trapped; // FIXED: Show trapped rooms
@@ -7589,17 +6900,10 @@ const PowerSelectionOverlay = ({
                         setTeleportationStep(2);
                         setTempRoomSelections([]);
                       } else {
-                        // Confirm: masse variant sends multiple trap rooms, standard sends single
-                        const isMasse = selectedPowerDef?.masse_trap_count > 0;
-                        if (isMasse) {
-                          confirmPowerAction({ trap_rooms: masseTrapRooms, exit_room: tempRoomSelections[0] });
-                        } else {
-                          confirmPowerAction({ trap_room: trapRoom, exit_room: tempRoomSelections[0] });
-                        }
+                        confirmPowerAction({ trap_rooms: masseTrapRooms, exit_room: tempRoomSelections[0] });
                         // Reset teleportation internal state so it's clean if the component
-                        // re-renders before being unmounted (e.g. during the specialization flow)
+                        // re-renders before being unmounted
                         setTeleportationStep(1);
-                        setTrapRoom(null);
                         setMasseTrapRooms([]);
                         setTempRoomSelections([]);
                       }
@@ -7612,13 +6916,10 @@ const PowerSelectionOverlay = ({
                   style={{ backgroundColor: canConfirmAction() ? '#8b5cf6' : '#555' }}
                 >
                   {actionType === "select_two_rooms" && teleportationStep === 1
-                    ? (selectedPowerDef?.masse_trap_count > 0
-                        ? `Suivant (${masseTrapRooms.length} piège${masseTrapRooms.length > 1 ? "s" : ""})`
-                        : "Suivant")
+                    ? `Suivant (${masseTrapRooms.length} piège${masseTrapRooms.length > 1 ? "s" : ""})`
                     : "Confirmer"}
                 </Button>
               </>
-            )}
           </CardContent>
         </Card>
       </div>
@@ -7694,112 +6995,6 @@ const PowerSelectionOverlay = ({
               );
             })}
           </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
-
-// ========== POWER SPECIALIZATION MODAL ==========
-const PowerSpecializationModal = ({ data, onClose, wsRef }) => {
-  const [selectedVariant, setSelectedVariant] = useState(null);
-  
-  if (!data) return null;
-  
-  const { power, specializations } = data;
-  const variants = Object.entries(specializations);
-  
-  const handleSelectVariant = (variantKey) => {
-    if (!wsRef || !wsRef.current) return;
-    
-    wsRef.current.send(JSON.stringify({
-      type: "select_power_specialization",
-      power: power,
-      variant: variantKey
-    }));
-    
-    setSelectedVariant(variantKey);
-    setTimeout(() => { onClose(); }, 1500);
-  };
-  
-  return (
-    <div
-      className="game-over-overlay"
-      style={{
-        position: 'fixed',
-        top: 0, left: 0, right: 0, bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.95)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 4000,
-      }}
-    >
-      <Card style={{
-        maxWidth: '1100px',
-        width: '95%',
-        backgroundColor: '#2a1f17',
-        border: '3px solid #d4af37',
-      }}>
-        <CardHeader>
-          <CardTitle style={{ color: '#d4af37', textAlign: 'center', fontSize: '1.8rem' }}>
-            🔮 Spécialisation — {power.charAt(0).toUpperCase() + power.slice(1)}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p style={{ color: '#e8dcc4', textAlign: 'center', marginBottom: '1.5rem' }}>
-            Choisissez une amélioration pour votre pouvoir :
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1rem' }}>
-            {variants.map(([variantKey, variantData]) => (
-              <div
-                key={variantKey}
-                style={{
-                  backgroundColor: 'rgba(0,0,0,0.4)',
-                  border: selectedVariant === variantKey ? '3px solid #10b981' : '2px solid rgba(212,175,55,0.3)',
-                  borderRadius: '12px',
-                  padding: '1.25rem',
-                  transition: 'all 0.3s ease',
-                }}
-              >
-                <h3 style={{ color: '#d4af37', fontSize: '1.3rem', marginBottom: '0.75rem', textAlign: 'center' }}>
-                  {variantData.name}
-                </h3>
-                <div
-                  style={{
-                    width: '100%', height: '200px', backgroundColor: '#000',
-                    borderRadius: '8px', marginBottom: '0.75rem',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <video src={variantData.video_path} autoPlay loop muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                </div>
-                <p style={{ color: '#e8dcc4', fontSize: '0.95rem', marginBottom: '1rem', textAlign: 'center', minHeight: '50px' }}>
-                  {variantData.description}
-                </p>
-                <button
-                  onClick={() => handleSelectVariant(variantKey)}
-                  disabled={selectedVariant !== null}
-                  style={{
-                    width: '100%', padding: '10px',
-                    backgroundColor: selectedVariant === variantKey ? '#10b981' : '#d4af37',
-                    border: 'none', borderRadius: '8px',
-                    color: '#1a1410', fontSize: '1rem', fontWeight: 'bold',
-                    cursor: selectedVariant !== null ? 'not-allowed' : 'pointer',
-                    opacity: selectedVariant !== null && selectedVariant !== variantKey ? 0.5 : 1,
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  {selectedVariant === variantKey ? '✓ Sélectionné' : 'Choisir'}
-                </button>
-              </div>
-            ))}
-          </div>
-          {selectedVariant && (
-            <p style={{ color: '#10b981', textAlign: 'center', fontSize: '1.1rem', fontWeight: 'bold' }}>
-              ✨ Amélioration confirmée !
-            </p>
-          )}
         </CardContent>
       </Card>
     </div>
@@ -8002,8 +7197,6 @@ const Game = () => {
   const [combatHelpParticipants, setCombatHelpParticipants] = useState([]); // pour A : liste qui s'agrandit
   const [showCrystalCombat, setShowCrystalCombat] = useState(false);
   const [crystalCombatEvent, setCrystalCombatEvent] = useState(null);
-  const [showFleeingGoblinCombat, setShowFleeingGoblinCombat] = useState(false);
-  const [fleeingGoblinCombatEvent, setFleeingGoblinCombatEvent] = useState(null);
 
   // SAFEGUARD: ferme l'overlay "en attente d'alliés" dès qu'un combat mimic
   // est arrivé dans pending_events, même si le state_update tarde par ailleurs.
@@ -8031,20 +7224,12 @@ const prevPendingActionsRef = useRef('{}');
   // NEW: Discovered events list for the Secousse power (provided by backend)
   const [secousseEvents, setSecousseEvents] = useState([]);
   
-  // NEW: Power specialization modal
-  const [showPowerSpecialization, setShowPowerSpecialization] = useState(false);
-  const [powerSpecializationData, setPowerSpecializationData] = useState(null);
-
   // NEW: Key found popup state
   const [showKeyFoundPopup, setShowKeyFoundPopup] = useState(false);
   const [keyFoundMessage, setKeyFoundMessage] = useState("");
   
   // quest_completed popup state REMOVED — replaced by continuous lucky searches
 
-  // Stone quest completed popup (non-blocking, auto-closes)
-  const [showStoneQuestPopup, setShowStoneQuestPopup] = useState(false);
-  const [stoneQuestMessage, setStoneQuestMessage] = useState("");
-  
   // NEW: Wrong class popup state (with image)
   const [showWrongClassPopup, setShowWrongClassPopup] = useState(false);
   const [wrongClassMessage, setWrongClassMessage] = useState("");
@@ -8079,14 +7264,11 @@ const prevPendingActionsRef = useRef('{}');
   const [showKillerEliminationPopup, setShowKillerEliminationPopup] = useState(false);
   const [killerEliminationMessage, setKillerEliminationMessage] = useState("");
   const [killerEliminationImage, setKillerEliminationImage] = useState("");
-  const [killerName, setKillerName] = useState("");
   const [survivorName, setSurvivorName] = useState("");
-  const [eliminationRoom, setEliminationRoom] = useState("");
   
   // NEW: Gold found popup state (with image)
   const [showGoldFoundPopup, setShowGoldFoundPopup] = useState(false);
   const [goldMessage, setGoldMessage] = useState("");
-  const [goldAmount, setGoldAmount] = useState(0);
   const [goldImage, setGoldImage] = useState("");
 
   // NEW: Crystal spawned popup state (with video)
@@ -8118,7 +7300,6 @@ const prevPendingActionsRef = useRef('{}');
   const [resurrectionMessage, setResurrectionMessage] = useState("");
   const [resurrectionVideoPath, setResurrectionVideoPath] = useState("");
   const [resurrectionEliminatedSurvivors, setResurrectionEliminatedSurvivors] = useState([]);
-  const [resurrectionSteleRoom, setResurrectionSteleRoom] = useState(null);
   const [showRevivalConfirm, setShowRevivalConfirm] = useState(false);
   const [revivalTargetId, setRevivalTargetId] = useState(null);
   // Revived popup (for the player who was revived)
@@ -8130,7 +7311,6 @@ const prevPendingActionsRef = useRef('{}');
   const [forgeAnimation, setForgeAnimation] = useState(null); // null | "forging" | "success" | "failure"
   const [forgeBusy, setForgeBusy] = useState(false);
   const [forgeFlashLabel, setForgeFlashLabel] = useState("");
-  const [forgePendingResult, setForgePendingResult] = useState(null); // response cached during "forging"
 
   // NEW: Cristal popup
   const [showCrystalPopup, setShowCrystalPopup] = useState(false);
@@ -8139,7 +7319,6 @@ const prevPendingActionsRef = useRef('{}');
   
   // Animation de la barre de forge
   const [forgeBarAnimation, setForgeBarAnimation] = useState(false);
-  const [forgeBarCursorPosition, setForgeBarCursorPosition] = useState(0);
   
   // NEW: Antidote used popup state
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
@@ -8151,8 +7330,7 @@ const prevPendingActionsRef = useRef('{}');
   const [poursuiteSpawnVideoPath, setPoursuiteSpawnVideoPath] = useState("");
   const [showTraquePopup, setShowTraquePopup] = useState(false);
   const [traqueMessage, setTraqueMessage] = useState("");
-  const [traqueVideoPath, setTraqueVideoPath] = useState("/powers/Traque.mp4");
-  const [traqueAvatars, setTraqueAvatars] = useState([]);
+  const [traqueVideoPath, setTraqueVideoPath] = useState("/powers/Traque de masse.mp4");
 
   // NEW: Eboulement popup state
   const [showEboulementPopup, setShowEboulementPopup] = useState(false);
@@ -8163,11 +7341,6 @@ const prevPendingActionsRef = useRef('{}');
   const [showPatrouillePopup, setShowPatrouillePopup] = useState(false);
   const [patrouilleMessage, setPatrouilleMessage] = useState("");
   const [patrouilleVideoPath, setPatrouilleVideoPath] = useState("");
-
-  // NEW: Observation stone alert popup (for killers, non-blocking)
-  const [showObservationStoneAlert, setShowObservationStoneAlert] = useState(false);
-  const [observationStoneMessage, setObservationStoneMessage] = useState("");
-  const [observationStoneVideoPath, setObservationStoneVideoPath] = useState("");
 
   // ── Killer alert queue (non-bloquant, séquentiel) ──────────────────────────
   // Toutes les popups non-bloquantes killers passent par cette file pour éviter
@@ -8201,9 +7374,6 @@ const prevPendingActionsRef = useRef('{}');
   const [maledictionVideoPath, setMaledictionVideoPath] = useState("");
   const [showMaledictionPenaltyPopup, setShowMaledictionPenaltyPopup] = useState(false);
   const [maledictionPenaltyMessage, setMaledictionPenaltyMessage] = useState("");
-  // NEW: Malédiction Incertaine - team-wide curse lifted popup
-  const [showMaledictionLiftedPopup, setShowMaledictionLiftedPopup] = useState(false);
-  const [maledictionLiftedMessage, setMaledictionLiftedMessage] = useState("");
   // Malediction killer selection state (passed to PowerSelectionOverlay)
   const [maledictionSurvivors, setMaledictionSurvivors] = useState([]);
 
@@ -8309,13 +7479,6 @@ const prevPendingActionsRef = useRef('{}');
             } else if (event.type === "crystal_combat") {
               setCrystalCombatEvent(event);
               setShowCrystalCombat(true);
-            } else if (event.type === "fleeing_goblin_combat") {
-              setFleeingGoblinCombatEvent(event);
-              setShowFleeingGoblinCombat(true);
-            } else if (event.type === "power_specialization") {
-              // Show power specialization modal
-              setPowerSpecializationData(event);
-              setShowPowerSpecialization(true);
             }
           }
         }
@@ -8425,19 +7588,6 @@ const prevPendingActionsRef = useRef('{}');
           setCrystalCombatEvent(data);
           setShowCrystalCombat(true);
         }
-      } else if (data.type === "fleeing_goblin_combat") {
-        // Direct WS handler for fleeing goblin combat
-        setFleeingGoblinCombatEvent(data);
-        setShowFleeingGoblinCombat(true);
-      } else if (data.type === "power_specialization") {
-        // ⚠️ FIX SÉQUENCEMENT : top-level handler pour la spécialisation envoyée
-        // par `dispatch_next_player_event` APRÈS la fermeture d'un combat
-        // (cas où le killer a fouillé une pièce avec aventuriers et a déclenché
-        //  un combat en même temps que sa spécialisation niveau 1).
-        // Sans ce handler, le message WS direct serait ignoré et la modale
-        // de spec ne s'afficherait jamais après la fermeture du combat.
-        setPowerSpecializationData(data);
-        setShowPowerSpecialization(true);
       } else if (data.type === "teleportation_notification") {
         // NEW: Show teleportation popup for survivor who entered teleportation trap with video
         setTeleportationVideoPath(data.video_path || "");
@@ -8465,7 +7615,6 @@ const prevPendingActionsRef = useRef('{}');
         setResurrectionMessage(data.message || "");
         setResurrectionVideoPath(data.video_path || "/event/Revive.mp4");
         setResurrectionEliminatedSurvivors(data.eliminated_survivors || []);
-        setResurrectionSteleRoom(data.stele_room || null);
         setShowResurrectionPopup(true);
       } else if (data.type === "you_were_revived") {
         setYouWereRevivedMessage(data.message || "");
@@ -8515,12 +7664,6 @@ const prevPendingActionsRef = useRef('{}');
         setPatrouilleVideoPath(data.video_path);
         setShowPatrouillePopup(true);
         // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
-      } else if (data.type === "observation_stone_alert") {
-        // Non-blocking alert for killers: a survivor is carrying the observation stone
-        setObservationStoneMessage(data.message);
-        setObservationStoneVideoPath(data.video_path);
-        setShowObservationStoneAlert(true);
-        // NOTE: No notifyEventCompleted needed — non-blocking for killers
       } else if (data.type === "room_pillaged_discovered") {
         // NEW: le killer découvre qu'une pièce a déjà été pillée par les survivants
         if (data.killer_id === storedPlayerId) {
@@ -8538,7 +7681,7 @@ const prevPendingActionsRef = useRef('{}');
           color: "#60a5fa",
         });
       } else if (data.type === "patrol_reveal") {
-        // Killers: exact position revealed by Patrouille variant → popup with video
+        // Killers: exact position revealed by the Espionnage goblin → popup with video
         enqueueKillerAlert({
           title: "Gobelin de Patrouille !",
           icon: "🔍",
@@ -8546,22 +7689,10 @@ const prevPendingActionsRef = useRef('{}');
           videoPath: "/powers/Patrouille.mp4",
           color: "#f59e0b",
         });
-      } else if (data.type === "patrol_presence") {
-        // Killers: floor presence revealed by Espionnage or Vadrouille → popup with video
-        const _floorLabels = { upper_floor: "Étage supérieur", ground_floor: "Rez-de-chaussée", basement: "Sous-sol" };
-        const _varLabel = data.variant === "vadrouille" ? "Vadrouille" : "Espion";
-        enqueueKillerAlert({
-          title: `Gobelin ${_varLabel} !`,
-          icon: "🔍",
-          message: `🔍 Gobelin ${_varLabel} : ${data.player_name} détecté au ${_floorLabels[data.floor] || data.floor} !`,
-          videoPath: data.variant === "vadrouille" ? "/powers/Vadrouille.mp4" : "/powers/Espionnage.mp4",
-          color: "#f59e0b",
-        });
       } else if (data.type === "traque_result") {
-        // Show Traque popup with video (video_path and avatars vary by variant)
+        // Show Traque popup with video
         setTraqueMessage(data.message);
-        setTraqueVideoPath(data.video_path || "/powers/Traque.mp4");
-        setTraqueAvatars(data.avatars || []);
+        setTraqueVideoPath(data.video_path || "/powers/Traque de masse.mp4");
         setShowTraquePopup(true);
       } else if (data.type === "poison_countdown") {
         // Show poison countdown notification
@@ -8677,10 +7808,6 @@ const prevPendingActionsRef = useRef('{}');
         setShowKeyFoundPopup(true);
         // NOTE: No auto-hide — user must click to close
         // quest_completed_popup REMOVED — replaced by continuous lucky searches
-      } else if (data.type === "stone_quest_completed_popup") {
-        setStoneQuestMessage(data.message);
-        setShowStoneQuestPopup(true);
-        setTimeout(() => setShowStoneQuestPopup(false), 4000);
       } else if (data.type === "toxin_death_popup") {
         // Show popup with video for toxin death
         setToxinDeathMessage(data.message);
@@ -8701,7 +7828,6 @@ const prevPendingActionsRef = useRef('{}');
       } else if (data.type === "gold_found") {
         // Show popup with gold image
         setGoldMessage(data.message);
-        setGoldAmount(data.gold_amount);
         setGoldImage(data.gold_image);
         setShowGoldFoundPopup(true);
         // NOTE: No auto-hide — user must click to close (will trigger notifyEventCompleted)
@@ -8727,9 +7853,7 @@ const prevPendingActionsRef = useRef('{}');
         // Show dramatic elimination popup with fouille video
         setKillerEliminationMessage(data.message);
         setKillerEliminationImage(data.fouille_video); // Reuse this state for video path
-        setKillerName(data.killer_name);
         setSurvivorName(data.survivor_name);
-        setEliminationRoom(data.room_name);
         setShowKillerEliminationPopup(true);
         // Note: Video will auto-hide when it ends or when clicked
       } else if (data.type === "player_action") {
@@ -8766,11 +7890,6 @@ const prevPendingActionsRef = useRef('{}');
         setMaledictionPenaltyMessage(data.message);
         setMaledictionVideoPath(data.video_path || "/powers/Malediction.mp4");
         setShowMaledictionPenaltyPopup(true);
-        // No auto-hide — user must click to close
-      } else if (data.type === "malediction_lifted") {
-        // Malédiction Incertaine: the whole team's curse has been lifted at once
-        setMaledictionLiftedMessage(data.message);
-        setShowMaledictionLiftedPopup(true);
         // No auto-hide — user must click to close
       } else if (data.type === "error") {
         toast.error(data.message);
@@ -8926,31 +8045,15 @@ const selectRoom = (roomName) => {
     }
 
     // NEW: For powers that don't require action, show "Fouillez une pièce" popup immediately
-    // Tenir compte des évolutions de pouvoir (ex: Traque de masse niveau 2 n'a pas besoin d'action)
     const powerDef = powerDefinitions[powerName];
-    const currentPlayer = gameState.players[playerId];
-    const evolution = currentPlayer?.powers_evolution?.[powerName];
 
-    // Calculer si le pouvoir effectivement sélectionné requiert une action,
-    // en appliquant les surcharges de variante niveau 2 (comme dans selectedPowerDef)
-    let effectiveRequiresAction = powerDef?.requires_action;
-    if (evolution?.level === 2) {
-      if (powerName === "traque" && evolution.variant === "masse") {
-        // Traque de masse : s'active directement, pas de sélection d'étage
-        effectiveRequiresAction = false;
-      } else if (powerName === "traque" && evolution.variant === "precision") {
-        effectiveRequiresAction = true;
-      }
-      // Les autres variantes niveau 2 conservent le comportement de base
-    }
-
-    if (powerDef && !effectiveRequiresAction) {
+    if (powerDef && !powerDef.requires_action) {
       setShowOrcSearchPopup(true);
       // Auto-hide after 3 seconds
       setTimeout(() => {
         setShowOrcSearchPopup(false);
       }, 3000);
-    } else if (powerDef && effectiveRequiresAction) {
+    } else if (powerDef && powerDef.requires_action) {
       // Pour la malédiction : NE PAS afficher immédiatement.
       // La liste cursable_survivors arrive avec le power_action_required WebSocket —
       // afficher avant la réponse causerait un état vide ("Aucun aventurier...").
@@ -9000,25 +8103,7 @@ const selectRoom = (roomName) => {
     }
   };
 
-  // NEW: Curse item function for Malédiction power
-  const cursePowerItem = (targetPlayerId, slotIndex) => {
-    if (!gameState || gameState.phase !== "killer_power_selection") return;
-    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({
-        type: "curse_item",
-        target_player_id: targetPlayerId,
-        slot_index: slotIndex
-      }));
-    }
-    // Show "Fouillez une pièce" popup
-    setShowPowerAction(false);
-    setShowOrcSearchPopup(true);
-    setTimeout(() => {
-      setShowOrcSearchPopup(false);
-    }, 3000);
-  };
-
-  // NEW: Curse all survivors at once (Malédiction de Masse)
+  // NEW: Curse all survivors at once (Malédiction)
   const cursePowerItemMasse = (selections) => {
     if (!gameState || gameState.phase !== "killer_power_selection") return;
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
@@ -9067,7 +8152,9 @@ const selectRoom = (roomName) => {
         type: "blizzard",
         icon: "/icons/blizzard.png",
         name: "Blizzard",
-        description: `Une pièce est prise dans un violent blizzard pour encore 1 Tour.`,
+        description: trappedRoomsCount > 1
+          ? `${trappedRoomsCount} pièces sont prises dans un violent blizzard pour encore 1 Tour.`
+          : `Une pièce est prise dans un violent blizzard pour encore 1 Tour.`,
         count: trappedRoomsCount
       });
     }
@@ -9080,7 +8167,9 @@ const selectRoom = (roomName) => {
         type: "toxine",
         icon: "/icons/toxine.png",
         name: "Toxine",
-        description: `Une pièce est empoisonnée par la toxine pour encore ${maxTurns} Tour(s).`,
+        description: poisonedRooms.length > 1
+          ? `${poisonedRooms.length} pièces sont empoisonnées par la toxine pour encore ${maxTurns} Tour(s).`
+          : `Une pièce est empoisonnée par la toxine pour encore ${maxTurns} Tour(s).`,
         count: poisonedRooms.length
       });
     }
@@ -9223,20 +8312,6 @@ const selectRoom = (roomName) => {
           onClose={() => {
             setShowCrystalCombat(false);
             setCrystalCombatEvent(null);
-            notifyEventCompleted();
-          }}
-        />
-      )}
-
-      {/* Fleeing Goblin Combat Popup */}
-      {showFleeingGoblinCombat && fleeingGoblinCombatEvent && (
-        <FleeingGoblinCombat
-          event={fleeingGoblinCombatEvent}
-          playerId={playerId}
-          sessionId={sessionId}
-          onClose={() => {
-            setShowFleeingGoblinCombat(false);
-            setFleeingGoblinCombatEvent(null);
             notifyEventCompleted();
           }}
         />
@@ -9467,40 +8542,6 @@ const selectRoom = (roomName) => {
       )}
 
       {/* quest_completed_popup REMOVED — replaced by continuous lucky searches */}
-
-      {/* Stone quest completed — non-blocking toast */}
-      {showStoneQuestPopup && (
-        <div
-          onClick={() => setShowStoneQuestPopup(false)}
-          data-testid="stone-quest-popup"
-          style={{
-            position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)',
-            zIndex: 1100, backgroundColor: '#1a3a2a', border: '2px solid #4ade80',
-            borderRadius: '12px', padding: '16px 24px', maxWidth: '420px', textAlign: 'center',
-            boxShadow: '0 4px 24px rgba(74,222,128,0.3)', cursor: 'pointer'
-          }}
-        >
-          <p style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '1.1rem', margin: 0 }}>🪨 Quête de la Pierre accomplie !</p>
-          <p style={{ color: '#e8dcc4', fontSize: '0.9rem', marginTop: '6px' }}>{stoneQuestMessage}</p>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', marginTop: '12px' }}>
-            <img
-              src={ITEM_SPRITES.relique_cubique}
-              alt="Relique Cubique"
-              style={{
-                width: '80px',
-                height: '80px',
-                objectFit: 'contain',
-                filter: 'drop-shadow(0 0 10px rgba(74,222,128,0.7))',
-                animation: 'pulse 1.5s ease-in-out infinite',
-              }}
-            />
-            <p style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '0.95rem', margin: 0 }}>
-              ✨ Relique Cubique ajoutée à l'inventaire !
-            </p>
-          </div>
-          <p style={{ color: '#a0aec0', fontSize: '0.75rem', marginTop: '8px' }}>Cliquez pour fermer</p>
-        </div>
-      )}
 
       {/* NEW: Toxin Death Popup with Video */}
       {showToxinDeathPopup && (
@@ -9846,45 +8887,6 @@ const selectRoom = (roomName) => {
                     Acheter
                   </Button>
                 </div>
-
-                {/* Relique Triangulaire */}
-                {!gameState.relique_triangulaire_sold && (
-                <div style={{ 
-                  padding: '1.5rem', 
-                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
-                  border: '2px solid #d4af37',
-                  borderRadius: '8px',
-                  display: 'flex',
-                  gap: '1rem',
-                  alignItems: 'center'
-                }}>
-                  <img src="/items/Relique_Triangulaire.png" alt="Relique Triangulaire" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
-                  <div style={{ flex: 1 }}>
-                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Relique Triangulaire</h3>
-                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
-                      Le Roi Orc m'a confié cette étrange relique. Je ne dois pas m'en séparer mais si vous m'en offrez un bon prix, elle est à vous !
-                    </p>
-                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 1000</p>
-                  </div>
-                  <Button
-                    onClick={async () => {
-                      try {
-                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=relique_triangulaire`);
-                        toast.success("Relique Triangulaire achetée !");
-                      } catch (error) {
-                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
-                      }
-                    }}
-                    disabled={gameState.players[playerId]?.gold < 1000 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'relique_triangulaire')}
-                    style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 1000 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'relique_triangulaire')) ? '#10b981' : '#555',
-                      minWidth: '100px'
-                    }}
-                  >
-                    Acheter
-                  </Button>
-                </div>
-                )}
               </div>
 
               {/* Buttons */}
@@ -10306,21 +9308,10 @@ const selectRoom = (roomName) => {
 
       {/* NEW: Crystal Popup */}
       {showCrystalPopup && (() => {
-        const placed = gameState?.crystal_placed_relics || {};
-        const allPlaced = placed.relique_spherique && placed.relique_cubique && placed.relique_triangulaire;
-
         const closeCrystal = async () => {
           setShowCrystalPopup(false);
           try { await axios.post(`${API}/game/${sessionId}/crystal_close`, { player_id: playerId }); } catch (e) {}
           notifyEventCompleted();
-        };
-        const placeRelic = async () => {
-          try {
-            const res = await axios.post(`${API}/game/${sessionId}/crystal_place_relic`, { player_id: playerId });
-            toast.success(res.data.message);
-          } catch (e) {
-            toast.error(e.response?.data?.detail || "Erreur");
-          }
         };
         const attackCrystal = async () => {
           try {
@@ -10349,126 +9340,11 @@ const selectRoom = (roomName) => {
                 )}
                 <p style={{ color: '#fff', textAlign: 'center', marginBottom: '1rem' }}>{crystalMessage}</p>
 
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
-                  {['relique_spherique','relique_cubique','relique_triangulaire'].map(r => (
-                    <span key={r} style={{
-                      padding: '0.3rem 0.6rem', borderRadius: '6px',
-                      backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
-                      color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
-                    }}>
-                      {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
-                    </span>
-                  ))}
-                </div>
-
                 <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                  <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
-                    style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
-                    Placer une relique
+                  <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
+                    style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>
+                    ⚔️ Attaquer le cristal
                   </Button>
-                  {allPlaced && (
-                    <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
-                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>
-                      ⚔️ Attaquer le cristal
-                    </Button>
-                  )}
-                  <Button data-testid="crystal-close-btn" onClick={closeCrystal}
-                    style={{ backgroundColor: '#555', color: '#fff' }}>
-                    Fermer
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        );
-      })()}
-      {showCrystalPopup && (() => {
-        const placed = gameState?.crystal_placed_relics || {};
-        const requiredRelics = gameState?.required_relics || {
-          relique_spherique: true,
-          relique_cubique: true,
-          relique_triangulaire: true
-        };
-        
-        // Only check the relics that are required
-        const requiredRelicsList = Object.keys(requiredRelics).filter(r => requiredRelics[r]);
-        const allPlaced = requiredRelicsList.every(r => placed[r]);
-
-        const closeCrystal = async () => {
-          setShowCrystalPopup(false);
-          try { await axios.post(`${API}/game/${sessionId}/crystal_close`, { player_id: playerId }); } catch (e) {}
-          notifyEventCompleted();
-        };
-        const placeRelic = async () => {
-          try {
-            const res = await axios.post(`${API}/game/${sessionId}/crystal_place_relic`, { player_id: playerId });
-            toast.success(res.data.message);
-          } catch (e) {
-            toast.error(e.response?.data?.detail || "Erreur");
-          }
-        };
-        const attackCrystal = async () => {
-          try {
-            await axios.post(`${API}/game/${sessionId}/crystal_attack`, { player_id: playerId });
-            // Close the crystal popup — a 10s help window opens for allies to
-            // join, then the `crystal_combat` WS event is sent by the backend.
-            setShowCrystalPopup(false);
-            toast.info("💎 Vous attaquez le Cristal ! Vos alliés ont 10s pour vous rejoindre...");
-          } catch (e) {
-            toast.error(e.response?.data?.detail || "Erreur");
-          }
-        };
-
-        return (
-          <div className="game-over-overlay" style={{ zIndex: 2000 }} data-testid="crystal-popup">
-            <Card style={{ maxWidth: '700px', backgroundColor: '#0d1a26', borderColor: '#5fa8ff', border: '3px solid #5fa8ff' }}>
-              <CardHeader>
-                <CardTitle style={{ color: '#9fd0ff', textAlign: 'center' }}>
-                  💎 Le Cristal
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {crystalVideoPath && (
-                  <video src={crystalVideoPath} autoPlay loop muted
-                    style={{ width: '100%', maxHeight: '380px', borderRadius: '8px', marginBottom: '1rem' }} />
-                )}
-                <p style={{ color: '#fff', textAlign: 'center', marginBottom: '1rem' }}>{crystalMessage}</p>
-
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
-                  {requiredRelicsList.length === 0 ? (
-                    <span style={{
-                      padding: '0.3rem 0.8rem', borderRadius: '6px',
-                      backgroundColor: '#1f3a4d', color: '#9fd0ff', fontSize: '0.85rem',
-                      fontStyle: 'italic',
-                    }}>
-                      ℹ️ Aucune relique n'est requise — le cristal est directement vulnérable.
-                    </span>
-                  ) : (
-                    requiredRelicsList.map(r => (
-                      <span key={r} style={{
-                        padding: '0.3rem 0.6rem', borderRadius: '6px',
-                        backgroundColor: placed[r] ? '#1f4d2b' : '#3a1f1f',
-                        color: placed[r] ? '#9fffb5' : '#ff9f9f', fontSize: '0.85rem',
-                      }}>
-                        {placed[r] ? '✓' : '✗'} {r.replace('relique_', '')}
-                      </span>
-                    ))
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                  {requiredRelicsList.length > 0 && (
-                    <Button data-testid="crystal-place-relic-btn" onClick={placeRelic}
-                      style={{ backgroundColor: '#5fa8ff', color: '#000', fontWeight: 'bold' }}>
-                      Placer une relique
-                    </Button>
-                  )}
-                  {allPlaced && (
-                    <Button data-testid="crystal-attack-btn" onClick={attackCrystal}
-                      style={{ backgroundColor: '#ff4d4d', color: '#fff', fontWeight: 'bold' }}>
-                      ⚔️ Attaquer le cristal
-                    </Button>
-                  )}
                   <Button data-testid="crystal-close-btn" onClick={closeCrystal}
                     style={{ backgroundColor: '#555', color: '#fff' }}>
                     Fermer
@@ -10879,43 +9755,6 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* NEW: Observation Stone Alert Popup (for killers, non-blocking) */}
-      {showObservationStoneAlert && (
-        <div
-          className="game-over-overlay"
-          style={{ zIndex: 1001 }}
-          onClick={() => setShowObservationStoneAlert(false)}
-          data-testid="observation-stone-alert-popup"
-        >
-          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1a1a2e', borderColor: '#7c3aed' }}>
-            <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#a78bfa' }}>
-                🔮
-                <span>Aventurier repéré !</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {observationStoneVideoPath && (
-                <video
-                  autoPlay
-                  muted
-                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1rem' }}
-                >
-                  <source src={observationStoneVideoPath} type="video/mp4" />
-                  Votre navigateur ne supporte pas la vidéo.
-                </video>
-              )}
-              <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff' }}>
-                {observationStoneMessage}
-              </p>
-              <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
-                Cliquez pour continuer
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
       {/* ── Killer Alert Queue Popup ────────────────────────────────────────────
            Toutes les alertes non-bloquantes pour les killers (Patrouille, Blizzard,
            Toxine suffocante, Séisme…) passent par cette file. Une seule popup à la fois,
@@ -11132,37 +9971,6 @@ const selectRoom = (roomName) => {
           </Card>
         </div>
       )}
-
-      {/* NEW: Malédiction Incertaine - team-wide curse lifted popup */}
-      {showMaledictionLiftedPopup && (
-        <div
-          className="game-over-overlay"
-          style={{ zIndex: 1002 }}
-          onClick={() => setShowMaledictionLiftedPopup(false)}
-          data-testid="malediction-lifted-popup"
-        >
-          <Card className="game-over-card" style={{ maxWidth: '700px', backgroundColor: '#1e0a32', borderColor: '#7c3aed' }}>
-            <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#c4b5fd' }}>
-                🔮 Malédiction levée !
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p style={{ fontSize: '1.05em', textAlign: 'center', color: '#c4b5fd', lineHeight: '1.6' }}>
-                {maledictionLiftedMessage}
-              </p>
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1rem' }}>
-                <Button
-                  data-testid="malediction-lifted-ok-btn"
-                  onClick={() => setShowMaledictionLiftedPopup(false)}
-                  style={{ backgroundColor: '#7c3aed', padding: '0.6rem 1.5rem' }}
-                >
-                  OK
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
       )}
 
       {/* Traque Result Popup */}
@@ -11193,18 +10001,6 @@ const selectRoom = (roomName) => {
               <p style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', fontWeight: 'bold' }}>
                 {traqueMessage}
               </p>
-              {traqueAvatars.length > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-                  {traqueAvatars.map((avatarPath, idx) => (
-                    <img
-                      key={idx}
-                      src={avatarPath}
-                      alt="Aventurier détecté"
-                      style={{ width: '64px', height: '64px', borderRadius: '50%', border: '2px solid #8b5cf6', objectFit: 'cover' }}
-                    />
-                  ))}
-                </div>
-              )}
               <p style={{ marginTop: '1rem', fontSize: '0.9em', color: '#a0aec0', textAlign: 'center' }}>
                 Cliquez pour continuer
               </p>
@@ -11274,18 +10070,6 @@ const selectRoom = (roomName) => {
           )}
           <h2 className="turn-indicator" data-testid="turn-indicator">Tour {gameState.turn}</h2>
           {/* Keys counter REMOVED — no more quest/key system */}
-          {currentPlayerRole === "survivor" && gameState.observation_stone_target_room && (
-            <div
-              className="keys-counter"
-              data-testid="stone-quest-counter"
-              style={{ marginTop: '4px', fontSize: '0.82em', color: gameState.observation_stone_quest_completed ? '#4ade80' : '#f6c90e' }}
-              title={`Pierre d'observation : jeter à ${gameState.observation_stone_target_room}`}
-            >
-              {gameState.observation_stone_quest_completed
-                ? "🪨 ✅ Pierre jetée"
-                : `🪨 Pierre → ${gameState.observation_stone_target_room}`}
-            </div>
-          )}
         </div>
       </div>
 
@@ -11328,7 +10112,6 @@ const selectRoom = (roomName) => {
           powerActionData={powerActionData}
           secousseEvents={secousseEvents}
           maledictionSurvivors={maledictionSurvivors}
-          cursePowerItem={cursePowerItem}
           cursePowerItemMasse={cursePowerItemMasse}
         />
       )}
@@ -11425,37 +10208,19 @@ const selectRoom = (roomName) => {
                     }
 
                     // 3. Pour les orcs : afficher les aventuriers révélés par le gobelin espion pour ce tour
-                    // Variant "patrouille" → position exacte (afficher avatar dans la salle)
-                    // Variant base/vadrouille → présence seulement (floor toast uniquement, pas d'avatar)
+                    // (position exacte, affiche l'avatar dans la salle)
                     let patrolRevealedInRoom = [];
                     if (currentPlayerRole === "killer" && gameState.patrol_revealed_survivors) {
                       patrolRevealedInRoom = Object.entries(gameState.patrol_revealed_survivors)
                         .filter(([pid, revealedRoom]) => {
-                          // "__floor__X" entries are presence-only (espionnage/vadrouille) — no avatar
-                          if (!revealedRoom || revealedRoom.startsWith("__floor__")) return false;
-                          if (revealedRoom !== room.name) return false;
+                          if (!revealedRoom || revealedRoom !== room.name) return false;
                           const player = gameState.players[pid];
                           return player && !player.eliminated && player.role === "survivor";
                         })
                         .map(([pid]) => gameState.players[pid]);
                     }
 
-                    // 4. Pour les orcs : afficher les aventuriers portant la Pierre d'observation (position révélée)
-                    let stoneRevealedInRoom = [];
-                    if (currentPlayerRole === "killer") {
-                      stoneRevealedInRoom = Object.values(gameState.players)
-                        .filter(player => {
-                          if (player.role !== "survivor" || player.eliminated) return false;
-                          if (player.current_room !== room.name) return false;
-                          if (!player.has_observation_stone) return false;
-                          // Ne pas dupliquer avec patrol
-                          const alreadyShown = patrolRevealedInRoom.some(p => p.id === player.id);
-                          return !alreadyShown;
-                        })
-                        .map(player => ({ ...player, _stone_revealed: true }));
-                    }
-
-                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition, ...patrolRevealedInRoom, ...stoneRevealedInRoom];
+                    playersSelectingThisRoom = [...playersWithPendingAction, ...playersAtCurrentPosition, ...patrolRevealedInRoom];
                   }
 
                   const eliminatedInRoom = room.eliminated_players || [];
@@ -11490,10 +10255,29 @@ const selectRoom = (roomName) => {
                           currentPlayerRole === "killer" &&
                           (gameState.killer_knows_pillaged?.[playerId] || []).includes(room.name)
                             ? 'room-pillaged' : ''
-                         }`}
+                         } ${isPoisoned ? 'poisoned' : ''} ${(isTrapped || isTrapTriggered) ? 'blizzard' : ''}`}
                         onClick={() => selectRoom(room.name)}
                         disabled={isEliminated || hasSelectedRoom || room.locked}
                       >
+                        {/* Couches d'effets visuels dédiées : chacune a ses propres pseudo-éléments,
+                            donc toxine et blizzard peuvent s'afficher en même temps sans se masquer */}
+                        {isPoisoned && (
+                          <div className="fx-poison" aria-hidden="true">
+                            <span className="fx-poison-wisp"></span>
+                          </div>
+                        )}
+                        {(isTrapped || isTrapTriggered) && (
+                          <div className="fx-blizzard" aria-hidden="true"></div>
+                        )}
+                        {isPoisoned && (isTrapped || isTrapTriggered) && (
+                          <>
+                            <span className="fx-combo-badge">❄️ + ☠️ cumulés</span>
+                            <span className="fx-poison-icon">☠️</span>
+                          </>
+                        )}
+                        {isPoisoned && !(isTrapped || isTrapTriggered) && (
+                          <span className="fx-poison-icon">☠️</span>
+                        )}
                         <div className="room-name">{displayName}</div>
                         {currentPlayerRole === "killer" &&
                          (gameState.killer_knows_pillaged?.[playerId] || []).includes(room.name) && (
@@ -11517,9 +10301,7 @@ const selectRoom = (roomName) => {
                         <div className="room-indicators">
                           {room.locked && <span className="room-icon locked-icon">❌</span>}
                           {eliminatedInRoom.length > 0 && <span className="room-icon skull-icon">💀</span>}
-                          {isTrapped && <span className="room-icon room-trap-indicator" title="Blizzard">🥶</span>}
-                          {isTrapTriggered && <span className="room-icon room-trap-indicator" title="Blizzard activé">🥶</span>}
-                          {isPoisoned && <span className="room-icon room-poison-indicator" title="Toxine">😷</span>}
+                          {/* Effets visuels (fumée toxine / neige blizzard) rendus juste avant .room-name, via .fx-poison et .fx-blizzard */}
                           {hasMimic && <span className="room-icon room-mimic-indicator" title="Mimic">💰</span>}
                           {hasTeleportationTrap && <span className="room-icon room-teleport-trap-indicator" title="Piège de téléportation">➡️🌀</span>}
                           {hasTeleportationExit && <span className="room-icon room-teleport-exit-indicator" title="Portail de sortie">🌀➡️</span>}
@@ -11897,26 +10679,6 @@ const selectRoom = (roomName) => {
         />
       )}
 
-      {/* Pierre Quete Pickup Modal — n'apparaît pas si un combat est en cours */}
-      {gameState.pending_events && 
-       gameState.pending_events[playerId] && 
-       typeof gameState.pending_events[playerId] === 'object' &&
-       gameState.pending_events[playerId].type === 'pierre_quete_found' &&
-       !showMimicCombat &&
-       !showMultiplayerCombat &&
-       !showGoblinCombat &&
-       !showCrystalCombat &&
-       !showFleeingGoblinCombat && (
-        <PierreQueteModal
-          event={gameState.pending_events[playerId]}
-          playerId={playerId}
-          sessionId={sessionId}
-          targetRoom={gameState.observation_stone_target_room}
-          onOpenInventory={() => setShowInventory(true)}
-          player={currentPlayer}
-        />
-      )}
-
       {/* Trophy Pickup Modal (Chaussons / Couronne / Culotte) */}
       {gameState.pending_events &&
        gameState.pending_events[playerId] &&
@@ -11934,30 +10696,6 @@ const selectRoom = (roomName) => {
       {/* Crystal Combat — handled by the dedicated <CrystalCombat /> component
           (see render block above). The previous server-driven overlay was
           replaced by an event-broadcast model identical to GoblinCombat. */}
-
-      {/* Power Specialization Modal
-          ⚠️ Affichée uniquement lorsqu'AUCUNE modale de combat n'est ouverte côté killer.
-          Cas : si un combat (goblin / multiplayer / mimic / crystal / fleeing goblin) est
-          déclenché en même temps que la spécialisation (le killer a fouillé une pièce
-          contenant des aventuriers), on attend la fermeture du combat via le bouton
-          "Cliquez pour fermer" avant d'afficher la popup de spécialisation.
-          Si aucun combat n'a été déclenché, la popup s'affiche normalement, immédiatement. */}
-      {showPowerSpecialization &&
-        powerSpecializationData &&
-        !showGoblinCombat &&
-        !showMultiplayerCombat &&
-        !showMimicCombat &&
-        !showCrystalCombat &&
-        !showFleeingGoblinCombat && (
-          <PowerSpecializationModal
-            data={powerSpecializationData}
-            onClose={() => {
-              setShowPowerSpecialization(false);
-              setPowerSpecializationData(null);
-            }}
-            wsRef={ws}
-          />
-        )}
     </div>
   );
 };

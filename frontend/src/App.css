@@ -3499,3 +3499,404 @@ body {
   z-index: 1;
   border-radius: inherit;
 }
+
+/* ===== EFFETS DE TOXINE (POISON) — vraie fumée qui monte ===== */
+@keyframes poison-pulse {
+  0%, 100% {
+    filter: hue-rotate(0deg) saturate(150%) brightness(0.8);
+  }
+  50% {
+    filter: hue-rotate(10deg) saturate(180%) brightness(0.7);
+  }
+}
+
+@keyframes poison-glow {
+  0%, 100% {
+    box-shadow: inset 0 0 30px rgba(76, 175, 80, 0.4), 0 0 20px rgba(76, 175, 80, 0.3);
+  }
+  50% {
+    box-shadow: inset 0 0 50px rgba(76, 175, 80, 0.6), 0 0 30px rgba(76, 175, 80, 0.5);
+  }
+}
+
+.room-card.poisoned {
+  animation: poison-pulse 2s ease-in-out infinite, poison-glow 2s ease-in-out infinite;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Icône flottante */
+@keyframes poison-mist {
+  0% { opacity: 0.3; transform: translateY(0) scale(1); }
+  50% { opacity: 0.6; transform: translateY(-10px) scale(1.1); }
+  100% { opacity: 0.3; transform: translateY(0) scale(1); }
+}
+
+/* Volutes de fumée qui montent depuis le bas de la pièce et se dissipent */
+@keyframes smoke-rise-1 {
+  0%   { transform: translate(0, 15%) scale(0.75); opacity: 0; }
+  15%  { opacity: 0.55; }
+  55%  { transform: translate(4%, -35%) scale(1.15); opacity: 0.45; }
+  85%  { opacity: 0.15; }
+  100% { transform: translate(-3%, -85%) scale(1.3); opacity: 0; }
+}
+@keyframes smoke-rise-2 {
+  0%   { transform: translate(0, 20%) scale(0.65); opacity: 0; }
+  20%  { opacity: 0.5; }
+  60%  { transform: translate(-5%, -40%) scale(1.2); opacity: 0.4; }
+  100% { transform: translate(3%, -90%) scale(1.35); opacity: 0; }
+}
+@keyframes smoke-rise-3 {
+  0%   { transform: translate(0, 10%) scale(0.6); opacity: 0; }
+  25%  { opacity: 0.4; }
+  65%  { transform: translate(2%, -30%) scale(1.1); opacity: 0.3; }
+  100% { transform: translate(-2%, -80%) scale(1.25); opacity: 0; }
+}
+
+/* Div enfant dédié : évite tout conflit avec les pseudo-éléments du blizzard */
+.fx-poison {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.fx-poison::before,
+.fx-poison::after {
+  content: '';
+  position: absolute;
+  left: -10%;
+  right: -10%;
+  bottom: -20%;
+  height: 75%;
+  filter: blur(5px);
+}
+
+.fx-poison::before {
+  background:
+    radial-gradient(circle at 18% 92%, rgba(130, 210, 100, 0.55) 0%, rgba(130, 210, 100, 0.22) 35%, transparent 65%),
+    radial-gradient(circle at 50% 96%, rgba(96, 175, 70, 0.5) 0%, rgba(96, 175, 70, 0.2) 38%, transparent 68%),
+    radial-gradient(circle at 82% 90%, rgba(150, 220, 120, 0.5) 0%, rgba(150, 220, 120, 0.2) 36%, transparent 66%);
+  animation: smoke-rise-1 3.6s ease-in-out infinite;
+}
+
+.fx-poison::after {
+  background:
+    radial-gradient(circle at 35% 95%, rgba(76, 175, 80, 0.5) 0%, rgba(76, 175, 80, 0.2) 40%, transparent 70%),
+    radial-gradient(circle at 68% 92%, rgba(60, 140, 60, 0.45) 0%, rgba(60, 140, 60, 0.18) 42%, transparent 72%);
+  animation: smoke-rise-2 4.6s ease-in-out infinite 0.8s;
+}
+
+/* Troisième volute portée par un span dédié pour plus de densité */
+.fx-poison-wisp {
+  position: absolute;
+  left: 0; right: 0; bottom: -25%; height: 70%;
+  background: radial-gradient(circle at 55% 95%, rgba(110, 195, 90, 0.4) 0%, rgba(110, 195, 90, 0.15) 40%, transparent 70%);
+  filter: blur(6px);
+  animation: smoke-rise-3 5.2s ease-in-out infinite 1.6s;
+}
+
+.fx-poison-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 1.5rem;
+  opacity: 0.85;
+  z-index: 2;
+  filter: drop-shadow(0 0 8px rgba(76, 175, 80, 0.8));
+  animation: poison-mist 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ===== EFFETS DE BLIZZARD (GLACE) - Déluge de neige, sans pulsation ===== */
+
+/* Léger tremblement pour un ressenti agressif/glacial (pas de pulsation de couleur) */
+@keyframes blizzard-shake {
+  0%, 100% { transform: translate(0, 0); }
+  10% { transform: translate(-1px, 1px); }
+  20% { transform: translate(1px, -1px); }
+  30% { transform: translate(-1px, -1px); }
+  40% { transform: translate(1px, 1px); }
+  50% { transform: translate(-1px, 0); }
+  60% { transform: translate(1px, 0); }
+  70% { transform: translate(0, -1px); }
+  80% { transform: translate(0, 1px); }
+  90% { transform: translate(-1px, 1px); }
+}
+
+/* Couche de neige n°1 : flocons fins, chute rapide */
+@keyframes snow-fall-1 {
+  from { background-position: 0 0; }
+  to   { background-position: 0 50px; }
+}
+
+/* Couche de neige n°2 : flocons très fins, chute encore plus rapide (profondeur) */
+@keyframes snow-fall-2 {
+  from { background-position: 0 0; }
+  to   { background-position: 0 30px; }
+}
+
+@keyframes snowflake-fall {
+  0% {
+    transform: translateY(-100%) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100%) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+.room-card.blizzard {
+  animation: blizzard-shake 0.35s linear infinite;
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(120, 210, 255, 0.9) !important;
+  /* Effet glace fixe (aucune pulsation) */
+  box-shadow:
+    inset 0 0 55px rgba(33, 150, 243, 0.5),
+    inset 0 0 22px rgba(255, 255, 255, 0.3),
+    0 0 30px rgba(33, 150, 243, 0.45);
+}
+
+/* Div enfant dédié : évite tout conflit avec les pseudo-éléments de la toxine */
+.fx-blizzard {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+  /* Teinte glacée fixe, posée ici (non animée) pour ne plus être
+     entraînée par le background-position des flocons ci-dessous */
+  background: linear-gradient(135deg, rgba(33, 150, 243, 0.35) 0%, rgba(120, 210, 255, 0.28) 45%, rgba(255, 255, 255, 0.22) 100%);
+}
+
+/* Couche de neige dense n°1 (uniquement les flocons, plus de teinte ici :
+   c'est ce calque partagé avec la teinte qui provoquait le glissement
+   vertical visible du voile bleu) */
+.fx-blizzard::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(2px 2px at 6% 12%, #fff 60%, transparent 61%),
+    radial-gradient(1.5px 1.5px at 18% 45%, #fff 55%, transparent 56%),
+    radial-gradient(2px 2px at 30% 8%, #fff 60%, transparent 61%),
+    radial-gradient(1.5px 1.5px at 42% 60%, #fff 55%, transparent 56%),
+    radial-gradient(2px 2px at 54% 22%, #fff 60%, transparent 61%),
+    radial-gradient(1.5px 1.5px at 66% 75%, #fff 55%, transparent 56%),
+    radial-gradient(2px 2px at 78% 35%, #fff 60%, transparent 61%),
+    radial-gradient(1.5px 1.5px at 90% 85%, #fff 55%, transparent 56%),
+    radial-gradient(2px 2px at 10% 90%, #fff 60%, transparent 61%),
+    radial-gradient(1.5px 1.5px at 95% 15%, #fff 55%, transparent 56%);
+  background-size: 50px 50px;
+  background-repeat: repeat;
+  animation: snow-fall-1 0.5s linear infinite;
+}
+
+/* Couche de neige dense n°2 : flocons plus petits et plus rapides pour la profondeur */
+.fx-blizzard::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1.2px 1.2px at 12% 20%, #eaf6ff 55%, transparent 56%),
+    radial-gradient(1px 1px at 26% 55%, #eaf6ff 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 38% 5%, #eaf6ff 55%, transparent 56%),
+    radial-gradient(1px 1px at 50% 70%, #eaf6ff 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 62% 30%, #eaf6ff 55%, transparent 56%),
+    radial-gradient(1px 1px at 74% 85%, #eaf6ff 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 86% 45%, #eaf6ff 55%, transparent 56%),
+    radial-gradient(1px 1px at 96% 10%, #eaf6ff 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 20% 92%, #eaf6ff 55%, transparent 56%),
+    radial-gradient(1px 1px at 6% 60%, #eaf6ff 50%, transparent 51%);
+  background-size: 30px 30px;
+  background-repeat: repeat;
+  animation: snow-fall-2 0.32s linear infinite;
+  opacity: 0.9;
+}
+
+/* Flocons "accent" au premier plan, très rapides pour renforcer le déluge */
+.room-card.blizzard .room-name::before {
+  content: '❄';
+  position: absolute;
+  top: 20%;
+  left: 20%;
+  font-size: 1rem;
+  opacity: 0.6;
+  animation: snowflake-fall 0.5s linear infinite;
+}
+
+.room-card.blizzard .room-name::after {
+  content: '❄';
+  position: absolute;
+  top: 40%;
+  right: 25%;
+  font-size: 0.8rem;
+  opacity: 0.5;
+  animation: snowflake-fall 0.6s linear infinite;
+  animation-delay: 0.15s;
+}
+
+.room-card.blizzard .room-indicators::before {
+  content: '❆';
+  position: absolute;
+  top: 10%;
+  left: 55%;
+  font-size: 0.9rem;
+  opacity: 0.55;
+  animation: snowflake-fall 0.55s linear infinite;
+  animation-delay: 0.1s;
+  pointer-events: none;
+}
+
+.room-card.blizzard .room-indicators::after {
+  content: '❅';
+  position: absolute;
+  top: 5%;
+  left: 10%;
+  font-size: 0.85rem;
+  opacity: 0.5;
+  animation: snowflake-fall 0.65s linear infinite;
+  animation-delay: 0.25s;
+  pointer-events: none;
+}
+
+/* ===== ÉTAT CUMULÉ : Toxine + Blizzard actifs sur la même pièce =====
+   Les deux couches (.fx-poison et .fx-blizzard) s'affichent déjà l'une
+   sur l'autre puisque ce sont des div distinctes. On personnalise en plus
+   la bordure/lueur du .room-card pour bien signaler visuellement le cumul,
+   et on ajoute un badge explicite en haut de la carte. */
+.room-card.poisoned.blizzard {
+  animation: poison-pulse 2.2s ease-in-out infinite, blizzard-shake 0.35s linear infinite;
+  border-color: rgba(160, 230, 170, 0.95) !important;
+  box-shadow:
+    inset 0 0 45px rgba(33, 150, 243, 0.35),
+    inset 0 0 40px rgba(76, 175, 80, 0.4),
+    0 0 30px rgba(140, 220, 160, 0.55);
+}
+
+.fx-combo-badge {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  color: #f2fff5;
+  background: linear-gradient(90deg, rgba(33, 150, 243, 0.9), rgba(76, 175, 80, 0.9));
+  padding: 1px 7px;
+  border-radius: 7px;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  animation: poison-mist 2s ease-in-out infinite;
+}
+
+/* ===== SALLE DES MIROIRS — givre + brume, en remplacement du blizzard générique ===== */
+
+/* On masque la neige générique (.fx-blizzard) et les flocons portés par
+   .room-name / .room-indicators uniquement pour cette pièce */
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] .fx-blizzard {
+  display: none;
+}
+
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] .room-name::before,
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] .room-name::after,
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] .room-indicators::before,
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] .room-indicators::after {
+  content: none;
+}
+
+/* Voile froid : légère désaturation/bleuté de la pièce */
+.room-card.blizzard[data-room-name="La Salle des Miroirs"] {
+  filter:
+    saturate(.75)
+    brightness(.92)
+    contrast(.95)
+    hue-rotate(-8deg);
+}
+
+/* Givre fixe sur les bords */
+.room-card.blizzard[data-room-name="La Salle des Miroirs"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,255,255,.65), transparent 25%),
+    radial-gradient(circle at 100% 0%, rgba(255,255,255,.6), transparent 28%),
+    radial-gradient(circle at 0% 100%, rgba(255,255,255,.6), transparent 30%),
+    radial-gradient(circle at 100% 100%, rgba(255,255,255,.65), transparent 28%),
+
+    linear-gradient(to bottom,
+      rgba(255,255,255,.28),
+      transparent 12%),
+
+    linear-gradient(to top,
+      rgba(255,255,255,.22),
+      transparent 12%),
+
+    linear-gradient(to right,
+      rgba(255,255,255,.20),
+      transparent 10%),
+
+    linear-gradient(to left,
+      rgba(255,255,255,.20),
+      transparent 10%);
+
+  mix-blend-mode: screen;
+  opacity: .9;
+}
+
+/* Voile de brume qui se déplace lentement */
+.room-card.blizzard[data-room-name="La Salle des Miroirs"]::after {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  z-index: 2;
+  pointer-events: none;
+
+  background:
+    radial-gradient(circle,
+      rgba(255,255,255,.22) 0%,
+      rgba(255,255,255,.08) 45%,
+      transparent 75%);
+
+  filter: blur(18px);
+
+  animation: frostMist 8s ease-in-out infinite alternate;
+}
+
+@keyframes frostMist {
+  0% {
+    transform:
+      translate(-8%,4%)
+      scale(1.05);
+    opacity: .25;
+  }
+
+  50% {
+    opacity: .45;
+  }
+
+  100% {
+    transform:
+      translate(8%,-6%)
+      scale(1.2);
+    opacity: .30;
+  }
+}
