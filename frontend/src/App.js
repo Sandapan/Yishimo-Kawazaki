@@ -8177,11 +8177,13 @@ const selectRoom = (roomName) => {
     // Check for La Poursuite
     if (gameState.goliath_active && gameState.goliath_turns_remaining > 0) {
       const hasPrecision = (gameState.poursuite_precision_empty_rooms || []).length > 0;
+      const turnsLeft = gameState.goliath_turns_remaining;
       traps.push({
-        type: "goliath",
+        type: "poursuite",
         icon: "/icons/Poursuite.png",
         name: "Poursuite",
-        description: `La Poursuite est active pour ${gameState.goliath_turns_remaining} tour(s) : Ne choisissez jamais une pièce visitée au tour précédent !` +
+        description:
+          `La Poursuite est active pour encore ${turnsLeft} Tour(s) : ne choisissez jamais une pièce visitée au tour précédent !` +
           (hasPrecision && currentPlayerRole === "killer" ? ` Les salles marquées (vide) ne contiennent aucun aventurier.` : ``),
         count: 1
       });
@@ -8193,8 +8195,72 @@ const selectRoom = (roomName) => {
         type: "eboulement",
         icon: "/icons/Eboulement.png",
         name: "Eboulement",
-        description: "Durant ce tour, vous ne pouvez pas changer d'étage.",
+        description: "Durant encore 1 Tour, vous ne pouvez pas changer d'étage.",
         count: 1
+      });
+    }
+
+    // Check for Barricade (locked rooms by orc power)
+    const barricadeLocks = gameState.barricade_locks || {};
+    const barricadedRoomNames = Object.keys(barricadeLocks).filter(
+      (roomName) => (barricadeLocks[roomName] || 0) > 0
+    );
+    if (barricadedRoomNames.length > 0) {
+      const maxTurns = Math.max(...barricadedRoomNames.map((r) => barricadeLocks[r]));
+      traps.push({
+        type: "barricade",
+        icon: "/icons/Barricade.png",
+        name: "Barricade",
+        description: barricadedRoomNames.length > 1
+          ? `${barricadedRoomNames.length} pièces sont barricadées pour encore ${maxTurns} Tour(s).`
+          : `Une pièce est barricadée pour encore ${maxTurns} Tour(s).`,
+        count: barricadedRoomNames.length
+      });
+    }
+
+    // Check for Espionnage (patrouille — un gobelin espion caché sur un étage)
+    const patrol = gameState.patrouille_patrol;
+    if (patrol && patrol.active && patrol.floor) {
+      const floorName = FLOOR_NAMES[patrol.floor] || patrol.floor;
+      traps.push({
+        type: "espionnage",
+        icon: "/icons/Espionnage.png",
+        name: "Espionnage",
+        description: `Un gobelin espion se cache dans ${floorName}. Tant qu'il n'est pas démasqué, il révèle vos positions aux orcs.`,
+        count: 1
+      });
+    }
+
+    // Check for Piège de Téléportation (up to 3 entry rooms → 1 exit)
+    const teleportTrapRooms = Object.values(gameState.rooms).filter(
+      (room) => room.teleportation_trap
+    );
+    if (teleportTrapRooms.length > 0) {
+      traps.push({
+        type: "teleportation",
+        icon: "/icons/Teleportation.png",
+        name: "Piège de Téléportation",
+        description: teleportTrapRooms.length > 1
+          ? `${teleportTrapRooms.length} pièces contiennent un piège de téléportation qui vous enverra ailleurs avant même d'y entrer.`
+          : `Une pièce contient un piège de téléportation qui vous enverra ailleurs avant même d'y entrer.`,
+        count: teleportTrapRooms.length
+      });
+    }
+
+    // Check for Malédiction (per-player: at least one item marked cursed_display in own inventory)
+    const myPlayer = gameState.players?.[playerId];
+    const cursedItems = (myPlayer?.inventory || []).filter(
+      (slot) => slot && (slot.cursed_display || slot.cursed)
+    );
+    if (cursedItems.length > 0) {
+      traps.push({
+        type: "malediction",
+        icon: "/icons/Malediction.png",
+        name: "Malédiction",
+        description: cursedItems.length > 1
+          ? `${cursedItems.length} objets de votre inventaire semblent maudits. Utilisez-les ou jetez-les avant la fin du tour pour éviter la pénalité.`
+          : `Un objet de votre inventaire semble maudit. Utilisez-le ou jetez-le avant la fin du tour pour éviter la pénalité.`,
+        count: cursedItems.length
       });
     }
     
@@ -9971,7 +10037,7 @@ const selectRoom = (roomName) => {
           </Card>
         </div>
       )}
-      )}
+      
 
       {/* Traque Result Popup */}
       {showTraquePopup && (
