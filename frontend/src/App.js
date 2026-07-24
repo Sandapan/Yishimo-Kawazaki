@@ -3610,32 +3610,22 @@ const EquipmentGrid = ({ player, sessionId, onInspect }) => {
 const StatsPanel = ({ player }) => {
   if (!player || player.role !== "survivor") return null;
 
-  const inventory = player.inventory || [];
-  let damageBonus = 0;
-  let healthBonus = 0;
-  let initiativeBonus = 0;
-
-  inventory.forEach(item => {
-    if (item && item.type === 'rune_dommage')    damageBonus     += 2;
-    if (item && item.type === 'rune_vitalite')   healthBonus     += 8;
-    if (item && item.type === 'rune_initiative') initiativeBonus += 3;
-  });
-
-  // Bonus permanents (forge) déjà stockés sur le joueur
-  damageBonus     += player.damage_bonus     || 0;
-  initiativeBonus += player.initiative_bonus || 0;
-  healthBonus     += Math.max(0, (player.max_hp || 36) - 36);
+  // Les bonus sont déjà calculés côté serveur lors de la forge (source unique de vérité)
+  const damageBonus     = player.damage_bonus     || 0;
+  const initiativeBonus = player.initiative_bonus || 0;
+  const maxHP           = player.max_hp           || 36;
 
   const baseHealth = 36;
+  const healthBonus = Math.max(0, maxHP - baseHealth);
+
   const DAMAGE_MIN = 1, DAMAGE_MAX = 6;
   const INIT_MIN   = 1, INIT_MAX   = 20;
 
   const totalDamage     = `${DAMAGE_MIN + damageBonus} à ${DAMAGE_MAX + damageBonus}`;
-  const totalHealth     = baseHealth + healthBonus;
+  const totalHealth     = maxHP;
   const totalInitiative = `${INIT_MIN + initiativeBonus} à ${INIT_MAX + initiativeBonus}`;
 
   const currentHP = player.hp || baseHealth;
-  const maxHP     = totalHealth;
 
   const rowStyle = {
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
