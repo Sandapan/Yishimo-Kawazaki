@@ -3290,6 +3290,21 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
             "price": 300,
             "item_type": "antidote",
             "name": "Antidote"
+        },
+        "rune_vitalite": {
+            "price": 250,
+            "item_type": "rune_vitalite",
+            "name": "Rune de Vitalité"
+        },
+        "rune_dommage": {
+            "price": 250,
+            "item_type": "rune_dommage",
+            "name": "Rune de Dommage"
+        },
+        "rune_initiative": {
+            "price": 250,
+            "item_type": "rune_initiative",
+            "name": "Rune d'Initiative"
         }
     }
     

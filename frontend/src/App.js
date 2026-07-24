@@ -8953,6 +8953,117 @@ const selectRoom = (roomName) => {
                     Acheter
                   </Button>
                 </div>
+
+                {/* Rune de Vitalité */}
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/inventory/rune_vitalite.png" alt="Rune de Vitalité" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Rune de Vitalité</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Augmente vos points de vie maximum de 8 PV. Peut être forgée sur une arme.
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 250</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=rune_vitalite`);
+                        toast.success("Rune de Vitalité achetée !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_vitalite')}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_vitalite')) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
+
+                {/* Rune de Dommage */}
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/inventory/rune_dommage.png" alt="Rune de Dommage" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Rune de Dommage</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Augmente vos dégâts de combat de 2 points. Peut être forgée sur une arme.
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 250</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=rune_dommage`);
+                        toast.success("Rune de Dommage achetée !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_dommage')}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_dommage')) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
+
+                {/* Rune d'Initiative */}
+                <div style={{ 
+                  padding: '1.5rem', 
+                  backgroundColor: 'rgba(139, 92, 46, 0.3)', 
+                  border: '2px solid #d4af37',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'center'
+                }}>
+                  <img src="/inventory/rune_initiative.png" alt="Rune d'Initiative" style={{ width: '80px', height: '80px', objectFit: 'contain' }} />
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ color: '#d4af37', fontSize: '1.2rem', marginBottom: '0.5rem' }}>Rune d'Initiative</h3>
+                    <p style={{ color: '#ccc', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                      Augmente votre initiative en combat de 3 points. Peut être forgée sur une arme.
+                    </p>
+                    <p style={{ color: '#FFD700', fontWeight: 'bold', fontSize: '1.1rem' }}>Prix: 🪙 250</p>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await axios.post(`${API}/shop/buy_item?session_id=${sessionId}&player_id=${playerId}&item_name=rune_initiative`);
+                        toast.success("Rune d'Initiative achetée !");
+                      } catch (error) {
+                        toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
+                      }
+                    }}
+                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_initiative')}
+                    style={{ 
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_initiative')) ? '#10b981' : '#555',
+                      minWidth: '100px'
+                    }}
+                  >
+                    Acheter
+                  </Button>
+                </div>
               </div>
 
               {/* Buttons */}
