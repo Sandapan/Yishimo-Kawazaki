@@ -10400,6 +10400,8 @@ const selectRoom = (roomName) => {
                   const hasTeleportationTrap = room.teleportation_trap && currentPlayerRole === "killer";
                   const hasTeleportationExit = room.teleportation_exit && currentPlayerRole === "killer";
                   const hasPatrol = room.has_patrol && currentPlayerRole === "killer";
+                  // 👾 NEW: groupe de gobelins posé par le killer (fog of war pour les survivants)
+                  const goblinGroup = currentPlayerRole === "killer" ? gameState.goblin_groups?.[room.name] : null;
 
                   // Check if this room is pre-selected (for confirmation step)
                   const isPreSelected = preSelectedRoom === room.name;
@@ -10500,7 +10502,25 @@ const selectRoom = (roomName) => {
                              <span className="room-player-avatar" title="Gobelin de Patrouille">
                                  <img src="/avatars/Patrouille.png" alt="Patrouille" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
                              </span>
-                          )}                        
+                          )}
+                          {/* 👾 NEW — Badge groupe de gobelins (killer uniquement, fog of war pour les survivants) */}
+                          {goblinGroup && (
+                            <span
+                              data-testid={`goblin-group-badge-${room.name}`}
+                              title={`Groupe de ${goblinGroup.count} gobelin(s) en patrouille`}
+                              style={{ display: 'inline-flex', gap: 2 }}
+                            >
+                              {Array.from({ length: goblinGroup.count }).map((_, i) => (
+                                <img
+                                  key={i}
+                                  src="/avatars/gobelin.png"
+                                  alt="Gobelin"
+                                  style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain', imageRendering: 'pixelated' }}
+                                />
+                              ))}
+                            </span>
+                          )}
+                        
                           {playersSelectingThisRoom.length > 0 && (
                             <div className="players-in-room">
                               {playersSelectingThisRoom.map((p) => (

@@ -318,6 +318,7 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "enabled_powers": list(POWERS.keys()),  # NEW: liste des pouvoirs disponibles (tous par défaut)
         "crystal_room": None,
         "crystal_combat": None,   # NEW: {hp, max_hp, initiative, turn_order, current_turn, participants, phase}
+        "goblin_groups": {},      # 👾 NEW: {room_name: {count, hp_per_goblin, damage_min, damage_max, placed_by, placed_turn}}
         "crystal_current_hp": None,  # NEW: HP persistant du cristal (calculé au démarrage, décrémenté entre combats)
         "crystal_max_hp": None,      # NEW: HP max du cristal (50 × nb survivants au start)
         "cartographer_placed": False,  # NEW: whether cartographer has been placed
@@ -777,6 +778,71 @@ async def finalize_combat_help_window(session_id: str, attacker_id: str, delay: 
     del game["combat_help_windows"][attacker_id]
     await broadcast_to_session(session_id, {"type": "state_update", "game": game})
     logger.info(f"🪤 Mimic combat finalisé : {len(participants)} participant(s)")
+
+
+# 👾 NEW — Fenêtre de rejoint (10 s) pour un groupe de gobelins.
+async def finalize_goblin_group_help_window(session_id: str, trigger_survivor_id: str, room_name: str, delay: float = 10.0):
+    await asyncio.sleep(delay)
+    game = game_sessions.get(session_id)
+    if not game:
+        return
+    window_key = f"goblin_group::{room_name}"
+    combat_window = game.get("combat_help_windows", {}).get(window_key)
+    if not combat_window or combat_window.get("finalized"):
+        return
+    combat_window["finalized"] = True
+
+    # Le groupe a pu être supprimé entre-temps (rare mais possible) → abort
+    group = game.get("goblin_groups", {}).get(room_name)
+    if not group:
+        game["combat_help_windows"].pop(window_key, None)
+        return
+
+    participants = combat_window["participants"]  # liste de survivor_ids
+    survivors = []
+    for sid in participants:
+        s = game["players"].get(sid)
+        if not s or s.get("eliminated"):
+            continue
+        survivors.append({
+            "id": sid,
+            "name": s["name"],
+            "class": s.get("character_class", "Survivor"),
+            "hp": s.get("hp", 36),
+            "max_hp": s.get("max_hp", 36),
+            "initiative_bonus": s.get("initiative_bonus", 0),
+            "damage_bonus": s.get("damage_bonus", 0),
+            "poisoned_countdown": s.get("poisoned_countdown", 0),
+            "has_amulette_tortue": ((s.get("equipment") or {}).get("babiole") or {}).get("type") == "amulette_tortue",
+        })
+
+    if not survivors:
+        game["combat_help_windows"].pop(window_key, None)
+        return
+
+    combat_id = f"goblin_group_{room_name}_{int(combat_window['expires_at'])}"
+    combat_event = {
+        "type": "goblin_group_combat",
+        "combat_type": "goblin_group",
+        "room": room_name,
+        "survivors": survivors,
+        "participants": [s["id"] for s in survivors],
+        "num_goblins": group["count"],
+        "goblin_hp": group["hp_per_goblin"],
+        "goblin_damage_min": group["damage_min"],
+        "goblin_damage_max": group["damage_max"],
+        "combat_id": combat_id,
+        "turn": game.get("turn", 0),
+        "toxine_incapacitante_active": False,
+        "eboulement_perturbation_active": game.get("eboulement_perturbation_active", False),
+    }
+
+    for sid in [s["id"] for s in survivors]:
+        await enqueue_player_event(session_id, sid, "goblin_group_combat", combat_event)
+
+    game["combat_help_windows"].pop(window_key, None)
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    logger.info(f"👾 Goblin group combat finalisé dans {room_name} : {len(survivors)} participant(s)")
 
 
 async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
@@ -2293,6 +2359,53 @@ async def process_turn(session_id: str):
                     "room_name": killer_room,
                 }, role_filter="killer")
 
+        # 👾 NEW — Placement d'un GROUPE DE GOBELINS si aucun survivant n'a été trouvé
+        # dans la pièce fouillée par ce killer (Phase 1 : 1 gobelin, 6 PV, 1-6 dégâts).
+        if not found_survivor and killer_room:
+            # Refouille de la même pièce → on remplace le groupe précédent (reset)
+            previous_group = game["goblin_groups"].get(killer_room)
+            game["goblin_groups"][killer_room] = {
+                "count": 1,               # Phase 1 : toujours 1 gobelin
+                "hp_per_goblin": 6,
+                "damage_min": 1,
+                "damage_max": 6,
+                "placed_by": killer_id,
+                "placed_turn": game.get("turn", 0),
+            }
+
+            group_count = game["goblin_groups"][killer_room]["count"]
+            goblin_word = "gobelin" if group_count == 1 else "gobelins"
+            action_word = "remplacez" if previous_group else "placez"
+            feedback_msg = (
+                f"Aucun aventurier trouvé. Vous {action_word} un groupe de "
+                f"{group_count} {goblin_word} patrouille dans cette pièce."
+            )
+
+            # Log dans le feed événementiel (visible côté killer uniquement)
+            game["events"].append({
+                "message": f"👾 {killer.get('name', 'Killer')} pose un groupe de {group_count} {goblin_word} dans {killer_room}.",
+                "type": "goblin_group_placed",
+                "for_role": "killer",
+            })
+
+            # Popup direct côté killer via WebSocket
+            try:
+                ws_k = active_connections.get(session_id, {}).get(killer_id)
+                if ws_k:
+                    await ws_k.send_json({
+                        "type": "goblin_group_placed_popup",
+                        "message": feedback_msg,
+                        "room": killer_room,
+                        "count": group_count,
+                    })
+            except Exception:
+                pass
+
+            logger.info(
+                f"👾 Groupe gobelin {'remplacé' if previous_group else 'placé'} dans {killer_room} "
+                f"par {killer_id} (count={group_count}, turn={game.get('turn', 0)})"
+            )
+
         if found_survivor and "rage" in game.get("active_powers", {}):
             rage_data = game["active_powers"]["rage"]["data"].get(killer_id)
             if rage_data and not rage_data.get("used_second_chance", False):
@@ -3139,6 +3252,7 @@ async def reset_game(session_id: str):
     game["patrouille_patrol"] = None
     game["patrol_revealed_survivors"] = {}
     game["discovered_rooms"] = []  # NOUVEAU : reset des pièces découvertes
+    game["goblin_groups"] = {}   # 👾 NEW: reset des groupes de gobelins
     
     logger.info(f"Game reset for session: {session_id}")
     
@@ -4666,6 +4780,35 @@ async def unequip_item(session_id: str, request: EquipItemRequest):
     return {"success": True}
 
 
+class GoblinGroupJoinRequest(BaseModel):
+    player_id: str
+    room: str
+
+@api_router.post("/game/{session_id}/goblin_group_join")
+async def goblin_group_join(session_id: str, request: GoblinGroupJoinRequest):
+    """Un survivant rejoint la fenêtre 10 s d'un combat de groupe de gobelins."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    game = game_sessions[session_id]
+    player = game["players"].get(request.player_id)
+    if not player or player.get("role") != "survivor" or player.get("eliminated"):
+        raise HTTPException(status_code=400, detail="Invalid player")
+
+    window_key = f"goblin_group::{request.room}"
+    window = game.get("combat_help_windows", {}).get(window_key)
+    if not window or window.get("finalized"):
+        raise HTTPException(status_code=400, detail="Fenêtre expirée")
+
+    if request.player_id not in window["participants"]:
+        window["participants"].append(request.player_id)
+
+    # Fixe la pending_action pour que le survivant soit "engagé" (évite qu'il rejoigne ailleurs)
+    game.setdefault("pending_actions", {})[request.player_id] = {"room": request.room, "joined_goblin_group": True}
+
+    await broadcast_to_session(session_id, {"type": "state_update", "game": game})
+    return {"status": "success", "participants": window["participants"]}
+
+
 class ForgeUseRuneRequest(BaseModel):
     player_id: str
     slot_index: int
@@ -6069,8 +6212,85 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             asyncio.create_task(finalize_combat_help_window(session_id, player_id, 10.0))
                             logger.info(f"🪤 Fenêtre d'aide Mimic ouverte par {player['name']} dans {room_name} ({len(eligible_B)} allié(s) éligible(s))")
 
-                    # GOLD SYSTEM (skipped if mimic triggered — gold resolved in resolve_mimic_combat)
-                    if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False) and not mimic_triggered:
+                    # 👾 NEW — GROUPE DE GOBELINS présent ?
+                    # Ordre : les pièges ont déjà été appliqués plus haut → maintenant on check le groupe
+                    # avant d'accorder or / runes / marchand / forge.
+                    goblin_group_triggered = False
+                    if (
+                        player["role"] == "survivor"
+                        and not player.get("eliminated")
+                        and not game["rooms"][room_name].get("trap_triggered", False)
+                        and not mimic_triggered
+                        and room_name in game.get("goblin_groups", {})
+                    ):
+                        goblin_group_triggered = True
+                        window_key = f"goblin_group::{room_name}"
+                        existing = game.setdefault("combat_help_windows", {}).get(window_key)
+
+                        if existing and not existing.get("finalized"):
+                            # Un autre survivant a déjà déclenché la fenêtre — on l'ajoute aux participants
+                            if player_id not in existing["participants"]:
+                                existing["participants"].append(player_id)
+                            logger.info(f"👾 {player['name']} rejoint la fenêtre gobelin-groupe de {room_name}")
+                        else:
+                            # Ouverture d'une nouvelle fenêtre de 10 s
+                            expires_at = int(time.time()) + 10
+                            group = game["goblin_groups"][room_name]
+                            game["combat_help_windows"][window_key] = {
+                                "combat_type": "goblin_group",
+                                "room": room_name,
+                                "participants": [player_id],
+                                "goblin_count": group["count"],
+                                "expires_at": expires_at,
+                                "finalized": False,
+                            }
+
+                            # Popup côté déclencheur (compte à rebours)
+                            try:
+                                await enqueue_player_event(session_id, player_id, "combat_help_waiting", {
+                                    "type": "combat_help_waiting",
+                                    "combat_type": "goblin_group",
+                                    "room": room_name,
+                                    "expires_at": expires_at,
+                                    "goblin_count": group["count"],
+                                    "message": f"👾 Un groupe de {group['count']} gobelin(s) surgit ! Vos alliés peuvent vous rejoindre...",
+                                })
+                            except Exception:
+                                pass
+
+                            # Notifier les autres survivants NON encore engagés (pending_actions non validées)
+                            eligible = []
+                            for other_id, other in game["players"].items():
+                                if other_id == player_id:
+                                    continue
+                                if other.get("role") != "survivor" or other.get("eliminated"):
+                                    continue
+                                # "n'a pas encore validé son choix de pièce" → pas d'entrée dans pending_actions
+                                if other_id in game.get("pending_actions", {}):
+                                    continue
+                                eligible.append(other_id)
+
+                            for pid in eligible:
+                                ws_b = active_connections.get(session_id, {}).get(pid)
+                                if ws_b:
+                                    try:
+                                        await ws_b.send_json({
+                                            "type": "combat_help_available",
+                                            "combat_type": "goblin_group",
+                                            "attacker_id": player_id,
+                                            "attacker_name": player["name"],
+                                            "room": room_name,
+                                            "expires_at": expires_at,
+                                            "goblin_count": group["count"],
+                                        })
+                                    except Exception:
+                                        pass
+
+                            asyncio.create_task(finalize_goblin_group_help_window(session_id, player_id, room_name, 10.0))
+                            logger.info(f"👾 Fenêtre gobelin-groupe ouverte par {player['name']} dans {room_name} ({len(eligible)} allié(s) éligible(s))")
+
+                    # GOLD SYSTEM (skipped if mimic OR goblin-group triggered — gold sera résolu après)
+                    if player["role"] == "survivor" and not game["rooms"][room_name].get("trap_triggered", False) and not mimic_triggered and not goblin_group_triggered:
                         is_lucky = player.pop("lucky_search_active", False)
                         gold_amount, gold_image = generate_gold_reward()
                         if is_lucky:
@@ -6228,7 +6448,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             logger.info(f"  💎 Total items obtenus : {items_dropped}")
 
                     # Check for merchant
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
+                    if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_merchant", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
 
                         if not is_trapped:
@@ -6242,7 +6462,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
 
                     # NEW: Check for cartographer
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_cartographer", False):
+                    if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_cartographer", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
 
                         if not is_trapped:
@@ -6256,7 +6476,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
 
                     # NEW: Check for forge
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_forge", False):
+                    if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_forge", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         if not is_trapped:
                             game["rooms"][room_name]["forge_discovered"] = True
@@ -6271,7 +6491,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             })
 
                     # NEW: Check for crystal event
-                    if player["role"] == "survivor" and game["rooms"][room_name].get("has_crystal_event", False):
+                    if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_crystal_event", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
                         if not is_trapped:
                             # 1) ALWAYS mark room as discovered for all survivors,
