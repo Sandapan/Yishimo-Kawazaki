@@ -6113,169 +6113,119 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "for_role": "survivor"
                             })
 
-                        # ITEM DROP SYSTEM — lucky search guarantees 2 items, otherwise normal probability
-                        if is_lucky:
-                            POSSIBLE_LUCKY_ITEMS = ["rune_vitalite", "rune_initiative", "rune_dommage"]
-                            for _ in range(2):
-                                rune_type = random.choice(POSSIBLE_LUCKY_ITEMS)
-                                await enqueue_player_event(
-                                    session_id,
-                                    player_id,
-                                    {
-                                        "type": "rune_found",
-                                        "rune_type": rune_type,
-                                        "inventory_full": is_inventory_full(player)
-                                    },
-                                    None
-                                )
-                                logger.info(f"Player {player_id} found rune (lucky): {rune_type}")
-                            # 🐢 NEW: Amulette Tortue garantie (100%) en supplément des 2 runes
-                            # L'ajout réel à l'inventaire se fait via /pickup_amulette quand le
-                            # joueur clique sur "Ramasser" dans le popup (même flow que les runes) ;
-                            # ici on se contente de notifier la découverte.
-                            amu_msg = f"🐢 {player['name']} découvre une Amulette Tortue !"
-                            game["events"].append({
-                                "message": amu_msg,
-                                "type": "amulette_tortue_found",
-                                "for_role": "survivor"
-                            })
-                            # amulette_tortue_found has no direct WS popup (frontend reads it
-                            # from state_update -> pending_events), so pass ws_message=None.
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "amulette_tortue_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Amulette Tortue (lucky search)")
-                            # 🧅 NEW: Amulette Oignon garantie (100%) en supplément des 2 runes
-                            # Même flow que l'Amulette Tortue : l'ajout réel à l'inventaire se fait
-                            # via /pickup_amulette_oignon quand le joueur clique sur "Ramasser".
-                            amu_oignon_msg = f"🧅 {player['name']} découvre une Amulette Oignon !"
-                            game["events"].append({
-                                "message": amu_oignon_msg,
-                                "type": "amulette_oignon_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "amulette_oignon_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Amulette Oignon (lucky search)")
-                            # 🍀 NEW: Amulette Chanceuse garantie (100%) en supplément
-                            # Même flow que les autres amulettes : l'ajout réel à l'inventaire se fait
-                            # via /pickup_amulette_trefle quand le joueur clique sur "Ramasser".
-                            amu_trefle_msg = f"🍀 {player['name']} découvre une Amulette Chanceuse !"
-                            game["events"].append({
-                                "message": amu_trefle_msg,
-                                "type": "amulette_trefle_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "amulette_trefle_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Amulette Trefle (lucky search)")
-                            # 🏴 NEW: Foulard Rankyr garanti (100%) en supplément
-                            # Même flow que les autres babioles : l'ajout réel à l'inventaire se fait
-                            # via /pickup_foulard_rankyr quand le joueur clique sur "Ramasser".
-                            foulard_msg = f"🏴 {player['name']} découvre un Foulard Rankyr !"
-                            game["events"].append({
-                                "message": foulard_msg,
-                                "type": "foulard_rankyr_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "foulard_rankyr_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Foulard Rankyr (lucky search)")
-                            # 🥥 NEW: Amulette Coco de Bouchou garantie (100%) en supplément
-                            coco_msg = f"🥥 {player['name']} découvre l'Amulette Coco de Bouchou !"
-                            game["events"].append({
-                                "message": coco_msg,
-                                "type": "amulette_coco_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "amulette_coco_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Amulette Coco (lucky search)")
-                            # 🎯 NEW: Bandana de Ranja garanti (100%) en supplément
-                            ranja_msg = f"🎯 {player['name']} découvre le Bandana de Ranja !"
-                            game["events"].append({
-                                "message": ranja_msg,
-                                "type": "bandana_ranja_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "bandana_ranja_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Bandana de Ranja (lucky search)")
-                            # 🌸 NEW: Bonnet Croblow garanti (100%) en supplément
-                            croblow_msg = f"🌸 {player['name']} découvre le Bonnet Croblow !"
-                            game["events"].append({
-                                "message": croblow_msg,
-                                "type": "bonnet_croblow_found",
-                                "for_role": "survivor"
-                            })
-                            await enqueue_player_event(
-                                session_id,
-                                player_id,
-                                {"type": "bonnet_croblow_found"},
-                                None
-                            )
-                            logger.info(f"Player {player_id} found Bonnet Croblow (lucky search)")
-                        else:
-                            # RUNE DROP SYSTEM (after gold)
+                        # ============================================
+                        # ITEM DROP SYSTEM (v2) — pooled probability
+                        # ============================================
+                        # Pools: 60% Rune / 30% Babiole / 10% Autre
+                        RUNES = ["rune_vitalite", "rune_initiative", "rune_dommage"]
+                        BABIOLES = [
+                            "amulette_tortue", "amulette_oignon", "amulette_trefle",
+                            "foulard_rankyr", "amulette_coco", "bandana_ranja", "bonnet_croblow"
+                        ]
+                        AUTRES = ["lait_lew", "antidote"]
+
+                        BABIOLE_EVENT_MAP = {
+                            "amulette_tortue": "amulette_tortue_found",
+                            "amulette_oignon": "amulette_oignon_found",
+                            "amulette_trefle": "amulette_trefle_found",
+                            "foulard_rankyr": "foulard_rankyr_found",
+                            "amulette_coco": "amulette_coco_found",
+                            "bandana_ranja": "bandana_ranja_found",
+                            "bonnet_croblow": "bonnet_croblow_found",
+                        }
+                        BABIOLE_ICONS = {
+                            "amulette_tortue": "🐢",
+                            "amulette_oignon": "🧅",
+                            "amulette_trefle": "🍀",
+                            "foulard_rankyr": "🏴",
+                            "amulette_coco": "🥥",
+                            "bandana_ranja": "🎯",
+                            "bonnet_croblow": "🌸",
+                        }
+
+                        def draw_random_item():
+                            """Tire un item selon les probabilités : 60% Rune / 30% Babiole / 10% Autre."""
                             roll = random.random()
-                            rune_type = None
-                            if roll < 0.15:
-                                rune_type = "rune_vitalite"
-                            elif roll < 0.30:
-                                rune_type = "rune_initiative"
-                            elif roll < 0.45:
-                                rune_type = "rune_dommage"
+                            if roll < 0.60:
+                                return ("rune", random.choice(RUNES))
+                            elif roll < 0.90:
+                                return ("babiole", random.choice(BABIOLES))
+                            else:
+                                return ("autre", random.choice(AUTRES))
 
-                            if rune_type:
-                                # rune_found has no direct WS popup (frontend reads it from
-                                # state_update -> pending_events), so pass ws_message=None.
+                        async def award_item(item_category, item_name, label):
+                            """Notifie la découverte d'un item (rune / babiole / lait lew / antidote)."""
+                            if item_category == "rune":
                                 await enqueue_player_event(
                                     session_id,
                                     player_id,
                                     {
                                         "type": "rune_found",
-                                        "rune_type": rune_type,
+                                        "rune_type": item_name,
                                         "inventory_full": is_inventory_full(player)
                                     },
                                     None
                                 )
-                                logger.info(f"Player {player_id} found rune: {rune_type}")
+                                logger.info(f"  → {label} : Rune {item_name}")
 
-                            # 🥛 LAIT LEW DROP SYSTEM (tirage indépendant, même taux qu'une rune = 15%)
-                            if random.random() < 0.15:
-                                await enqueue_player_event(
-                                    session_id,
-                                    player_id,
-                                    {
-                                        "type": "lait_lew_found",
-                                        "inventory_full": is_inventory_full(player)
-                                    },
-                                    None
-                                )
-                                logger.info(f"Player {player_id} found Lait LEW")
+                            elif item_category == "babiole":
+                                event_type = BABIOLE_EVENT_MAP.get(item_name)
+                                if event_type:
+                                    icon = BABIOLE_ICONS.get(item_name, "✨")
+                                    msg = f"{icon} {player['name']} découvre {item_name.replace('_', ' ').title()} !"
+                                    game["events"].append({
+                                        "message": msg,
+                                        "type": event_type,
+                                        "for_role": "survivor"
+                                    })
+                                    await enqueue_player_event(
+                                        session_id,
+                                        player_id,
+                                        {"type": event_type},
+                                        None
+                                    )
+                                    logger.info(f"  → {label} : Babiole {item_name}")
+
+                            elif item_category == "autre":
+                                if item_name == "lait_lew":
+                                    await enqueue_player_event(
+                                        session_id,
+                                        player_id,
+                                        {
+                                            "type": "lait_lew_found",
+                                            "inventory_full": is_inventory_full(player)
+                                        },
+                                        None
+                                    )
+                                    logger.info(f"  → {label} : Lait LEW")
+                                elif item_name == "antidote":
+                                    await enqueue_player_event(
+                                        session_id,
+                                        player_id,
+                                        {
+                                            "type": "antidote_found",
+                                            "inventory_full": is_inventory_full(player)
+                                        },
+                                        None
+                                    )
+                                    logger.info(f"  → {label} : Antidote")
+
+                        if is_lucky:
+                            # FOUILLE MIRACULEUSE : 3 items garantis
+                            logger.info(f"✨ Fouille miraculeuse pour {player['name']} - 3 items garantis")
+                            for i in range(3):
+                                item_category, item_name = draw_random_item()
+                                await award_item(item_category, item_name, f"Item {i+1}/3")
+                        else:
+                            # EXPLORATION NORMALE : probabilités décroissantes (100% / 50% / 25%)
+                            logger.info(f"🔍 Exploration normale pour {player['name']}")
+                            items_dropped = 0
+                            for label, threshold in (("Item 1 (100%)", 1.0), ("Item 2 (50%)", 0.50), ("Item 3 (25%)", 0.25)):
+                                if random.random() < threshold:
+                                    item_category, item_name = draw_random_item()
+                                    items_dropped += 1
+                                    await award_item(item_category, item_name, label)
+                            logger.info(f"  💎 Total items obtenus : {items_dropped}")
 
                     # Check for merchant
                     if player["role"] == "survivor" and game["rooms"][room_name].get("has_merchant", False):
