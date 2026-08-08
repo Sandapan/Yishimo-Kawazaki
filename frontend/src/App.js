@@ -1295,6 +1295,14 @@ const MultiPlayerCombat = ({ event, playerId, sessionId, onClose, wsRef }) => {
                   mimic_defeated: aliveGoblins.length === 0, // ici aliveGoblins contient le mimic
                   combat_log: combatLog
                 });
+              } else if (event.combat_type === 'goblin_group') {
+                // 👾 NEW — combat contre un groupe de gobelins placé par un killer
+                await axios.post(`${API}/game/${sessionId}/resolve_goblin_group_combat`, {
+                  room: event.room,
+                  survivors_results: survivorsResults,
+                  goblins_defeated: goblinsDefeated,
+                  combat_log: combatLog,
+                });
               } else {
                 await axios.post(`${API}/game/${sessionId}/resolve_multiplayer_combat`, {
                   attacker_id: event.attacker_id,
@@ -1922,7 +1930,7 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 // ========== MIMIC COMBAT COMPONENT ==========
 // ========== COMBAT HELP WINDOW COMPONENTS ==========
 
-const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, onExpire }) => {
+const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, sessionId, onExpire }) => {
   const [timeLeft, setTimeLeft] = useState(10);
 
   useEffect(() => {
@@ -1952,10 +1960,16 @@ const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, onExp
         padding: '2rem 3rem', maxWidth: 600, textAlign: 'center', color: '#fff',
       }}>
         <h2 style={{ color: '#d4af37', fontSize: '1.8rem', marginBottom: '1rem' }}>
-          {data.combat_type === "crystal" ? "💎 Assaut sur le Cristal — En attente" : "💰 Combat Mimic — En attente"}
+          {data.combat_type === "crystal"
+            ? "💎 Assaut sur le Cristal — En attente"
+            : data.combat_type === "goblin_group"
+              ? `👾 Embuscade de ${data.goblin_count || "?"} gobelin(s) — En attente`
+              : "💰 Combat Mimic — En attente"}
         </h2>
         <p style={{ fontSize: '1.1rem', marginBottom: '1.5rem' }}>
-          Vos alliés peuvent vous rejoindre dans <strong>{data.room}</strong>...
+          {data.combat_type === "goblin_group"
+            ? <>Vous êtes tombé sur un groupe de gobelins dans <strong>{data.room}</strong>. Vos alliés peuvent vous rejoindre...</>
+            : <>Vos alliés peuvent vous rejoindre dans <strong>{data.room}</strong>...</>}
         </p>
 
         <div style={{
@@ -1993,6 +2007,29 @@ const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, onExp
             );
           })}
         </div>
+
+        {data.can_skip && data.combat_type === "goblin_group" && (
+          <button
+            className="ready-btn"
+            style={{
+              marginTop: '1.5rem', padding: '0.7rem 1.5rem', fontSize: '1rem',
+              background: '#ff7a18', color: '#fff', border: 'none', borderRadius: 8,
+              cursor: 'pointer', fontWeight: 'bold',
+            }}
+            onClick={async () => {
+              try {
+                await axios.post(`${API}/game/${sessionId}/goblin_group_skip`, {
+                  player_id: playerId,
+                });
+                // Le popup se fermera tout seul via state_update / event goblin_group_combat
+              } catch (e) {
+                console.error(e);
+              }
+            }}
+          >
+            ⚔️ Prêt — lancer maintenant
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2012,7 +2049,28 @@ const CombatHelpAvailablePopup = ({ data, ws, onClose }) => {
     return () => clearInterval(id);
   }, [data.expires_at, onClose]);
 
-  const handleJoin = () => {
+  const handleJoin = async () => {
+    // 👾 Combat de groupe de gobelins : REST endpoint dédié (clé de fenêtre = room, pas attacker_id)
+    if (data.combat_type === "goblin_group") {
+      try {
+        // Récupère playerId depuis l'URL ou le localStorage (même mécanisme que le reste du fichier)
+        const urlParams = new URLSearchParams(window.location.search);
+        const pid = urlParams.get('pid') || localStorage.getItem('player_id');
+        // sessionId est extrait de l'URL (/lobby/:sessionId/... ou /game/:sessionId)
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        const sid = parts[parts.length - 1] || parts[parts.length - 2];
+        await axios.post(`${API}/game/${sid}/goblin_group_join`, {
+          player_id: pid,
+          room: data.room,
+        });
+      } catch (err) {
+        console.error("Erreur en rejoignant le combat gobelin-groupe :", err);
+      }
+      onClose();
+      return;
+    }
+
+    // Autres combats collaboratifs (mimic / cristal) : action WebSocket classique
     if (ws?.current && ws.current.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({
         type: "action",
@@ -2040,14 +2098,18 @@ const CombatHelpAvailablePopup = ({ data, ws, onClose }) => {
         <h3 style={{ color: '#d4af37', marginBottom: '0.8rem' }}>
           {data.combat_type === "crystal"
             ? `💎 ${data.attacker_name} attaque le Cristal dans ${data.room} !`
-            : `⚔️ ${data.attacker_name} combat un Mimic dans ${data.room} !`}
+            : data.combat_type === "goblin_group"
+              ? `👾 ${data.attacker_name} affronte un groupe de ${data.goblin_count || "?"} gobelin(s) dans ${data.room} !`
+              : `⚔️ ${data.attacker_name} combat un Mimic dans ${data.room} !`}
         </h3>
         <p style={{ marginBottom: '0.8rem', fontSize: '0.95rem', color: '#ccc' }}>
           {data.combat_type === "crystal"
             ? (data.crystal_hp != null
                 ? `Rejoignez l'assaut pour aider votre allié. (${data.crystal_hp}/${data.crystal_max_hp} HP)`
                 : `Rejoignez l'assaut pour aider votre allié.`)
-            : "Rejoignez le combat pour aider votre allié."}
+            : data.combat_type === "goblin_group"
+              ? "Rejoignez la mêlée pour aider votre allié à repousser les gobelins."
+              : "Rejoignez le combat pour aider votre allié."}
         </p>
         <div style={{ fontWeight: 'bold', fontSize: '1.4rem', color: '#ff7a18', marginBottom: '0.4rem' }}>
           {timeLeft.toFixed(1)}s
@@ -7188,11 +7250,12 @@ const Game = () => {
   const [showCrystalCombat, setShowCrystalCombat] = useState(false);
   const [crystalCombatEvent, setCrystalCombatEvent] = useState(null);
 
-  // SAFEGUARD: ferme l'overlay "en attente d'alliés" dès qu'un combat mimic
-  // est arrivé dans pending_events, même si le state_update tarde par ailleurs.
+  // SAFEGUARD: ferme l'overlay "en attente d'alliés" dès qu'un combat collaboratif
+  // (mimic OU groupe de gobelins) est arrivé dans pending_events,
+  // même si le state_update tarde par ailleurs.
   useEffect(() => {
     const evt = gameState?.pending_events?.[playerId];
-    if (evt && typeof evt === 'object' && evt.type === 'mimic_combat') {
+    if (evt && typeof evt === 'object' && (evt.type === 'mimic_combat' || evt.type === 'goblin_group_combat')) {
       setCombatHelpWaiting(null);
       setCombatHelpAvailable(null);
       setCombatHelpParticipants([]);
@@ -7421,12 +7484,31 @@ const prevPendingActionsRef = useRef('{}');
     ws.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
+      // 🐛 DEBUG goblin_group_combat
+      if (data.type === "goblin_group_combat" || data.type === "mimic_combat") {
+        console.log("🎯 WS direct combat message reçu :", data.type, data);
+      }
+
       if (data.type === "mimic_combat") {
         // Fermer immédiatement la fenêtre d'attente (A) ou le popup d'aide (B)
         setCombatHelpWaiting(null);
         setCombatHelpAvailable(null);
         setCombatHelpParticipants([]);
         // ⚠️ NE PAS return : laisser le code existant gérer l'ajout aux pending_events
+      }
+
+      // 👾 NEW — Cleanup préventif ET routage immédiat pour goblin_group_combat
+      // (identique à mimic_combat, mais on route TOUT DE SUITE au cas où
+      //  la branche else-if plus bas ne serait pas atteinte à cause d'un ordre if/else cassé)
+      if (data.type === "goblin_group_combat") {
+        setCombatHelpWaiting(null);
+        setCombatHelpAvailable(null);
+        setCombatHelpParticipants([]);
+        if (Array.isArray(data.survivors) && data.survivors.some(s => s.id === storedPlayerId)) {
+          setMultiplayerCombatEvent(data);
+          setShowMultiplayerCombat(true);
+        }
+        // ⚠️ NE PAS return : le state_update qui suit peut aussi être utile
       }
 
       if (data.type === "state_update") {
@@ -7466,6 +7548,13 @@ const prevPendingActionsRef = useRef('{}');
                 setMimicCombatEvent(event);
                 setShowMimicCombat(true);
               }
+            } else if (event.type === "goblin_group_combat") {
+              // 👾 NEW — combat contre un groupe de gobelins, routé vers MultiPlayerCombat (générique)
+              setCombatHelpWaiting(null);
+              setCombatHelpAvailable(null);
+              setCombatHelpParticipants([]);
+              setMultiplayerCombatEvent(event);
+              setShowMultiplayerCombat(true);
             } else if (event.type === "crystal_combat") {
               setCrystalCombatEvent(event);
               setShowCrystalCombat(true);
@@ -7537,6 +7626,14 @@ const prevPendingActionsRef = useRef('{}');
       } else if (data.type === "combat_help_available") {
         setCombatHelpAvailable(data);
         return;
+      } else if (data.type === "combat_help_cancelled") {
+        // L'initiateur a skippé → fermer le popup Rejoindre s'il est ouvert
+        if (combatHelpAvailable && combatHelpAvailable.room === data.room) {
+          setCombatHelpAvailable(null);
+        }
+        setCombatHelpParticipants([]);
+        // Pas de notifyEventCompleted() ici puisque ce popup n'a jamais consommé de slot pending_events.
+        return;
       } else if (data.type === "combat_help_expired") {
         setCombatHelpAvailable(null);
         toast.info(data.message || "⏱️ La fenêtre de combat est expirée");
@@ -7566,6 +7663,16 @@ const prevPendingActionsRef = useRef('{}');
           // Ancien format solo (rétro-compat)
           setMimicCombatEvent(data);
           setShowMimicCombat(true);
+        }
+      } else if (data.type === "goblin_group_combat") {
+        // 👾 NEW — top-level handler pour l'event goblin_group_combat push par le backend
+        // via enqueue_player_event / dispatch_next_player_event.
+        setCombatHelpWaiting(null);
+        setCombatHelpAvailable(null);
+        setCombatHelpParticipants([]);
+        if (Array.isArray(data.survivors) && data.survivors.some(s => s.id === storedPlayerId)) {
+          setMultiplayerCombatEvent(data);
+          setShowMultiplayerCombat(true);
         }
       } else if (data.type === "crystal_combat") {
         // Direct WS handler for the crystal combat (sent via enqueue_player_event
@@ -8325,6 +8432,7 @@ const selectRoom = (roomName) => {
           participants={combatHelpParticipants}
           players={gameState.players}
           playerId={playerId}
+          sessionId={sessionId}
           onExpire={() => {
             setCombatHelpWaiting(null);
             setCombatHelpParticipants([]);
@@ -10504,18 +10612,37 @@ const selectRoom = (roomName) => {
                              </span>
                           )}
                           {/* 👾 NEW — Badge groupe de gobelins (killer uniquement, fog of war pour les survivants) */}
-                          {goblinGroup && (
+                          {/* 🔧 FIX: tant que le groupe est "defeated" côté backend, count vaut 0 mais
+                              l'entrée reste dans goblin_groups jusqu'à la prochaine phase survivor_selection.
+                              On affiche donc toujours au moins 1 avatar (grisé) dans ce cas, pour que
+                              l'icône ne disparaisse pas avant l'invitation des aventuriers à choisir
+                              une nouvelle pièce. */}
+                          {goblinGroup && (goblinGroup.count > 0 || goblinGroup.defeated) && (
                             <span
                               data-testid={`goblin-group-badge-${room.name}`}
-                              title={`Groupe de ${goblinGroup.count} gobelin(s) en patrouille`}
-                              style={{ display: 'inline-flex', gap: 2 }}
+                              title={
+                                goblinGroup.defeated
+                                  ? "Groupe de gobelins vaincu"
+                                  : `Groupe de ${goblinGroup.count} gobelin(s) en patrouille`
+                              }
+                              style={{
+                                display: 'inline-flex',
+                                gap: 2,
+                                opacity: goblinGroup.defeated ? 0.4 : 1,
+                              }}
                             >
-                              {Array.from({ length: goblinGroup.count }).map((_, i) => (
+                              {Array.from({ length: goblinGroup.defeated ? 1 : goblinGroup.count }).map((_, i) => (
                                 <img
                                   key={i}
                                   src="/avatars/gobelin.png"
                                   alt="Gobelin"
-                                  style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain', imageRendering: 'pixelated' }}
+                                  style={{
+                                    width: '1.3rem',
+                                    height: '1.3rem',
+                                    objectFit: 'contain',
+                                    imageRendering: 'pixelated',
+                                    filter: goblinGroup.defeated ? 'grayscale(100%)' : 'none',
+                                  }}
                                 />
                               ))}
                             </span>
