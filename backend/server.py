@@ -129,8 +129,12 @@ def remove_item(player: dict, item_type: str) -> bool:
             return True
     return False
 
-def add_item(player: dict, item_type: str) -> bool:
-    """Add item to the first empty slot. Returns False if inventory is full."""
+def add_item(player: dict, item_type: str, extra_fields: Optional[dict] = None) -> bool:
+    """Add item to the first empty slot. Returns False if inventory is full.
+
+    extra_fields lets callers stamp additional data onto the created item
+    (e.g. {"resistance": 100} for a freshly obtained forge rune).
+    """
     inventory = player.get("inventory") or []
     for i, slot in enumerate(inventory):
         if slot is None:
@@ -138,6 +142,8 @@ def add_item(player: dict, item_type: str) -> bool:
             tag = ITEM_TAGS.get(item_type)
             if tag:
                 new_item["tag"] = tag
+            if extra_fields:
+                new_item.update(extra_fields)
             inventory[i] = new_item
             return True
     return False
@@ -267,7 +273,8 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
                 "max_hp": 36 if host_role == "survivor" else None,  # NEW: PV max (peut être augmenté par améliorations)
                 "initiative_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus d'initiative individuel
                 "damage_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus de dégâts individuel
-                "weapon_forge_attempts": 0 if host_role == "survivor" else 0,  # NEW: forge attempts on weapon
+                "vitality_bonus": 0 if host_role == "survivor" else 0,  # NEW: bonus de vitalité individuel (forge)
+                "weapon_forge_attempts": 0 if host_role == "survivor" else 0,  # NEW: forge attempts on weapon (legacy, unused by new forge)
                 "weapon_bonuses": [] if host_role == "survivor" else None,  # NEW: list of {stat, value, rune_type, label}
                 "pending_forge_room": None,  # NEW: room name where a forge is waiting after a rune event
                 "equipment": {"babiole": None, "familier": None} if host_role == "survivor" else None,  # NEW: equipment slots
@@ -537,15 +544,75 @@ def place_trophies(game_state: dict) -> List[str]:
 
     return placed_rooms
 
-# Forge: bonus values per rune type (identical to existing StatsModal preview)
-FORGE_RUNE_BONUSES = {
-    "rune_dommage": {"stat": "damage", "value": 2, "label": "+2 dégâts"},
-    "rune_vitalite": {"stat": "vitality", "value": 8, "label": "+8 vitalité"},
-    "rune_initiative": {"stat": "initiative", "value": 3, "label": "+3 initiative"},
+# ── FORGE : système de risque / gestion de ressources / greed ──────────────
+# Chaque rune possède sa propre "résistance" (%), stockée directement sur
+# l'objet rune dans l'inventaire (item["resistance"]). La résistance EST la
+# probabilité de réussite de la prochaine tentative. Une nouvelle rune
+# commence toujours à 100%. Chaque réussite fait +1 sur la caractéristique
+# correspondante ET fait perdre à la rune un nombre aléatoire (uniforme)
+# de points de résistance entre FORGE_RESISTANCE_LOSS_MIN et _MAX inclus.
+# Un échec détruit la rune et remet à zéro TOUTE la progression de la
+# caractéristique correspondante (les autres caractéristiques ne sont pas
+# affectées). Le joueur peut à tout moment arrêter (sécuriser) : la rune est
+# alors consommée sans jet, et la progression actuelle est conservée.
+FORGE_ATTEMPT_COST = 20  # coût en or d'UNE tentative de forge
+FORGE_RESISTANCE_LOSS_MIN = 5
+FORGE_RESISTANCE_LOSS_MAX = 25
+
+# Association type de rune -> caractéristique de l'arme qu'elle fait progresser
+FORGE_RUNE_STAT = {
+    "rune_dommage": "damage",
+    "rune_vitalite": "vitality",
+    "rune_initiative": "initiative",
 }
 
-# Forge: success rate per attempt index. 5+ attempts -> 30% (fixed)
-FORGE_SUCCESS_RATES = [1.0, 0.8, 0.6, 0.4, 0.3]
+FORGE_RUNE_STAT_LABELS = {
+    "damage": "Dommage",
+    "vitality": "Vitalité",
+    "initiative": "Initiative",
+}
+
+
+def get_weapon_stat_value(player: dict, stat: str) -> int:
+    """Current value of a weapon characteristic (persists on the player/arme,
+    independently of whichever rune is currently active)."""
+    if stat == "damage":
+        return player.get("damage_bonus", 0)
+    elif stat == "initiative":
+        return player.get("initiative_bonus", 0)
+    elif stat == "vitality":
+        return player.get("vitality_bonus", 0)
+    return 0
+
+
+def apply_forge_stat_increment(player: dict, stat: str) -> None:
+    """Apply a +1 success to the given characteristic."""
+    if stat == "damage":
+        player["damage_bonus"] = player.get("damage_bonus", 0) + 1
+    elif stat == "initiative":
+        player["initiative_bonus"] = player.get("initiative_bonus", 0) + 1
+    elif stat == "vitality":
+        player["vitality_bonus"] = player.get("vitality_bonus", 0) + 1
+        player["max_hp"] = 36 + player["vitality_bonus"]
+        player["hp"] = (player.get("hp") or 0) + 1
+
+
+def reset_forge_stat_line(player: dict, stat: str) -> None:
+    """Wipe ALL progression on one characteristic only (forge failure).
+    The other two characteristics are left completely untouched."""
+    if stat == "damage":
+        player["damage_bonus"] = 0
+    elif stat == "initiative":
+        player["initiative_bonus"] = 0
+    elif stat == "vitality":
+        player["vitality_bonus"] = 0
+        player["max_hp"] = 36
+        if (player.get("hp") or 0) > 36:
+            player["hp"] = 36
+    # Purge the forge history log entries tied to this characteristic only
+    player["weapon_bonuses"] = [
+        b for b in (player.get("weapon_bonuses") or []) if b.get("stat") != stat
+    ]
 
 def place_resurrection_stele(game_state: dict) -> Optional[str]:
     """Place the resurrection stele in a random available room at game start (once per game)."""
@@ -572,11 +639,6 @@ def place_resurrection_stele(game_state: dict) -> Optional[str]:
     game_state["rooms"][selected]["has_resurrection_stele"] = True
     return selected
 
-
-def get_forge_success_rate(attempts: int) -> float:
-    """Return success probability for the given attempt number (attempts already done so far)."""
-    idx = min(attempts, len(FORGE_SUCCESS_RATES) - 1)
-    return FORGE_SUCCESS_RATES[idx]
 
 def place_next_key(game_state: dict) -> Optional[str]:
     """Place ONE key randomly in an available room (legacy function kept for compatibility)"""
@@ -2423,12 +2485,15 @@ async def process_turn(session_id: str):
                 }, role_filter="killer")
 
         # 👾 NEW — Placement d'un GROUPE DE GOBELINS si aucun survivant n'a été trouvé
-        # dans la pièce fouillée par ce killer (Phase 1 : 1 gobelin, 6 PV, 1-6 dégâts).
+        # dans la pièce fouillée par ce killer. La taille du groupe correspond au nombre
+        # d'aventuriers présents dans la partie, plafonné à 4 gobelins maximum.
         if not found_survivor and killer_room:
             # Refouille de la même pièce → on remplace le groupe précédent (reset)
             previous_group = game["goblin_groups"].get(killer_room)
+            total_survivors = sum(1 for p in game["players"].values() if p["role"] == "survivor")
+            goblin_count = min(4, max(1, total_survivors))
             game["goblin_groups"][killer_room] = {
-                "count": 1,               # Phase 1 : toujours 1 gobelin
+                "count": goblin_count,     # Autant de gobelins que d'aventuriers, 4 max
                 "hp_per_goblin": 6,
                 "damage_min": 1,
                 "damage_max": 6,
@@ -3087,6 +3152,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = 36  # NEW: PV max
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW: reset bonus initiative
                 game["players"][player_id]["damage_bonus"] = 0  # NEW: reset bonus dégâts
+                game["players"][player_id]["vitality_bonus"] = 0  # NEW: reset bonus vitalité
                 game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW: reset forge attempts
                 game["players"][player_id]["weapon_bonuses"] = []  # NEW: reset weapon bonuses
                 game["players"][player_id]["inventory"] = [None] * 9
@@ -3105,6 +3171,7 @@ async def start_game(session_id: str):
                 game["players"][player_id]["max_hp"] = None  # NEW
                 game["players"][player_id]["initiative_bonus"] = 0  # NEW
                 game["players"][player_id]["damage_bonus"] = 0  # NEW
+                game["players"][player_id]["vitality_bonus"] = 0  # NEW
                 game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW
                 game["players"][player_id]["weapon_bonuses"] = None  # NEW
                 game["players"][player_id]["pending_forge_room"] = None  # NEW
@@ -3267,6 +3334,7 @@ async def reset_game(session_id: str):
         player["max_hp"] = 36 if player.get("role") == "survivor" else None  # NEW: reset max_hp
         player["initiative_bonus"] = 0  # NEW: reset bonus initiative
         player["damage_bonus"] = 0  # NEW: reset bonus dégâts
+        player["vitality_bonus"] = 0  # NEW: reset bonus vitalité
         player["weapon_forge_attempts"] = 0  # NEW: reset forge attempts
         player["weapon_bonuses"] = [] if player.get("role") == "survivor" else None  # NEW: reset weapon bonuses
         player["pending_forge_room"] = None  # NEW: reset pending forge
@@ -3421,6 +3489,7 @@ async def update_player(session_id: str, request: JoinGameRequest, player_id: st
     game["players"][player_id]["max_hp"] = 36 if request.role == "survivor" else None  # NEW
     game["players"][player_id]["initiative_bonus"] = 0  # NEW
     game["players"][player_id]["damage_bonus"] = 0  # NEW
+    game["players"][player_id]["vitality_bonus"] = 0  # NEW
     game["players"][player_id]["weapon_forge_attempts"] = 0  # NEW
     game["players"][player_id]["weapon_bonuses"] = [] if request.role == "survivor" else None  # NEW
     game["players"][player_id]["pending_forge_room"] = None  # NEW
@@ -3497,10 +3566,11 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     
     item = items[item_name]
 
-    # Check if player already has this item (antidote is stackable — skip duplicate check)
-    if item_name != "antidote" and has_item(player, item["item_type"]):
-        raise HTTPException(status_code=400, detail=f"Vous possédez déjà {item['name']}")
-    
+    # Antidote et runes sont tous "empilables" : avec le nouveau système de
+    # forge à risque, le joueur peut légitimement vouloir posséder plusieurs
+    # runes du même type à la fois (ex: acheter 3 runes de dommage d'un coup
+    # pour enchaîner les tentatives à la forge sans repasser par la boutique
+    # entre chaque rune consommée/détruite).
     # Check if player has enough gold
     if player.get("gold", 0) < item["price"]:
         raise HTTPException(status_code=400, detail="Pas assez d'or")
@@ -3512,8 +3582,10 @@ async def buy_item(session_id: str = Query(...), player_id: str = Query(...), it
     # Deduct gold
     player["gold"] -= item["price"]
     
-    # Add item to inventory — antidote is never auto-consumed on purchase
-    add_item(player, item["item_type"])
+    # Add item to inventory — antidote is never auto-consumed on purchase.
+    # Runes always start at 100% résistance.
+    rune_extra = {"resistance": 100} if item["item_type"] in ("rune_dommage", "rune_vitalite", "rune_initiative") else None
+    add_item(player, item["item_type"], rune_extra)
     logger.info(f"Player {player_id} bought {item_name}")
     
     # Broadcast state update
@@ -3836,8 +3908,8 @@ async def pickup_rune(session_id: str, request: PickupRuneRequest):
     if is_inventory_full(player):
         raise HTTPException(status_code=400, detail="Inventaire plein")
     
-    # Add rune to inventory
-    if not add_item(player, request.rune_type):
+    # Add rune to inventory — every newly obtained rune starts at 100% résistance
+    if not add_item(player, request.rune_type, {"resistance": 100}):
         raise HTTPException(status_code=400, detail="Impossible d'ajouter la rune")
     
     # Remove pending event
@@ -4932,17 +5004,32 @@ async def goblin_group_skip(session_id: str, request: GoblinGroupSkipRequest):
     return {"ok": True}
 
 
-class ForgeUseRuneRequest(BaseModel):
+class ForgeAttemptRequest(BaseModel):
     player_id: str
     slot_index: int
-    cursor_hit: Optional[bool] = None  # True = cursor was in green zone when player clicked
+
+class ForgeSecureRequest(BaseModel):
+    player_id: str
+    slot_index: int
 
 class ForgeCloseRequest(BaseModel):
     player_id: str
 
-@api_router.post("/game/{session_id}/forge_use_rune")
-async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
-    """Use a rune at the forge: consume the rune, roll for success, apply or wipe bonuses."""
+@api_router.post("/game/{session_id}/forge_attempt")
+async def forge_attempt(session_id: str, request: ForgeAttemptRequest):
+    """Attempt to forge with the rune sitting in the given inventory slot.
+
+    Risk / resource-management / greed system:
+    - Costs FORGE_ATTEMPT_COST gold, charged only when the attempt is confirmed.
+    - Success probability = the rune's CURRENT resistance % (100% -> always
+      succeeds, 0% -> always fails).
+    - On success: the corresponding weapon characteristic (+1), then the rune
+      loses a random, uniformly-distributed 5-25 points of resistance. The
+      rune stays in the inventory so the player can decide to keep going.
+    - On failure: the rune is destroyed and ALL progression on that one
+      characteristic is wiped back to zero. The other two characteristics are
+      never touched.
+    """
     if session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -4968,66 +5055,140 @@ async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
         raise HTTPException(status_code=400, detail="Slot is empty")
 
     rune_type = item.get("type")
-    if rune_type not in FORGE_RUNE_BONUSES:
+    if rune_type not in FORGE_RUNE_STAT:
         raise HTTPException(status_code=400, detail="Item is not a rune")
 
-    bonus_def = FORGE_RUNE_BONUSES[rune_type]
+    # Gestion des ressources : 20 pièces obligatoires pour lancer la tentative
+    if player.get("gold", 0) < FORGE_ATTEMPT_COST:
+        raise HTTPException(status_code=400, detail=f"Pas assez d'or ({FORGE_ATTEMPT_COST} pièces nécessaires)")
 
-    # Consume the rune regardless of outcome
-    inventory[request.slot_index] = None
+    stat = FORGE_RUNE_STAT[rune_type]
+    resistance = item.get("resistance", 100)
+    previous_value = get_weapon_stat_value(player, stat)
 
-    # MALÉDICTION: Lift the curse if this was the cursed item
-    try_lift_curse(game, request.player_id, request.slot_index)
+    # Le coût est retiré au moment où le joueur confirme la tentative
+    player["gold"] = player.get("gold", 0) - FORGE_ATTEMPT_COST
 
-    # Determine success via mini-game result from client, fallback to random
-    attempts_done = player.get("weapon_forge_attempts", 0)
-    success_rate = get_forge_success_rate(attempts_done)
-    if request.cursor_hit is not None:
-        success = request.cursor_hit
-    else:
-        success = random.random() < success_rate
-
-    # Always increment attempts counter (a rune was consumed)
-    player["weapon_forge_attempts"] = attempts_done + 1
+    # La résistance EST la probabilité de réussite. À 0%, échec automatique ;
+    # à 100%, réussite automatique.
+    success = resistance > 0 and (random.uniform(0, 100) < resistance)
 
     if success:
+        apply_forge_stat_increment(player, stat)
+
+        loss = random.randint(FORGE_RESISTANCE_LOSS_MIN, FORGE_RESISTANCE_LOSS_MAX)
+        new_resistance = max(0, resistance - loss)
+        item["resistance"] = new_resistance
+
         if not isinstance(player.get("weapon_bonuses"), list):
             player["weapon_bonuses"] = []
         player["weapon_bonuses"].append({
-            "stat": bonus_def["stat"],
-            "value": bonus_def["value"],
+            "stat": stat,
+            "value": 1,
             "rune_type": rune_type,
-            "label": bonus_def["label"],
+            "label": f"+1 {FORGE_RUNE_STAT_LABELS[stat]}",
         })
-
-        if bonus_def["stat"] == "damage":
-            player["damage_bonus"] = player.get("damage_bonus", 0) + bonus_def["value"]
-        elif bonus_def["stat"] == "initiative":
-            player["initiative_bonus"] = player.get("initiative_bonus", 0) + bonus_def["value"]
-        elif bonus_def["stat"] == "vitality":
-            player["max_hp"] = (player.get("max_hp") or 36) + bonus_def["value"]
-            player["hp"] = (player.get("hp") or 0) + bonus_def["value"]
 
         logger.info(
             f"🔨 Forge SUCCESS for {player['name']} with {rune_type} "
-            f"(attempt {attempts_done + 1}, rate {int(success_rate*100)}%)"
+            f"(résistance {resistance}% -> {new_resistance}%, {stat}: {previous_value} -> {previous_value + 1})"
         )
+
+        result = {
+            "status": "success",
+            "result": "success",
+            "rune_type": rune_type,
+            "stat": stat,
+            "new_value": get_weapon_stat_value(player, stat),
+            "resistance_before": resistance,
+            "resistance_after": new_resistance,
+            "resistance_loss": loss,
+        }
     else:
-        # Failure: wipe ALL accumulated weapon bonuses
-        previous = list(player.get("weapon_bonuses") or [])
-        player["weapon_bonuses"] = []
-        player["damage_bonus"] = 0
-        player["initiative_bonus"] = 0
-        base_hp = 36
-        player["max_hp"] = base_hp
-        if (player.get("hp") or 0) > base_hp:
-            player["hp"] = base_hp
-        # Reset attempts so next forge starts at 100%
-        player["weapon_forge_attempts"] = 0
+        # Échec : la rune est définitivement détruite, toute la ligne de la
+        # caractéristique correspondante est supprimée. Les autres lignes ne
+        # sont pas affectées.
+        inventory[request.slot_index] = None
+        try_lift_curse(game, request.player_id, request.slot_index)
+        reset_forge_stat_line(player, stat)
+
         logger.info(
             f"💥 Forge FAILED for {player['name']} with {rune_type} "
-            f"(attempt {attempts_done + 1}, rate {int(success_rate*100)}%) - wiped {len(previous)} bonuses"
+            f"(résistance était {resistance}%) — ligne {FORGE_RUNE_STAT_LABELS[stat]} "
+            f"remise à zéro (était {previous_value})"
         )
+
+        result = {
+            "status": "success",
+            "result": "failure",
+            "rune_type": rune_type,
+            "stat": stat,
+            "previous_value": previous_value,
+            "resistance_before": resistance,
+        }
+
+    result.update({
+        "gold": player.get("gold", 0),
+        "damage_bonus": player.get("damage_bonus", 0),
+        "initiative_bonus": player.get("initiative_bonus", 0),
+        "vitality_bonus": player.get("vitality_bonus", 0),
+        "weapon_bonuses": player.get("weapon_bonuses") or [],
+        "max_hp": player.get("max_hp"),
+        "hp": player.get("hp"),
+    })
+
+    await broadcast_to_session(session_id, {
+        "type": "state_update",
+        "game": game
+    })
+
+    return result
+
+
+@api_router.post("/game/{session_id}/forge_secure")
+async def forge_secure(session_id: str, request: ForgeSecureRequest):
+    """Voluntarily stop forging with the rune in the given slot: the rune is
+    consumed for free (no gold, no roll) and the current progression on its
+    characteristic is permanently kept."""
+    if session_id not in game_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    game = game_sessions[session_id]
+
+    if request.player_id not in game["players"]:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    player = game["players"][request.player_id]
+
+    if player["role"] != "survivor":
+        raise HTTPException(status_code=400, detail="Only survivors can use the forge")
+
+    if game.get("pending_events", {}).get(request.player_id) != "forge":
+        raise HTTPException(status_code=400, detail="No active forge event")
+
+    inventory = player.get("inventory") or []
+    if request.slot_index < 0 or request.slot_index >= len(inventory):
+        raise HTTPException(status_code=400, detail="Invalid slot index")
+
+    item = inventory[request.slot_index]
+    if item is None:
+        raise HTTPException(status_code=400, detail="Slot is empty")
+
+    rune_type = item.get("type")
+    if rune_type not in FORGE_RUNE_STAT:
+        raise HTTPException(status_code=400, detail="Item is not a rune")
+
+    stat = FORGE_RUNE_STAT[rune_type]
+
+    # Consommation définitive de la rune, sans jet ni coût
+    inventory[request.slot_index] = None
+    try_lift_curse(game, request.player_id, request.slot_index)
+
+    secured_value = get_weapon_stat_value(player, stat)
+    logger.info(
+        f"🔒 {player['name']} sécurise sa ligne {FORGE_RUNE_STAT_LABELS[stat]} à +{secured_value} "
+        f"et consomme définitivement {rune_type}"
+    )
 
     await broadcast_to_session(session_id, {
         "type": "state_update",
@@ -5036,17 +5197,10 @@ async def forge_use_rune(session_id: str, request: ForgeUseRuneRequest):
 
     return {
         "status": "success",
-        "result": "success" if success else "failure",
         "rune_type": rune_type,
-        "rune_label": bonus_def["label"],
-        "attempt_number": attempts_done + 1,
-        "success_rate": success_rate,
-        "weapon_bonuses": player.get("weapon_bonuses") or [],
-        "next_success_rate": get_forge_success_rate(player["weapon_forge_attempts"]),
-        "damage_bonus": player.get("damage_bonus", 0),
-        "initiative_bonus": player.get("initiative_bonus", 0),
-        "max_hp": player.get("max_hp"),
-        "hp": player.get("hp"),
+        "stat": stat,
+        "secured_value": secured_value,
+        "gold": player.get("gold", 0),
     }
 
 @api_router.post("/game/{session_id}/forge_close")
@@ -6028,7 +6182,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                     continue
                 if player["role"] == "killer" and game["phase"] not in ["killer_selection", "rage_second_selection"]:
                     continue
-                
+
+                # 🔧 FIX: idempotency guard — a player validates their room choice ONCE per
+                # normal turn (survivor_selection / killer_selection). Nothing below checked
+                # whether the player had already acted before re-running the full room
+                # resolution (quest check, gold reward, item drops, mimic/goblin triggers...).
+                # A duplicate "select_room" message — e.g. a double-click/double-tap on
+                # "Valider" firing before React re-renders and disables the button, or a
+                # resent WS message — was silently processed a second time, which is what
+                # produced the double "gold_found" / "lucky_search_popup" events.
+                # Scoped to survivor_selection/killer_selection only: rage_second_selection
+                # legitimately reuses `pending_actions[player_id]` for a second room choice
+                # and has its own dedicated guard (see `can_select` below).
+                if game["phase"] in ("survivor_selection", "killer_selection") and player_id in game.get("pending_actions", {}):
+                    logger.info(
+                        f"⚠️ {player['name']} a déjà validé son choix de pièce ce tour — "
+                        f"'select_room' dupliqué ignoré."
+                    )
+                    continue
+
                 # Check Eboulement restriction for survivors
                 if player["role"] == "survivor" and game.get("eboulement_active", False):
                     locked_floors = game.get("eboulement_locked_floors", {})
@@ -6053,7 +6225,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                 if game["phase"] == "rage_second_selection":
                     if player_id not in game.get("rage_second_chances", {}):
                         continue
-                    
+
+                    # 🔧 FIX: same idempotency issue as the main path — a duplicate
+                    # "select_room" here (double-click/double-tap) re-marked an already
+                    # "done" killer as done (harmless on its own) but could re-evaluate
+                    # `all_selected` as True a second time and call
+                    # process_rage_second_selections(session_id) twice, double-resolving
+                    # the second combat/search.
+                    if not game["rage_second_chances"][player_id].get("can_select", True):
+                        continue
+
                     if room_name in game["rooms"] and not game["rooms"][room_name]["locked"]:
                         game["rage_second_chances"][player_id]["room_selected"] = room_name
                         game["rage_second_chances"][player_id]["can_select"] = False
@@ -6331,12 +6512,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                     # Show "Vous faites une fouille miraculeuse" popup (replaces gold popup)
                                     try:
                                         required_class_image = f"/requis/{quest_class}-requis.png"
-                                        await enqueue_player_event(session_id, player_id, "lucky_search", {
+                                        # 🔧 FIX: full dict as event_key (not bare string) so the
+                                        # popup is recoverable from game state if the WS push is missed.
+                                        lucky_search_payload = {
                                             "type": "lucky_search_popup",
                                             "message": "Vous faites une fouille miraculeuse !",
                                             "required_class": quest_class,
                                             "required_class_image": required_class_image
-                                        })
+                                        }
+                                        await enqueue_player_event(session_id, player_id, lucky_search_payload, lucky_search_payload)
                                     except:
                                         pass
 
@@ -6345,12 +6529,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             else:
                                 try:
                                     required_class_image = f"/requis/{quest_class}-requis.png"
-                                    await enqueue_player_event(session_id, player_id, "wrong_class", {
+                                    # 🔧 FIX: full dict as event_key (not bare string) so the
+                                    # popup is recoverable from game state if the WS push is missed.
+                                    wrong_class_payload = {
                                         "type": "wrong_class_popup",
                                         "message": f"Une fouille miraculeuse se déclenchera pour le joueur étant la classe {quest_class}.",
                                         "required_class": quest_class,
                                         "required_class_image": required_class_image
-                                    })
+                                    }
+                                    await enqueue_player_event(session_id, player_id, wrong_class_payload, wrong_class_payload)
                                 except:
                                     pass
                                 
@@ -6588,14 +6775,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             )
                         )
                         try:
-                            await enqueue_player_event(session_id, player_id, "gold_found", {
+                            gold_event_payload = {
                                 "type": "gold_found",
                                 "message": gold_message,
                                 "gold_amount": gold_amount,
                                 "total_gold": player["gold"],
                                 "gold_image": gold_image,
                                 "lucky": is_lucky,  # optional flag for frontend styling
-                            })
+                            }
+                            # 🔧 FIX: use the full payload (dict) as the event_key, not the bare
+                            # string "gold_found". If the one-shot WS push below is missed
+                            # (disconnect, reconnect, refresh, backgrounded tab), the client can
+                            # still recover the popup by reading
+                            # gameState.pending_events[player_id] on the next state_update /
+                            # initial fetch, instead of being stuck forever.
+                            await enqueue_player_event(session_id, player_id, gold_event_payload, gold_event_payload)
                         except:
                             pass
 
@@ -6858,6 +7052,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                         "player_id": player_id,
                         "player_name": game["players"][player_id]["name"],
                         "message": f"✅ {game['players'][player_id]['name']} a fait son choix"
+                    })
+
+                    # 🔧 FIX: broadcast the fresh state (including any pending_events just set
+                    # by the fouille/combat/forge/marchand checks above) so every client's
+                    # local copy of gameState.pending_events stays accurate.
+                    await broadcast_to_session(session_id, {
+                        "type": "state_update",
+                        "game": game
                     })
 
                     # Check if all players of the current role have selected
@@ -7154,6 +7356,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             "message": "🔥 Vous avez trouvé la Forge ! Voulez-vous utiliser vos runes ?",
                             "video_path": "/event/Forge.mp4",
                         })
+
+                # 🔧 FIX: always broadcast the updated state after clearing pending_events.
+                # Without this, the client only ever "sees" pending_events being cleared if
+                # some OTHER broadcast happens to fire afterwards (e.g. another player's
+                # action, or try_advance_to_killer_phase actually advancing the phase).
+                # Most of the time neither happens right away — the player still needs to
+                # click "Terminer mon tour" — so their local gameState.pending_events stayed
+                # stuck with the old (already-resolved) entry, permanently showing
+                # "⏳ Terminez la fouille avant de finir votre tour" even though the event
+                # was, in fact, already completed server-side.
+                await broadcast_to_session(session_id, {
+                    "type": "state_update",
+                    "game": game
+                })
 
                 # Check if we can now transition to killer phase
                 if game["phase"] == "survivor_selection":

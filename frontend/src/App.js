@@ -1930,6 +1930,54 @@ await new Promise(resolve => setTimeout(resolve, 1000)); // 10 frames × 80ms + 
 // ========== MIMIC COMBAT COMPONENT ==========
 // ========== COMBAT HELP WINDOW COMPONENTS ==========
 
+// ========== COMBAT SCENE PREVIEW (idle, pendant la fenêtre de rejoint) ==========
+// Aperçu léger de la scène de combat (mêmes sprites/positions que MultiPlayerCombat)
+// affiché en fond pendant que les alliés peuvent encore rejoindre. Aucune simulation
+// de combat n'est lancée ici : tout le monde reste en pose "idle" jusqu'à ce que le
+// vrai combat démarre (fin du compteur ou clic sur "Prêt").
+const COMBAT_PREVIEW_POSITIONS = [
+  { bottom: '15%' }, { bottom: '35%' }, { bottom: '55%' }, { bottom: '75%' }
+];
+
+const CombatScenePreview = ({ participants, players, goblinCount }) => {
+  const survivors = (participants || []).map(pid => ({ pid, p: players?.[pid] })).filter(x => x.p);
+  const goblins = Array.from({ length: Math.min(4, Math.max(1, goblinCount || 1)) });
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      backgroundImage: 'url(/fight/Ground.jpg)',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+    }} data-testid="combat-scene-preview">
+      {survivors.slice(0, 4).map(({ pid, p }, idx) => (
+        <div key={pid} style={{ position: 'absolute', left: '10%', ...COMBAT_PREVIEW_POSITIONS[idx] }}>
+          <SpriteSheetAnimator
+            spriteSheet={`/fight/${p.character_class || 'Mage'}_idle.webp`}
+            cols={5}
+            rows={6}
+            totalFrames={30}
+            frameDuration={100}
+            loop
+          />
+        </div>
+      ))}
+      {goblins.map((_, idx) => (
+        <div key={`goblin_preview_${idx}`} style={{ position: 'absolute', right: '10%', ...COMBAT_PREVIEW_POSITIONS[idx], transform: 'scaleX(-1)' }}>
+          <SpriteSheetAnimator
+            spriteSheet="/fight/Goblin_idle.webp"
+            cols={5}
+            rows={6}
+            totalFrames={30}
+            frameDuration={100}
+            loop
+          />
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, sessionId, onExpire }) => {
   const [timeLeft, setTimeLeft] = useState(10);
 
@@ -1951,11 +1999,20 @@ const CombatHelpWaitingOverlay = ({ data, participants, players, playerId, sessi
     <div
       data-testid="combat-help-waiting-overlay"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+        position: 'fixed', inset: 0,
         zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden',
       }}
     >
+      {/* Aperçu du combat en arrière-plan (idle) — uniquement pour les groupes de gobelins,
+          où l'on connaît déjà le nombre d'ennemis et les alliés déjà rejoints */}
+      {data.combat_type === "goblin_group" && (
+        <CombatScenePreview participants={participants} players={players} goblinCount={data.goblin_count} />
+      )}
+      {/* Voile sombre pour la lisibilité du dialogue, laisse deviner la scène derrière */}
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)' }} />
       <div style={{
+        position: 'relative',
         background: '#1a1208', border: '3px solid #d4af37', borderRadius: 16,
         padding: '2rem 3rem', maxWidth: 600, textAlign: 'center', color: '#fff',
       }}>
@@ -7054,178 +7111,9 @@ const PowerSelectionOverlay = ({
 };
 
 // Game Page - Main gameplay
-// ========== FORGE BAR ANIMATION COMPONENT ==========
-// ========== FORGE TIMING MINI-GAME ==========
-// Interactive: player clicks to stop the cursor; landing in the green zone = success.
-// Green zone shrinks with each forge attempt on the weapon (−8% per attempt, min 12%).
-// Cursor oscillates left↔right with progressive acceleration (25 → 120 %/s).
-// Success zones are placed randomly across the bar without overlapping.
-
-// Helper: generate N non-overlapping random success zones across [0, 100]
-const generateRandomSuccessZones = (count, totalSuccessWidth) => {
-  const zoneWidth = totalSuccessWidth / count;
-  const minGap = 2; // minimum gap between zones in %
-  const margin = 1; // margin from edges
-
-  // Place zones randomly with no overlap, retrying if needed
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const zones = [];
-    let valid = true;
-
-    for (let i = 0; i < count; i++) {
-      const maxLeft = 100 - margin - zoneWidth;
-      const left = margin + Math.random() * (maxLeft - margin);
-      zones.push({ left, width: zoneWidth });
-    }
-
-    // Sort by position and check for overlaps
-    zones.sort((a, b) => a.left - b.left);
-    for (let i = 1; i < zones.length; i++) {
-      if (zones[i].left < zones[i - 1].left + zones[i - 1].width + minGap) {
-        valid = false;
-        break;
-      }
-    }
-    // Also check last zone doesn't go out of bounds
-    const last = zones[zones.length - 1];
-    if (last.left + last.width > 100 - margin) valid = false;
-
-    if (valid) return zones;
-  }
-
-  // Fallback: distribute evenly if random placement fails
-  const spacing = (100 - 2 * margin - count * zoneWidth) / (count + 1);
-  return Array.from({ length: count }, (_, i) => ({
-    left: margin + spacing * (i + 1) + i * zoneWidth,
-    width: zoneWidth,
-  }));
-};
-
-const ForgeTimingGame = ({ attempts, onResult }) => {
-  const [cursorPos, setCursorPos] = useState(0);
-  const [clicked, setClicked] = useState(false);
-  const [hitResult, setHitResult] = useState(null); // 'success' | 'failure'
-  const rafRef = useRef(null);
-  const posRef = useRef(0);
-  const dirRef = useRef(1);
-
-  // NOUVELLE LOGIQUE: La vitesse de base augmente avec chaque tentative
-  const BASE_SPEED_MULTIPLIER = Math.max(1, attempts + 1);
-
-  // Green zone total width: shrinks 8% per attempt, minimum 12%
-  const TOTAL_SUCCESS_WIDTH = Math.max(12, 50 - attempts * 8);
-
-  // Number of success zones = number of attempts (min 1)
-  const segmentCount = attempts + 1;
-
-  // Generate random zone positions once per render (stable via useMemo pattern with useRef)
-  const zonesRef = useRef(null);
-  if (zonesRef.current === null || zonesRef.current.length !== segmentCount) {
-    zonesRef.current = generateRandomSuccessZones(segmentCount, TOTAL_SUCCESS_WIDTH);
-  }
-  const successZones = zonesRef.current;
-
-  useEffect(() => {
-    if (clicked) return;
-
-    const animate = () => {
-      const baseSpeed = 10 * BASE_SPEED_MULTIPLIER;
-      const speed = Math.min(baseSpeed, 200);
-      posRef.current += dirRef.current * speed * (1 / 60);
-      if (posRef.current >= 100) { posRef.current = 100; dirRef.current = -1; }
-      if (posRef.current <= 0)   { posRef.current = 0;   dirRef.current =  1; }
-      setCursorPos(posRef.current);
-      rafRef.current = requestAnimationFrame(animate);
-    };
-    rafRef.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [clicked, BASE_SPEED_MULTIPLIER]);
-
-  const handleClick = () => {
-    if (clicked) return;
-    cancelAnimationFrame(rafRef.current);
-    setClicked(true);
-
-    // Check if cursor falls inside any success zone
-    const inGreen = successZones.some(
-      (zone) => posRef.current >= zone.left && posRef.current <= zone.left + zone.width
-    );
-
-    setHitResult(inGreen ? 'success' : 'failure');
-    setTimeout(() => onResult(inGreen), 900);
-  };
-
-  return (
-    <div style={{ width: '100%', padding: '0 4px', userSelect: 'none' }}>
-      <div style={{ textAlign: 'center', color: '#d4af37', fontSize: '15px', fontWeight: 'bold', marginBottom: '10px' }}>
-        {clicked
-          ? (hitResult === 'success' ? '✅ Dans la zone !' : '💥 Raté !')
-          : '⚒️ Cliquez au bon moment !'}
-      </div>
-
-      {/* Clickable bar */}
-      <div
-        onClick={handleClick}
-        style={{
-          position: 'relative', width: '100%', height: '56px',
-          backgroundColor: '#dc2626',
-          background: 'linear-gradient(90deg, #7f1d1d, #dc2626 30%, #dc2626 70%, #7f1d1d)',
-          border: `3px solid ${clicked ? (hitResult === 'success' ? '#4ade80' : '#ef4444') : '#d4af37'}`,
-          borderRadius: '10px', overflow: 'hidden',
-          cursor: clicked ? 'default' : 'pointer',
-          boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.8)',
-          transition: 'border-color 0.2s'
-        }}
-      >
-        {/* ÉCHEC label left */}
-        <div style={{
-          position: 'absolute', left: 0, top: 0, width: '18%', height: '100%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
-        }}>
-          <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
-        </div>
-        {/* ÉCHEC label right */}
-        <div style={{
-          position: 'absolute', right: 0, top: 0, width: '18%', height: '100%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
-        }}>
-          <span style={{ color: '#fff', fontSize: '12px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.8)', whiteSpace: 'nowrap' }}>✗ ÉCHEC</span>
-        </div>
-
-        {/* Success zones — randomly placed */}
-        {successZones.map((zone, i) => (
-          <div key={i} style={{
-            position: 'absolute', left: `${zone.left}%`, top: 0,
-            width: `${zone.width}%`, height: '100%',
-            background: 'linear-gradient(90deg, #059669, #10b981, #059669)',
-            boxShadow: '0 0 8px rgba(16,185,129,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            {zone.width > 5 && (
-              <span style={{ color: '#fff', fontSize: segmentCount === 1 ? '12px' : '10px', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.9)', whiteSpace: 'nowrap' }}>
-                {segmentCount === 1 ? '✓ SUCCÈS' : '✓'}
-              </span>
-            )}
-          </div>
-        ))}
-
-        {/* Cursor needle */}
-        <div style={{
-          position: 'absolute', left: `${cursorPos}%`, top: 0, bottom: 0, width: '4px',
-          backgroundColor: '#fff', transform: 'translateX(-50%)',
-          boxShadow: '0 0 12px rgba(255,255,255,0.9), 0 0 24px rgba(212,175,55,0.7)',
-          zIndex: 10, pointerEvents: 'none'
-        }} />
-      </div>
-
-      {/* Hint */}
-      <div style={{ marginTop: '8px', textAlign: 'center', color: '#9a8475', fontSize: '0.78rem' }}>
-        Zone de succès : <strong style={{ color: '#d4af37' }}>{Math.round(TOTAL_SUCCESS_WIDTH)}%</strong>
-        {attempts > 0 && <span style={{ color: '#ef4444' }}> (−{attempts * 8}% depuis la 1ʳᵉ tentative)</span>}
-      </div>
-    </div>
-  );
-};
+// Game Page - Main gameplay
+// (L'ancien mini-jeu de timing de la forge a été retiré : le nouveau système
+// de forge est basé sur la résistance de la rune, pas sur un réflexe de clic.)
 
 const Game = () => {
   const { sessionId } = useParams();
@@ -7324,6 +7212,54 @@ const prevPendingActionsRef = useRef('{}');
   const [goldMessage, setGoldMessage] = useState("");
   const [goldImage, setGoldImage] = useState("");
 
+  // 🔧 FIX: Recovery effect for popups that used to rely SOLELY on a one-shot WS push
+  // (gold_found / lucky_search_popup / wrong_class_popup). If that push message was
+  // ever missed (WS disconnect/reconnect, page refresh, backgrounded tab), the popup
+  // never showed, yet the server kept `pending_events[playerId]` set — permanently
+  // blocking "Terminer mon tour" with no way for the player to resolve it.
+  // Now that the backend stores the full payload (not a bare string) in
+  // gameState.pending_events[playerId], we can reconstruct the popup from state on
+  // every state_update / initial fetch, exactly like RunePickupModal/AmulettePickupModal
+  // already do for their own event types.
+  // 🔧 FIX: on mémorise la référence de l'objet `pending` déjà traité pour éviter
+  // le double affichage. Sans ça, fermer le popup (setShowXPopup(false)) suffit à
+  // relancer cet effet, et tant que le state_update qui vide pending_events côté
+  // serveur n'est pas encore arrivé, `pending` pointe toujours vers l'ancien
+  // évènement déjà fermé -> le popup se réaffichait une seconde fois.
+  const lastHandledGoldEventRef = useRef(null);
+  const lastHandledWrongClassEventRef = useRef(null);
+
+  useEffect(() => {
+    if (!gameState || !playerId) return;
+    const pending = gameState.pending_events?.[playerId];
+    if (!pending || typeof pending !== 'object') {
+      // Plus d'évènement actif côté serveur : on réarme pour un futur évènement.
+      lastHandledGoldEventRef.current = null;
+      lastHandledWrongClassEventRef.current = null;
+      return;
+    }
+
+    if (
+      pending.type === 'gold_found' &&
+      !showGoldFoundPopup &&
+      lastHandledGoldEventRef.current !== pending
+    ) {
+      lastHandledGoldEventRef.current = pending;
+      setGoldMessage(pending.message || "");
+      setGoldImage(pending.gold_image || "");
+      setShowGoldFoundPopup(true);
+    } else if (
+      (pending.type === 'lucky_search_popup' || pending.type === 'wrong_class_popup') &&
+      !showWrongClassPopup &&
+      lastHandledWrongClassEventRef.current !== pending
+    ) {
+      lastHandledWrongClassEventRef.current = pending;
+      setWrongClassMessage(pending.message || "");
+      setRequiredClassImage(pending.required_class_image || "");
+      setShowWrongClassPopup(true);
+    }
+  }, [gameState, playerId, showGoldFoundPopup, showWrongClassPopup]);
+
   // NEW: Crystal spawned popup state (with video)
   const [showCrystalSpawnedPopup, setShowCrystalSpawnedPopup] = useState(false);
   const [crystalSpawnedMessage, setCrystalSpawnedMessage] = useState("");
@@ -7361,17 +7297,24 @@ const prevPendingActionsRef = useRef('{}');
   const [youWereRevivedVideoPath, setYouWereRevivedVideoPath] = useState("");
   const [forgeVideoPath, setForgeVideoPath] = useState("");
   const [showForgeInterface, setShowForgeInterface] = useState(false);
-  const [forgeAnimation, setForgeAnimation] = useState(null); // null | "forging" | "success" | "failure"
+  const [forgeAnimation, setForgeAnimation] = useState(null); // null | "forging" | "success" | "failure" | "securing"
   const [forgeBusy, setForgeBusy] = useState(false);
   const [forgeFlashLabel, setForgeFlashLabel] = useState("");
+  // Forge (système de risque) : slot de la rune actuellement sélectionnée/active
+  const [forgeSelectedSlot, setForgeSelectedSlot] = useState(null);
+  // Type de rune à afficher en grand pendant l'animation (persiste même si la
+  // rune est retirée de l'inventaire pendant l'animation, ex: échec)
+  const [forgeAnimRuneType, setForgeAnimRuneType] = useState(null);
+  // Dernier résultat de tentative (pour l'affichage du flash de résultat)
+  const [forgeLastResult, setForgeLastResult] = useState(null);
+  // Confirmations explicites avant une action irréversible
+  const [forgeConfirmAttempt, setForgeConfirmAttempt] = useState(false);
+  const [forgeConfirmSecure, setForgeConfirmSecure] = useState(false);
 
   // NEW: Cristal popup
   const [showCrystalPopup, setShowCrystalPopup] = useState(false);
   const [crystalVideoPath, setCrystalVideoPath] = useState("");
   const [crystalMessage, setCrystalMessage] = useState("");
-  
-  // Animation de la barre de forge
-  const [forgeBarAnimation, setForgeBarAnimation] = useState(false);
   
   // NEW: Antidote used popup state
   const [showAntidotePopup, setShowAntidotePopup] = useState(false);
@@ -7447,6 +7390,12 @@ const prevPendingActionsRef = useRef('{}');
   const eventsEndRef = useRef(null);
   const hasShownRoleNotification = useRef(false);
   const lastShownAdventurerTurn = useRef(0); // Track last turn where adventurer popup was shown // Track if role notification was shown
+  // 🔧 FIX: ref-based guard against double-click/double-tap on "Valider". The
+  // `hasSelectedRoom` state update is async, so two click events firing in the
+  // same tick (fast double-click/double-tap) could both pass the `hasSelectedRoom`
+  // check in confirmRoomSelection before React re-renders and disables the button,
+  // sending "select_room" to the server twice. A synchronous ref closes that gap.
+  const roomConfirmedRef = useRef(false);
 
   useEffect(() => {
     // Get player_id from URL query params or localStorage
@@ -7819,6 +7768,7 @@ const prevPendingActionsRef = useRef('{}');
         toast.info(data.message);
       } else if (data.type === "new_turn") {
     setHasSelectedRoom(false);
+    roomConfirmedRef.current = false; // 🔧 FIX: re-arm the double-submit guard for the new turn
     setSelectedRoom(null);
     setPreSelectedRoom(null); // Reset pre-selection
     setSelectedPower(null);
@@ -7844,6 +7794,7 @@ const prevPendingActionsRef = useRef('{}');
     }
 } else if (data.type === "phase_change") {
         setHasSelectedRoom(false);
+        roomConfirmedRef.current = false; // 🔧 FIX: re-arm the double-submit guard for the new phase
         setSelectedRoom(null);
         setPreSelectedRoom(null); // Reset pre-selection
         setFlashingRooms(new Set());
@@ -7992,6 +7943,7 @@ const prevPendingActionsRef = useRef('{}');
         toast.error(data.message);
         // Reset hasSelectedRoom to allow player to try again after error
         setHasSelectedRoom(false);
+        roomConfirmedRef.current = false; // 🔧 FIX: allow retry after a server-side error
         setSelectedRoom(null);
       }
     };
@@ -8097,9 +8049,16 @@ const selectRoom = (roomName) => {
 
   const confirmRoomSelection = () => {
     if (!preSelectedRoom || hasSelectedRoom || !gameState) return;
+    // 🔧 FIX: synchronous guard — blocks a second click/tap firing before
+    // `hasSelectedRoom` (async state) has re-rendered and disabled the button.
+    if (roomConfirmedRef.current) return;
+    roomConfirmedRef.current = true;
 
     const currentPlayer = gameState.players[playerId];
-    if (!currentPlayer || currentPlayer.eliminated) return;
+    if (!currentPlayer || currentPlayer.eliminated) {
+      roomConfirmedRef.current = false; // not actually sent, allow retry
+      return;
+    }
 
     setSelectedRoom(preSelectedRoom);
     setHasSelectedRoom(true);
@@ -9079,9 +9038,9 @@ const selectRoom = (roomName) => {
                         toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
                       }
                     }}
-                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_vitalite')}
+                    disabled={gameState.players[playerId]?.gold < 250}
                     style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_vitalite')) ? '#10b981' : '#555',
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250) ? '#10b981' : '#555',
                       minWidth: '100px'
                     }}
                   >
@@ -9116,9 +9075,9 @@ const selectRoom = (roomName) => {
                         toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
                       }
                     }}
-                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_dommage')}
+                    disabled={gameState.players[playerId]?.gold < 250}
                     style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_dommage')) ? '#10b981' : '#555',
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250) ? '#10b981' : '#555',
                       minWidth: '100px'
                     }}
                   >
@@ -9153,9 +9112,9 @@ const selectRoom = (roomName) => {
                         toast.error(error.response?.data?.detail || "Erreur lors de l'achat");
                       }
                     }}
-                    disabled={gameState.players[playerId]?.gold < 250 || (gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_initiative')}
+                    disabled={gameState.players[playerId]?.gold < 250}
                     style={{ 
-                      backgroundColor: (gameState.players[playerId]?.gold >= 250 && !(gameState.players[playerId]?.inventory || []).some(s => s?.type === 'rune_initiative')) ? '#10b981' : '#555',
+                      backgroundColor: (gameState.players[playerId]?.gold >= 250) ? '#10b981' : '#555',
                       minWidth: '100px'
                     }}
                   >
@@ -9636,10 +9595,20 @@ const selectRoom = (roomName) => {
       {showForgeInterface && (() => {
         const player = gameState?.players?.[playerId] || {};
         const inventory = player.inventory || [];
-        const weaponBonuses = player.weapon_bonuses || [];
-        const attempts = player.weapon_forge_attempts || 0;
-        const RATES = [1.0, 0.8, 0.6, 0.4, 0.3];
-        const currentRate = RATES[Math.min(attempts, RATES.length - 1)];
+        const gold = player.gold || 0;
+
+        const STAT_LABELS = { damage: 'Dommage', vitality: 'Vitalité', initiative: 'Initiative' };
+        const STAT_ICONS = { damage: '⚔️', vitality: '❤️', initiative: '⚡' };
+        const RUNE_TO_STAT = { rune_dommage: 'damage', rune_vitalite: 'vitality', rune_initiative: 'initiative' };
+
+        const getStatValue = (stat) => {
+          if (stat === 'damage') return player.damage_bonus || 0;
+          if (stat === 'initiative') return player.initiative_bonus || 0;
+          if (stat === 'vitality') {
+            return (player.vitality_bonus != null) ? player.vitality_bonus : Math.max(0, (player.max_hp || 36) - 36);
+          }
+          return 0;
+        };
 
         const CLASS_TO_WEAPON = {
           Assassin: 'assassin', Barbare: 'barbare', Barde: 'barde',
@@ -9648,45 +9617,106 @@ const selectRoom = (roomName) => {
         const weaponSlug = CLASS_TO_WEAPON[player.character_class] || 'mage';
         const weaponSrc = `/items/Weapon_${weaponSlug}.png`;
 
-        const RUNE_LABELS = {
-          rune_dommage: '+2 dégâts',
-          rune_vitalite: '+8 vitalité',
-          rune_initiative: '+3 initiative',
-        };
-
         const runeSlots = inventory
           .map((it, idx) => ({ item: it, idx }))
-          .filter(s => s.item && s.item.type && s.item.type.startsWith('rune_'));
+          .filter(s => s.item && s.item.type && RUNE_TO_STAT[s.item.type]);
 
-        // cursorHit is passed by ForgeTimingGame after the player clicks
-        const handleForge = async (slotIndex, cursorHit) => {
+        const selectedItem = (forgeSelectedSlot != null) ? inventory[forgeSelectedSlot] : null;
+        const selectedStat = selectedItem ? RUNE_TO_STAT[selectedItem.type] : null;
+        const selectedResistance = selectedItem ? (selectedItem.resistance != null ? selectedItem.resistance : 100) : null;
+        const selectedCurrentValue = selectedStat ? getStatValue(selectedStat) : 0;
+
+        const handleSelectRune = (idx) => {
           if (forgeBusy) return;
+          setForgeSelectedSlot(idx);
+          setForgeLastResult(null);
+          setForgeFlashLabel('');
+        };
+
+        // Tentative de forge : coûte 20 pièces, la résistance actuelle EST la
+        // probabilité de réussite. Réussite = +1 caractéristique + perte
+        // aléatoire (5-25%) de résistance. Échec = rune détruite + ligne à 0.
+        const doForgeAttempt = async () => {
+          if (forgeBusy || forgeSelectedSlot == null) return;
+          const slotIndex = forgeSelectedSlot;
+          const runeType = selectedItem.type;
+          setForgeConfirmAttempt(false);
           setForgeBusy(true);
           setForgeAnimation('forging');
+          setForgeAnimRuneType(runeType);
           setForgeFlashLabel('');
           try {
-            const res = await axios.post(`${API}/game/${sessionId}/forge_use_rune`, {
+            const res = await axios.post(`${API}/game/${sessionId}/forge_attempt`, {
               player_id: playerId,
               slot_index: slotIndex,
-              cursor_hit: cursorHit,
             });
             const ok = res.data.result === 'success';
-            setForgeBarAnimation(false);
             setForgeAnimation(ok ? 'success' : 'failure');
-            setForgeFlashLabel(ok ? `✨ ${res.data.rune_label}` : `💥 Tous les bonus perdus`);
-            if (ok) toast.success(`🔨 Forge réussie : ${res.data.rune_label}`);
-            else toast.error(`💥 Forge ratée — bonus réinitialisés`);
-            setTimeout(() => { setForgeAnimation(null); setForgeFlashLabel(''); setForgeBusy(false); }, 2200);
+            setForgeLastResult(res.data);
+            if (ok) {
+              setForgeFlashLabel(`✨ +1 ${STAT_LABELS[res.data.stat]}`);
+              toast.success(`✨ Réussite ! Résistance ${res.data.resistance_before}% → ${res.data.resistance_after}% (-${res.data.resistance_loss}%)`);
+            } else {
+              setForgeFlashLabel(`💥 ${STAT_LABELS[res.data.stat]} détruit`);
+              toast.error(`💥 La rune s'est brisée — ${STAT_LABELS[res.data.stat]} : +${res.data.previous_value} → +0`);
+            }
+            setTimeout(() => {
+              setForgeAnimation(null);
+              setForgeAnimRuneType(null);
+              setForgeFlashLabel('');
+              setForgeBusy(false);
+              if (!ok) setForgeSelectedSlot(null); // rune détruite : plus rien à sélectionner
+            }, ok ? 1600 : 1900);
           } catch (e) {
             setForgeAnimation(null);
-            setForgeBarAnimation(false);
-            toast.error(e.response?.data?.detail || 'Erreur de forge');
+            setForgeAnimRuneType(null);
             setForgeBusy(false);
+            toast.error(e.response?.data?.detail || 'Erreur de forge');
+          }
+        };
+
+        // Arrêt volontaire : consomme la rune sans jet, sécurise la progression actuelle.
+        // La rune "s'incruste" visuellement dans l'arme pour bien montrer qu'elle est
+        // définitivement fusionnée / consommée.
+        const doForgeSecure = async () => {
+          if (forgeBusy || forgeSelectedSlot == null) return;
+          const slotIndex = forgeSelectedSlot;
+          const stat = selectedStat;
+          const runeType = selectedItem.type;
+          setForgeConfirmSecure(false);
+          setForgeBusy(true);
+          setForgeAnimation('securing');
+          setForgeAnimRuneType(runeType);
+          setForgeFlashLabel('');
+          try {
+            const res = await axios.post(`${API}/game/${sessionId}/forge_secure`, {
+              player_id: playerId,
+              slot_index: slotIndex,
+            });
+            setForgeFlashLabel(`🔒 +${res.data.secured_value} ${STAT_LABELS[res.data.stat] || STAT_LABELS[stat]} sécurisé`);
+            setTimeout(() => {
+              toast.success(`🔒 Progression sécurisée : +${res.data.secured_value} ${STAT_LABELS[res.data.stat] || STAT_LABELS[stat]}`);
+              setForgeSelectedSlot(null);
+              setForgeLastResult(null);
+              setForgeFlashLabel('');
+              setForgeAnimation(null);
+              setForgeAnimRuneType(null);
+              setForgeBusy(false);
+            }, 1300);
+          } catch (e) {
+            setForgeAnimation(null);
+            setForgeAnimRuneType(null);
+            setForgeBusy(false);
+            toast.error(e.response?.data?.detail || 'Erreur');
           }
         };
 
         const closeInterface = async () => {
           setShowForgeInterface(false);
+          setForgeSelectedSlot(null);
+          setForgeLastResult(null);
+          setForgeConfirmAttempt(false);
+          setForgeConfirmSecure(false);
           try {
             await axios.post(`${API}/game/${sessionId}/forge_close`, { player_id: playerId });
           } catch (e) {}
@@ -9694,8 +9724,10 @@ const selectRoom = (roomName) => {
         };
 
         const weaponStyle = {
-          width: '180px',
-          height: '180px',
+          display: 'block',
+          margin: '0 auto',
+          width: '160px',
+          height: '160px',
           objectFit: 'contain',
           transition: 'filter 0.5s ease, transform 0.4s ease',
           filter:
@@ -9703,19 +9735,24 @@ const selectRoom = (roomName) => {
               ? 'drop-shadow(0 0 14px #ff6a00) drop-shadow(0 0 28px #ff2200) brightness(1.15) saturate(1.2)'
               : forgeAnimation === 'success'
               ? 'drop-shadow(0 0 30px #ffd166) drop-shadow(0 0 60px #ff9933) brightness(1.6) saturate(1.5)'
+              : forgeAnimation === 'securing'
+              ? 'drop-shadow(0 0 28px #ffd166) drop-shadow(0 0 50px #ff9933) brightness(1.4) saturate(1.3)'
               : forgeAnimation === 'failure'
               ? 'grayscale(0.5) brightness(0.5) contrast(1.3)'
               : 'drop-shadow(0 0 8px rgba(255,170,80,0.35))',
           transform:
             forgeAnimation === 'success' ? 'scale(1.15)' :
+            forgeAnimation === 'securing' ? 'scale(1.08)' :
             forgeAnimation === 'forging' ? 'scale(1.02)' : 'scale(1)',
           animation:
-            forgeAnimation === 'failure' ? `forgeShake ${Math.min(0.6 + attempts * 0.1, 1.2)}s ease-in-out` :
+            forgeAnimation === 'failure' ? 'forgeShake 0.8s ease-in-out' :
             forgeAnimation === 'forging' ? 'forgePulse 0.6s ease-in-out infinite alternate, forgeHeat 1.4s ease-in-out infinite' :
+            forgeAnimation === 'securing' ? 'weaponEmbedFlash 1.1s ease-in-out 1' :
             'none',
         };
 
         return (
+          <>
           <div className="game-over-overlay" style={{ zIndex: 2001 }} data-testid="forge-interface">
             <style>{`
               @keyframes forgeShake {
@@ -9750,37 +9787,171 @@ const selectRoom = (roomName) => {
                 30% { opacity: 1; transform: translateY(-4px) scale(1.1); }
                 100% { opacity: 0; transform: translateY(-30px) scale(1); }
               }
+
+              /* ── Rune : succès — la rune gonfle légèrement et des étoiles jaillissent ── */
+              @keyframes runeSuccessPulse {
+                0%   { transform: scale(1); filter: drop-shadow(0 0 6px rgba(255,209,102,0.35)); }
+                45%  { transform: scale(1.4); filter: drop-shadow(0 0 22px rgba(255,209,102,0.95)) drop-shadow(0 0 40px rgba(255,153,0,0.65)); }
+                100% { transform: scale(1.08); filter: drop-shadow(0 0 10px rgba(255,209,102,0.5)); }
+              }
+              .rune-anim-success img { animation: runeSuccessPulse 1.1s ease-out both; }
+              @keyframes runeStarPop {
+                0%   { opacity: 0; transform: translate(-50%, -50%) rotate(var(--star-angle, 0deg)) translateY(0) scale(0.3); }
+                35%  { opacity: 1; transform: translate(-50%, -50%) rotate(var(--star-angle, 0deg)) translateY(-46px) scale(1.15); }
+                100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--star-angle, 0deg)) translateY(-66px) scale(0.5); }
+              }
+              .forge-rune-star {
+                position: absolute; top: 50%; left: 50%;
+                font-size: 1.15rem;
+                animation: runeStarPop 1s ease-out both;
+                pointer-events: none;
+              }
+
+              /* ── Rune : sécurisation — elle "vole" vers l'arme et s'y incruste ── */
+              @keyframes runeSecureFly {
+                0%   { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 1; }
+                55%  { transform: translate(calc(-1 * var(--to-x, 60px)), calc(-1 * var(--to-y, 40px))) scale(0.75) rotate(-12deg); opacity: 0.95; }
+                100% { transform: translate(calc(-1 * var(--to-x, 60px)), calc(-1 * var(--to-y, 40px))) scale(0.08) rotate(-25deg); opacity: 0; }
+              }
+              .rune-anim-securing { animation: runeSecureFly 1.05s ease-in both; }
+              @keyframes weaponEmbedFlash {
+                0%, 100% { filter: drop-shadow(0 0 8px rgba(255,170,80,0.35)); }
+                60% { filter: drop-shadow(0 0 30px #ffd166) drop-shadow(0 0 54px #ff9933) brightness(1.55); }
+              }
+
+              /* ── Rune : échec — elle craque, tremble puis explose en éclats ── */
+              @keyframes runeCrackShake {
+                0%, 100% { transform: translateX(0) rotate(0deg); }
+                15% { transform: translateX(-5px) rotate(-4deg); }
+                30% { transform: translateX(5px) rotate(4deg); }
+                45% { transform: translateX(-4px) rotate(-3deg); }
+                60% { transform: translateX(4px) rotate(3deg); }
+                75% { transform: translateX(-2px) rotate(-2deg); }
+              }
+              @keyframes runeExplodeFade {
+                0%   { opacity: 1; transform: scale(1); filter: brightness(1) saturate(1) contrast(1); }
+                55%  { opacity: 1; transform: scale(1.14); filter: brightness(1.8) saturate(0.25) contrast(1.5); }
+                100% { opacity: 0; transform: scale(0.2); filter: brightness(0.2); }
+              }
+              .rune-anim-failure img {
+                animation:
+                  runeCrackShake 0.45s ease-in-out 0s 1,
+                  runeExplodeFade 0.85s ease-in 0.45s 1 both;
+              }
+              @keyframes shardFly {
+                0%   { opacity: 1; transform: translate(-50%, -50%) rotate(0deg) translate(0, 0); }
+                100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--shard-rot, 180deg)) translate(var(--shard-x, 40px), var(--shard-y, -40px)); }
+              }
+              .forge-rune-shard {
+                position: absolute; top: 50%; left: 50%;
+                width: 8px; height: 8px;
+                background: linear-gradient(135deg, #a67c52, #4a2f1c);
+                border: 1px solid #2a1810;
+                transform: translate(-50%, -50%) rotate(45deg);
+                animation: shardFly 0.7s ease-out both;
+                animation-delay: 0.5s;
+                pointer-events: none;
+              }
             `}</style>
-            <Card style={{ maxWidth: '880px', width: '95%', backgroundColor: '#1a1410', borderColor: '#ff7a18', border: '3px solid #ff7a18' }}>
+            <Card style={{ maxWidth: '920px', width: '95%', maxHeight: '92vh', overflowY: 'auto', backgroundColor: '#1a1410', borderColor: '#ff7a18', border: '3px solid #ff7a18', position: 'relative' }}>
+              {/* Or du joueur : toujours visible, en haut à droite, pour anticiper le coût des tentatives */}
+              <div
+                data-testid="forge-gold-badge"
+                style={{
+                  position: 'sticky',
+                  top: '0.6rem',
+                  float: 'right',
+                  marginRight: '0.8rem',
+                  marginTop: '0.6rem',
+                  zIndex: 5,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  backgroundColor: '#0d0a08',
+                  border: `2px solid ${gold < 20 ? '#ff6b6b' : '#ffd166'}`,
+                  borderRadius: '999px',
+                  padding: '0.4rem 0.9rem',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                }}
+              >
+                <span style={{ fontSize: '1.1rem' }}>💰</span>
+                <span style={{ color: gold < 20 ? '#ff6b6b' : '#ffd166', fontWeight: 'bold', fontSize: '1.05rem' }}>{gold}</span>
+                <span style={{ color: '#9a8475', fontSize: '0.78rem' }}>
+                  ({Math.floor(gold / 20)} tentative{Math.floor(gold / 20) !== 1 ? 's' : ''} possible{Math.floor(gold / 20) !== 1 ? 's' : ''})
+                </span>
+              </div>
               <CardHeader>
                 <CardTitle style={{ color: '#ffb35a', textAlign: 'center', fontSize: '1.6rem' }}>
-                  🔥 La Forge — Tentative {attempts + 1}
+                  🔥 La Forge
                 </CardTitle>
                 <p style={{ textAlign: 'center', color: '#ffd9a8', margin: 0 }}>
-                  Chance de réussite actuelle : <strong style={{ color: '#fff' }}>{Math.round(currentRate * 100)}%</strong>
+                  Or disponible : <strong style={{ color: '#ffd166' }}>{gold} 💰</strong> — chaque tentative coûte <strong style={{ color: '#ffd166' }}>20 pièces</strong>
                 </p>
               </CardHeader>
               <CardContent>
-                {/* Timing mini-game: shown full-width above the weapon/stats grid when active */}
-                {forgeBarAnimation !== false && (
-                  <div style={{ marginBottom: '1.2rem' }}>
-                    <ForgeTimingGame
-                      attempts={attempts}
-                      onResult={(hit) => {
-                        setForgeBarAnimation(false);
-                        handleForge(forgeBarAnimation, hit);
-                      }}
-                    />
-                  </div>
-                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', alignItems: 'flex-start' }}>
-                  <div style={{ position: 'relative', textAlign: 'center', padding: '1rem', backgroundColor: '#0d0a08', borderRadius: '12px', minHeight: '260px' }}>
+                  <div style={{ position: 'relative', textAlign: 'center', padding: '1rem', backgroundColor: '#0d0a08', borderRadius: '12px', minHeight: '220px' }}>
                     <img src={weaponSrc} alt="Arme" style={weaponStyle} data-testid="forge-weapon-sprite" />
+                    {forgeAnimRuneType && (() => {
+                      const runeAnimClass =
+                        forgeAnimation === 'success' ? 'rune-anim-success' :
+                        forgeAnimation === 'securing' ? 'rune-anim-securing' :
+                        forgeAnimation === 'failure' ? 'rune-anim-failure' : '';
+                      return (
+                        <div
+                          data-testid="forge-rune-visual"
+                          className={runeAnimClass}
+                          style={{
+                            position: 'absolute',
+                            right: '10px',
+                            bottom: '10px',
+                            width: '76px',
+                            height: '76px',
+                            zIndex: 7,
+                            pointerEvents: 'none',
+                            // Distance (px) entre la rune (coin bas-droit) et le centre de l'arme,
+                            // utilisée par l'animation "runeSecureFly" pour la faire s'incruster dedans.
+                            '--to-x': '55px',
+                            '--to-y': '45px',
+                          }}
+                        >
+                          <img
+                            src={ITEM_SPRITES[forgeAnimRuneType]}
+                            alt=""
+                            style={{ width: '100%', height: '100%', objectFit: 'contain', position: 'relative', zIndex: 1 }}
+                          />
+                          {forgeAnimation === 'success' && [0, 1, 2, 3, 4, 5].map(i => (
+                            <span
+                              key={i}
+                              className="forge-rune-star"
+                              style={{ '--star-angle': `${i * 60}deg`, animationDelay: `${i * 0.06}s` }}
+                            >
+                              ⭐
+                            </span>
+                          ))}
+                          {forgeAnimation === 'failure' && [0, 1, 2, 3, 4, 5, 6].map(i => {
+                            const ang = (i * Math.PI * 2) / 7;
+                            return (
+                              <span
+                                key={i}
+                                className="forge-rune-shard"
+                                style={{
+                                  '--shard-x': `${(Math.cos(ang) * 46).toFixed(1)}px`,
+                                  '--shard-y': `${(Math.sin(ang) * 46).toFixed(1)}px`,
+                                  '--shard-rot': `${(i % 2 ? 1 : -1) * (110 + i * 18)}deg`,
+                                  animationDelay: `${0.5 + i * 0.02}s`,
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                     {forgeAnimation === 'forging' && (
                       <>
                         <div style={{
                           position: 'absolute', top: '50%', left: '50%',
-                          width: '240px', height: '240px',
+                          width: '220px', height: '220px',
                           borderRadius: '50%',
                           background: 'radial-gradient(circle, rgba(255,140,40,0.45) 0%, rgba(255,60,0,0.25) 45%, rgba(0,0,0,0) 75%)',
                           pointerEvents: 'none',
@@ -9808,7 +9979,7 @@ const selectRoom = (roomName) => {
                       </>
                     )}
                     {forgeFlashLabel && (
-                      <div className="forge-flash" style={{ position: 'absolute', top: '40%', left: 0, right: 0, color: forgeAnimation === 'success' ? '#ffd166' : '#ff5252', fontWeight: 'bold', fontSize: '1.4rem', textShadow: '0 0 8px rgba(0,0,0,0.9)', pointerEvents: 'none' }}>
+                      <div className="forge-flash" style={{ position: 'absolute', top: '40%', left: 0, right: 0, color: (forgeAnimation === 'success' || forgeAnimation === 'securing') ? '#ffd166' : '#ff5252', fontWeight: 'bold', fontSize: '1.3rem', textShadow: '0 0 8px rgba(0,0,0,0.9)', pointerEvents: 'none' }}>
                         {forgeFlashLabel}
                       </div>
                     )}
@@ -9818,23 +9989,24 @@ const selectRoom = (roomName) => {
                   </div>
 
                   <div style={{ backgroundColor: '#221813', borderRadius: '12px', padding: '1rem', border: '1px solid #4a3022' }}>
-                    <h4 style={{ color: '#ffb35a', marginTop: 0, marginBottom: '0.6rem' }}>Bonus actifs</h4>
-                    {weaponBonuses.length === 0 ? (
-                      <p style={{ color: '#9a8475', fontStyle: 'italic', margin: 0 }}>Aucun bonus pour l'instant</p>
-                    ) : (
-                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }} data-testid="forge-bonus-list">
-                        {weaponBonuses.map((b, i) => (
-                          <li key={i} style={{ color: '#fff', padding: '0.3rem 0.5rem', borderBottom: '1px solid #3a2820', fontSize: '0.95rem' }}>
-                            ▸ {b.label || `+${b.value} ${b.stat}`}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div style={{ marginTop: '0.8rem', color: '#ffd9a8', fontSize: '0.85rem', borderTop: '1px solid #4a3022', paddingTop: '0.6rem' }}>
-                      Total dégâts : <strong>+{player.damage_bonus || 0}</strong> &nbsp;|&nbsp;
-                      Initiative : <strong>+{player.initiative_bonus || 0}</strong> &nbsp;|&nbsp;
-                      PV max : <strong>{player.max_hp || 36}</strong>
-                    </div>
+                    <h4 style={{ color: '#ffb35a', marginTop: 0, marginBottom: '0.6rem' }}>Caractéristiques de l'arme</h4>
+                    {['damage', 'vitality', 'initiative'].map(stat => {
+                      const value = getStatValue(stat);
+                      const isActive = selectedStat === stat && selectedItem;
+                      return (
+                        <div key={stat} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0.4rem 0', borderBottom: '1px solid #3a2820', fontSize: '0.95rem' }}>
+                          <span style={{ color: '#ffd9a8' }}>{STAT_ICONS[stat]} {STAT_LABELS[stat]}</span>
+                          <span style={{ textAlign: 'right' }}>
+                            <strong style={{ color: isActive ? '#ffd166' : '#fff' }}>+{value}</strong>
+                            {isActive && (
+                              <span style={{ display: 'block', fontSize: '0.75rem', color: '#9a8475' }}>
+                                <span style={{ color: '#9fffb5' }}>+{value + 1}</span> si réussite · <span style={{ color: '#ff6b6b' }}>+0</span> si échec
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -9846,38 +10018,99 @@ const selectRoom = (roomName) => {
                     </p>
                   ) : (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }} data-testid="forge-runes-list">
-                      {runeSlots.map(({ item, idx }) => (
-                        <button
-                          key={idx}
-                          data-testid={`forge-rune-${idx}`}
-                          disabled={forgeBusy || forgeBarAnimation !== false}
-                          onClick={() => { if (!forgeBusy && forgeBarAnimation === false) setForgeBarAnimation(idx); }}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.6rem',
-                            backgroundColor: '#2a1f17',
-                            border: `2px solid ${forgeBarAnimation === idx ? '#ffd166' : '#ff7a18'}`,
-                            borderRadius: '10px',
-                            padding: '0.6rem 0.9rem',
-                            color: '#fff',
-                            cursor: (forgeBusy || forgeBarAnimation !== false) ? 'not-allowed' : 'pointer',
-                            opacity: (forgeBusy || forgeBarAnimation !== false) ? 0.6 : 1,
-                            transition: 'transform 0.15s',
-                          }}
-                          onMouseEnter={(e) => { if (!forgeBusy && forgeBarAnimation === false) e.currentTarget.style.transform = 'translateY(-2px)'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
-                        >
-                          <img src={ITEM_SPRITES[item.type]} alt="" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
-                          <div style={{ textAlign: 'left' }}>
-                            <div style={{ fontWeight: 'bold' }}>{ITEM_NAMES[item.type]}</div>
-                            <div style={{ fontSize: '0.78rem', color: '#ffd9a8' }}>{RUNE_LABELS[item.type]} → FORGER</div>
-                          </div>
-                        </button>
-                      ))}
+                      {runeSlots.map(({ item, idx }) => {
+                        const resistance = item.resistance != null ? item.resistance : 100;
+                        const isSelected = forgeSelectedSlot === idx;
+                        const resColor = resistance <= 25 ? '#ff6b6b' : resistance <= 50 ? '#ffd166' : '#9fffb5';
+                        return (
+                          <button
+                            key={idx}
+                            data-testid={`forge-rune-${idx}`}
+                            disabled={forgeBusy}
+                            onClick={() => handleSelectRune(idx)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.6rem',
+                              backgroundColor: '#2a1f17',
+                              border: `2px solid ${isSelected ? '#ffd166' : '#ff7a18'}`,
+                              borderRadius: '10px',
+                              padding: '0.6rem 0.9rem',
+                              color: '#fff',
+                              cursor: forgeBusy ? 'not-allowed' : 'pointer',
+                              opacity: forgeBusy ? 0.6 : 1,
+                              transition: 'transform 0.15s',
+                            }}
+                            onMouseEnter={(e) => { if (!forgeBusy) e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
+                          >
+                            <img src={ITEM_SPRITES[item.type]} alt="" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
+                            <div style={{ textAlign: 'left' }}>
+                              <div style={{ fontWeight: 'bold' }}>{ITEM_NAMES[item.type]}</div>
+                              <div style={{ fontSize: '0.78rem', color: resColor }}>Résistance : {resistance}%</div>
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
+
+                {selectedItem && (
+                  <div style={{ marginTop: '1.4rem', backgroundColor: '#241713', border: '2px solid #ff7a18', borderRadius: '12px', padding: '1rem' }} data-testid="forge-risk-panel">
+                    <h4 style={{ color: '#ffb35a', marginTop: 0, marginBottom: '0.8rem' }}>
+                      {STAT_ICONS[selectedStat]} {ITEM_NAMES[selectedItem.type]}
+                    </h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1.2rem', color: '#ffd9a8', fontSize: '0.92rem' }}>
+                      <div>Chance de réussite : <strong style={{ color: '#9fffb5' }}>{selectedResistance}%</strong></div>
+                      <div>Perte de résistance après réussite : <strong>5–25%</strong></div>
+                    </div>
+
+                    <div style={{ marginTop: '0.8rem', padding: '0.6rem 0.8rem', backgroundColor: '#1a1410', borderRadius: '8px', fontSize: '0.9rem', color: '#ffd9a8' }}>
+                      Prochaine réussite : <strong style={{ color: '#fff' }}>{STAT_LABELS[selectedStat]} +{selectedCurrentValue} → +{selectedCurrentValue + 1}</strong>
+                      {selectedCurrentValue > 0 && (
+                        <>
+                          <br />
+                          <span style={{ color: '#ff6b6b' }}>
+                            En cas d'échec : {STAT_LABELS[selectedStat]} +{selectedCurrentValue} → +0 (toute la ligne est perdue)
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {forgeLastResult && forgeLastResult.stat === selectedStat && (
+                      <div style={{ marginTop: '0.8rem', fontWeight: 'bold', color: forgeLastResult.result === 'success' ? '#9fffb5' : '#ff6b6b' }}>
+                        {forgeLastResult.result === 'success'
+                          ? `Dernier résultat : Résistance ${forgeLastResult.resistance_before}% → ${forgeLastResult.resistance_after}% (-${forgeLastResult.resistance_loss}%)`
+                          : `Dernier résultat : la rune s'est brisée, ligne remise à 0`}
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: '1rem', display: 'flex', gap: '0.8rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                      <Button
+                        data-testid="forge-attempt-btn"
+                        disabled={forgeBusy || gold < 20}
+                        onClick={doForgeAttempt}
+                        style={{ backgroundColor: gold < 20 ? '#555' : '#dc2626', color: '#fff', padding: '0.7rem 1.4rem', fontWeight: 'bold' }}
+                      >
+                        ⚒️ Forger — 20 pièces
+                      </Button>
+                      <Button
+                        data-testid="forge-secure-btn"
+                        disabled={forgeBusy}
+                        onClick={() => setForgeConfirmSecure(true)}
+                        style={{ backgroundColor: '#10b981', color: '#fff', padding: '0.7rem 1.4rem', fontWeight: 'bold' }}
+                      >
+                        🛑 Arrêter et garder +{selectedCurrentValue} {STAT_LABELS[selectedStat]}
+                      </Button>
+                    </div>
+                    {gold < 20 && (
+                      <p style={{ textAlign: 'center', color: '#ff6b6b', fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                        20 pièces nécessaires — or actuel : {gold}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div style={{ marginTop: '1.4rem', textAlign: 'center' }}>
                   <Button data-testid="forge-close-btn" onClick={closeInterface}
@@ -9888,6 +10121,28 @@ const selectRoom = (roomName) => {
               </CardContent>
             </Card>
           </div>
+
+          {forgeConfirmSecure && selectedItem && (
+            <div className="game-over-overlay" style={{ zIndex: 2002 }} data-testid="forge-confirm-secure">
+              <Card style={{ maxWidth: '460px', width: '92%', backgroundColor: '#1a1410', border: '3px solid #10b981' }}>
+                <CardHeader>
+                  <CardTitle style={{ color: '#9fffb5', textAlign: 'center' }}>Arrêter la forge ?</CardTitle>
+                </CardHeader>
+                <CardContent style={{ textAlign: 'center', color: '#ffd9a8' }}>
+                  <p>La rune sera consommée définitivement.</p>
+                  <p>La progression actuelle sera conservée :</p>
+                  <p style={{ fontSize: '1.2rem' }}>
+                    <strong style={{ color: '#fff' }}>+{selectedCurrentValue} {STAT_LABELS[selectedStat]}</strong>
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center', marginTop: '1rem' }}>
+                    <Button data-testid="forge-confirm-secure-yes" onClick={doForgeSecure} style={{ backgroundColor: '#10b981', color: '#fff' }}>Confirmer</Button>
+                    <Button data-testid="forge-confirm-secure-no" onClick={() => setForgeConfirmSecure(false)} style={{ backgroundColor: '#555', color: '#fff' }}>Annuler</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+          </>
         );
       })()}
 
