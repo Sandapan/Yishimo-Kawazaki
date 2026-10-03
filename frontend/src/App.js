@@ -24,6 +24,22 @@ function getStatIcon(stat) {
   const icons = { damage: '🗡️', hp: '❤️', initiative: '⚡' };
   return icons[stat] || '📊';
 }
+
+// 🔧 FIX (popups or / fouille miraculeuse dupliqués) : `gameState.pending_events[playerId]`
+// est reconstruit (nouveau JSON.parse) à CHAQUE state_update, y compris ceux déclenchés
+// par l'activité d'autres joueurs — donc même quand l'évènement actif côté serveur est
+// toujours exactement le même, sa référence JS change à chaque fois. Comparer par
+// référence (`a !== b`) échoue donc à reconnaître "c'est le même évènement déjà traité"
+// et rouvre le popup, parfois bien après sa fermeture (le déclencheur est le prochain
+// state_update — quelle que soit sa cause — qui arrive avant que le serveur ait fini de
+// traiter notre `event_completed`). On compare à la place une signature de CONTENU
+// stable, qui reste identique tant qu'il s'agit du même évènement serveur.
+function eventPopupSignature(evt) {
+  if (!evt || typeof evt !== 'object') return null;
+  // `total_gold` est un cumul toujours croissant : deux évènements gold_found distincts
+  // pour un même joueur ne peuvent donc jamais partager la même signature.
+  return `${evt.type}|${evt.message || ''}|${evt.gold_amount ?? ''}|${evt.total_gold ?? ''}|${evt.required_class || ''}`;
+}
 const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
 // Avatar images by role with their associated classes and descriptions
@@ -7221,11 +7237,13 @@ const prevPendingActionsRef = useRef('{}');
   // gameState.pending_events[playerId], we can reconstruct the popup from state on
   // every state_update / initial fetch, exactly like RunePickupModal/AmulettePickupModal
   // already do for their own event types.
-  // 🔧 FIX: on mémorise la référence de l'objet `pending` déjà traité pour éviter
-  // le double affichage. Sans ça, fermer le popup (setShowXPopup(false)) suffit à
-  // relancer cet effet, et tant que le state_update qui vide pending_events côté
-  // serveur n'est pas encore arrivé, `pending` pointe toujours vers l'ancien
-  // évènement déjà fermé -> le popup se réaffichait une seconde fois.
+  // 🔧 FIX: on mémorise la SIGNATURE DE CONTENU (voir eventPopupSignature ci-dessus)
+  // de l'évènement `pending` déjà traité, pas sa référence d'objet — cette dernière
+  // change à chaque state_update même quand il s'agit du même évènement côté serveur,
+  // ce qui rouvrait le popup indéfiniment tant que le serveur n'avait pas fini de
+  // traiter notre `event_completed` (voir aussi les handlers WS directs gold_found /
+  // wrong_class_popup / lucky_search_popup plus bas, qui alimentent la même ref dès le
+  // premier affichage pour que la déduplication tienne dès le départ).
   const lastHandledGoldEventRef = useRef(null);
   const lastHandledWrongClassEventRef = useRef(null);
 
@@ -7242,18 +7260,18 @@ const prevPendingActionsRef = useRef('{}');
     if (
       pending.type === 'gold_found' &&
       !showGoldFoundPopup &&
-      lastHandledGoldEventRef.current !== pending
+      lastHandledGoldEventRef.current !== eventPopupSignature(pending)
     ) {
-      lastHandledGoldEventRef.current = pending;
+      lastHandledGoldEventRef.current = eventPopupSignature(pending);
       setGoldMessage(pending.message || "");
       setGoldImage(pending.gold_image || "");
       setShowGoldFoundPopup(true);
     } else if (
       (pending.type === 'lucky_search_popup' || pending.type === 'wrong_class_popup') &&
       !showWrongClassPopup &&
-      lastHandledWrongClassEventRef.current !== pending
+      lastHandledWrongClassEventRef.current !== eventPopupSignature(pending)
     ) {
-      lastHandledWrongClassEventRef.current = pending;
+      lastHandledWrongClassEventRef.current = eventPopupSignature(pending);
       setWrongClassMessage(pending.message || "");
       setRequiredClassImage(pending.required_class_image || "");
       setShowWrongClassPopup(true);
@@ -7276,10 +7294,6 @@ const prevPendingActionsRef = useRef('{}');
   
   // NEW: Shop dialog state
   const [showShopDialog, setShowShopDialog] = useState(false);
-  const [showCartographerDialog, setShowCartographerDialog] = useState(false);
-  const [cartographerDialogStep, setCartographerDialogStep] = useState('initial'); // 'initial', 'payment', 'topic_choice', 'hint_shown'
-  const [cartographerHint, setCartographerHint] = useState('');
-  const [cartographerVideoPath, setCartographerVideoPath] = useState('');
   const [showSellDialog, setShowSellDialog] = useState(false);
 
   // NEW: Forge popup + interface state
@@ -7652,11 +7666,6 @@ const prevPendingActionsRef = useRef('{}');
         setCrystalVideoPath(data.video_path || "/event/cristal.mp4");
         setCrystalMessage(data.message || "");
         setShowCrystalPopup(true);
-      } else if (data.type === "cartographer_encounter") {
-        // NEW: Cartographer encounter
-        setShowCartographerDialog(true);
-        setCartographerDialogStep('initial');
-        setCartographerVideoPath(data.video_path || '/event/Cartographe.mp4');
       } else if (data.type === "resurrection_stele_encounter") {
         setResurrectionMessage(data.message || "");
         setResurrectionVideoPath(data.video_path || "/event/Revive.mp4");
@@ -7864,17 +7873,25 @@ const prevPendingActionsRef = useRef('{}');
         // NOTE: No auto-hide — user must click to close
       } else if (data.type === "wrong_class_popup") {
         // Show popup with image for wrong class
+        // 🔧 FIX: enregistrer la signature dès ce premier affichage (push direct), pas
+        // seulement dans l'effet de récupération — sinon la ref reste vide tant que le
+        // popup est ouvert (l'effet ne l'atteint jamais tant que showWrongClassPopup est
+        // true) et le tout premier state_update qui suit la fermeture rouvre le popup.
+        lastHandledWrongClassEventRef.current = eventPopupSignature(data);
         setWrongClassMessage(data.message);
         setRequiredClassImage(data.required_class_image);
         setShowWrongClassPopup(true);
         // No auto-hide, user must click to close
       } else if (data.type === "lucky_search_popup") {
         // NEW: Fouille miraculeuse — réutilise le même rendu que wrong_class (image + message)
+        lastHandledWrongClassEventRef.current = eventPopupSignature(data);
         setRequiredClassImage(data.required_class_image);
         setWrongClassMessage(data.message); // "Vous faites une fouille miraculeuse !"
         setShowWrongClassPopup(true);
       } else if (data.type === "gold_found") {
         // Show popup with gold image
+        // 🔧 FIX: idem gold_found — mémoriser la signature dès ce push direct.
+        lastHandledGoldEventRef.current = eventPopupSignature(data);
         setGoldMessage(data.message);
         setGoldImage(data.gold_image);
         setShowGoldFoundPopup(true);
@@ -9294,212 +9311,6 @@ const selectRoom = (roomName) => {
         </div>
       )}
 
-      {/* NEW: Cartographer Dialog */}
-      {showCartographerDialog && (
-        <div 
-          className="game-over-overlay" 
-          style={{ zIndex: 2002 }}
-          data-testid="cartographer-dialog"
-        >
-          <Card className="game-over-card" style={{ maxWidth: '800px', backgroundColor: '#2a1f17', borderColor: '#d4af37' }}>
-            <CardHeader>
-              <CardTitle className="game-over-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', color: '#d4af37' }}>
-                🗺️
-                <span>Le Cartographe</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {/* Video */}
-              {cartographerVideoPath && cartographerDialogStep === 'initial' && (
-                <video 
-                  autoPlay 
-                  muted 
-                  loop
-                  style={{ width: '100%', maxHeight: '350px', borderRadius: '8px', marginBottom: '1.5rem' }}
-                >
-                  <source src={cartographerVideoPath} type="video/mp4" />
-                  Votre navigateur ne supporte pas la vidéo.
-                </video>
-              )}
-
-              {/* Initial step */}
-              {cartographerDialogStep === 'initial' && (
-                <>
-                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
-                    Vous rencontrez le cartographe !
-                  </p>
-                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <Button
-                      onClick={() => setCartographerDialogStep('payment')}
-                      style={{ 
-                        backgroundColor: '#10b981', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      💬 Dialoguer
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowCartographerDialog(false);
-                        notifyEventCompleted();
-                      }}
-                      style={{ 
-                        backgroundColor: '#6b7280', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      🚪 Je ne suis pas intéressé
-                    </Button>
-                  </div>
-                </>
-              )}
-
-              {/* Payment step */}
-              {cartographerDialogStep === 'payment' && (
-                <>
-                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1rem' }}>
-                    Vous semblez perdu jeune aventurier. Contre une modique somme, je pourrai probablement vous aider.
-                  </p>
-                  <p style={{ textAlign: 'center', color: '#FFD700', fontSize: '1.2rem', fontWeight: 'bold', marginBottom: '1.5rem' }}>
-                    Prix : 🪙 300 pièces d'or
-                  </p>
-                  <p style={{ textAlign: 'center', color: '#a0aec0', fontSize: '0.95rem', marginBottom: '1.5rem' }}>
-                    Votre or : 🪙 {gameState.players[playerId]?.gold || 0}
-                  </p>
-                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <Button
-                      onClick={() => {
-                        if ((gameState.players[playerId]?.gold || 0) >= 300) {
-                          setCartographerDialogStep('topic_choice');
-                        } else {
-                          toast.error("Vous n'avez pas assez d'or !");
-                        }
-                      }}
-                      disabled={(gameState.players[playerId]?.gold || 0) < 300}
-                      style={{ 
-                        backgroundColor: (gameState.players[playerId]?.gold || 0) >= 300 ? '#10b981' : '#555',
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      💰 Payer 300 pièces d'or
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowCartographerDialog(false);
-                        notifyEventCompleted();
-                      }}
-                      style={{ 
-                        backgroundColor: '#dc2626', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      ❌ Non merci
-                    </Button>
-                  </div>
-                </>
-              )}
-
-              {/* Topic choice step */}
-              {cartographerDialogStep === 'topic_choice' && (
-                <>
-                  <p className="game-over-message" style={{ fontSize: '1.1em', textAlign: 'center', color: '#fff', marginBottom: '1.5rem' }}>
-                    Que recherchez-vous ?
-                  </p>
-                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <Button
-                      onClick={async () => {
-                        try {
-                          const response = await axios.post(`${API}/cartographer/pay_for_hint?session_id=${sessionId}&player_id=${playerId}&hint_topic=merchant`);
-                          setCartographerHint(response.data.hint_text);
-                          setCartographerDialogStep('hint_shown');
-                          toast.success("Indice obtenu !");
-                        } catch (error) {
-                          toast.error(error.response?.data?.detail || "Erreur lors de l'obtention de l'indice");
-                        }
-                      }}
-                      style={{ 
-                        backgroundColor: '#8b5cf6', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      🧙 Je cherche un marchand
-                    </Button>
-                    <Button
-                      onClick={async () => {
-                        try {
-                          const response = await axios.post(`${API}/cartographer/pay_for_hint?session_id=${sessionId}&player_id=${playerId}&hint_topic=forge`);
-                          setCartographerHint(response.data.hint_text);
-                          setCartographerDialogStep('hint_shown');
-                          toast.success("Indice obtenu !");
-                        } catch (error) {
-                          toast.error(error.response?.data?.detail || "Erreur lors de l'obtention de l'indice");
-                        }
-                      }}
-                      style={{ 
-                        backgroundColor: '#ef4444', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      🔥 Je cherche la forge
-                    </Button>
-                  </div>
-                </>
-              )}
-
-              {/* Hint shown step */}
-              {cartographerDialogStep === 'hint_shown' && (
-                <>
-                  <div style={{ 
-                    backgroundColor: 'rgba(212, 175, 55, 0.2)', 
-                    border: '2px solid #d4af37',
-                    borderRadius: '8px',
-                    padding: '1.5rem',
-                    marginBottom: '1.5rem'
-                  }}>
-                    <p style={{ fontSize: '1.2rem', color: '#d4af37', fontWeight: 'bold', textAlign: 'center', marginBottom: '1rem' }}>
-                      💡 Indice du Cartographe
-                    </p>
-                    <p style={{ fontSize: '1.1rem', color: '#fff', textAlign: 'center' }}>
-                      {cartographerHint}
-                    </p>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <Button
-                      onClick={() => {
-                        setShowCartographerDialog(false);
-                        setCartographerDialogStep('initial');
-                        setCartographerHint('');
-                        notifyEventCompleted();
-                      }}
-                      style={{ 
-                        backgroundColor: '#10b981', 
-                        color: '#fff',
-                        padding: '1rem 2rem',
-                        fontSize: '1.1rem'
-                      }}
-                    >
-                      👋 Saluer le cartographe
-                    </Button>
-                  </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
       {/* NEW: Forge Intro Popup */}
       {showForgePopup && (() => {
         const closeForge = async () => {
@@ -10848,11 +10659,6 @@ const selectRoom = (roomName) => {
                                <img src="/avatars/cristal.png" alt="Cristal" style={{ width: '1.4rem', height: '1.4rem', objectFit: 'contain' }} />
                              </span>
                           ) : null}
-                          {((room.cartographer_discovered && currentPlayerRole === "survivor") || (room.cartographer_killer_visible && currentPlayerRole === "killer")) && (
-                             <span className="room-player-avatar" title="Cartographe">
-                                 <img src="/avatars/Cartographe.png" alt="Cartographe" style={{ width: '1.3rem', height: '1.3rem', objectFit: 'contain' }} />
-                             </span>
-                          )}
                           {((room.forge_discovered && currentPlayerRole === "survivor") || (room.forge_killer_visible && currentPlayerRole === "killer")) && (
                              <span className="room-icon" title="Forge" style={{ fontSize: '1.1rem' }}>🔥</span>
                           )}

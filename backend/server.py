@@ -229,8 +229,6 @@ def generate_rooms_state() -> dict:
             "teleportation_target_room": None,
             "has_merchant": False,
             "merchant_discovered": False,
-            "has_cartographer": False,
-            "cartographer_discovered": False,
             "has_patrol": False,
             "has_forge": False,
             "forge_discovered": False,
@@ -328,8 +326,6 @@ def create_game_state(host_id: str, host_name: str, host_avatar: str, host_role:
         "goblin_groups": {},      # 👾 NEW: {room_name: {count, hp_per_goblin, damage_min, damage_max, placed_by, placed_turn}}
         "crystal_current_hp": None,  # NEW: HP persistant du cristal (calculé au démarrage, décrémenté entre combats)
         "crystal_max_hp": None,      # NEW: HP max du cristal (50 × nb survivants au start)
-        "cartographer_placed": False,  # NEW: whether cartographer has been placed
-        "cartographer_hints_given": {},  # NEW: {player_id: [hint_texts]} - track hints given to each player
         "forge_placed": False,  # NEW: whether forge has been placed
         "goliath_active": False,  # whether Poursuite is active
         "goliath_turns_remaining": 0,  # turns remaining for Poursuite
@@ -434,33 +430,6 @@ def place_merchant(game_state: dict) -> Optional[str]:
 
     return None
 
-def place_cartographer(game_state: dict) -> Optional[str]:
-    """Place the cartographer in a random available room at game start (once per game)"""
-    available_rooms = []
-
-    # Get all killer positions
-    killer_positions = [p["current_room"] for p in game_state["players"].values()
-                       if p["role"] == "killer" and p["current_room"]]
-
-    for room_name, room_data in game_state["rooms"].items():
-        # Room is available if: not locked, no quest, no merchant, no cartographer, no forge, not a killer's position
-        if (not room_data["locked"] and
-            not room_data.get("has_quest", False) and
-            not room_data.get("has_merchant", False) and
-            not room_data.get("has_cartographer", False) and
-            not room_data.get("has_forge", False) and
-            room_name not in killer_positions):
-            available_rooms.append(room_name)
-
-    if available_rooms:
-        selected_room = random.choice(available_rooms)
-        game_state["rooms"][selected_room]["has_cartographer"] = True
-        game_state["cartographer_placed"] = True
-        logger.info(f"Cartographer placed in room: {selected_room}")
-        return selected_room
-
-    return None
-
 def place_forge(game_state: dict) -> Optional[str]:
     """Place the forge in a random available room at game start (once per game)"""
     available_rooms = []
@@ -469,11 +438,10 @@ def place_forge(game_state: dict) -> Optional[str]:
                        if p["role"] == "killer" and p["current_room"]]
 
     for room_name, room_data in game_state["rooms"].items():
-        # Available if: not locked, no quest, no merchant, no cartographer, no forge, not a killer's position
+        # Available if: not locked, no quest, no merchant, no forge, not a killer's position
         if (not room_data["locked"] and
             not room_data.get("has_quest", False) and
             not room_data.get("has_merchant", False) and
-            not room_data.get("has_cartographer", False) and
             not room_data.get("has_forge", False) and
             room_name not in killer_positions):
             available_rooms.append(room_name)
@@ -498,7 +466,6 @@ def place_crystal_event(game_state: dict) -> Optional[str]:
             and not room_data.get("has_quest", False)
             and not room_data.get("has_merchant", False)
             and not room_data.get("has_forge", False)
-            and not room_data.get("has_cartographer", False)
             and not room_data.get("has_trophy", False)
             and not room_data.get("has_crystal_event", False)
             and not room_data.get("has_crystal", False)  # old system
@@ -528,7 +495,6 @@ def place_trophies(game_state: dict) -> List[str]:
             if (not room_data["locked"] and
                 not room_data.get("has_quest", False) and
                 not room_data.get("has_merchant", False) and
-                not room_data.get("has_cartographer", False) and
                 not room_data.get("has_forge", False) and
                 not room_data.get("has_trophy") and
                 room_name not in killer_positions):
@@ -625,7 +591,6 @@ def place_resurrection_stele(game_state: dict) -> Optional[str]:
             not room_data.get("locked", False)
             and not room_data.get("has_quest", False)
             and not room_data.get("has_merchant", False)
-            and not room_data.get("has_cartographer", False)
             and not room_data.get("has_forge", False)
             and not room_data.get("has_crystal_event", False)
             and not room_data.get("has_crystal", False)
@@ -991,13 +956,13 @@ async def dispatch_next_player_event(session_id: str, player_id: str) -> bool:
 POWERS = {
     "vision": {
         "name": "👁️ Vision",
-        "description": "Révèle la position des aventuriers qui se trouvent dans une salle contenant un évènement déjà découvert par les orcs (forge, marchand, cartographe, stèle de réanimation, cristal...), ainsi que la position de ceux ayant déclenché un piège, un combat ou perdu des points de vie durant ce tour.",
+        "description": "Révèle la position des aventuriers qui se trouvent dans une salle contenant un évènement déjà découvert par les orcs (forge, marchand, stèle de réanimation, cristal...), ainsi que la position de ceux ayant déclenché un piège, un combat ou perdu des points de vie durant ce tour.",
         "icon": "Vision.mp4",
         "requires_action": False
     },
     "secousse": {
         "name": "↩️ Secousse",
-        "description": "Déplacez aléatoirement un événement déjà découvert (marchand, forge, cartographe, cristal...) vers une autre pièce de la carte",
+        "description": "Déplacez aléatoirement un événement déjà découvert (marchand, forge, cristal...) vers une autre pièce de la carte",
         "icon": "secousse.mp4",
         "requires_action": True,
         "action_type": "select_event"  # select one already-discovered event to relocate
@@ -1083,7 +1048,7 @@ def get_discovered_events(game_state: dict) -> list:
     on the map. An event is "discovered" when killers can see its icon in the room.
 
     Each item: {"room": <room_name>, "type": <event_type>, "name": <display_name>}
-    Event types: "merchant", "cartographer", "forge", "crystal"
+    Event types: "merchant", "forge", "crystal"
     """
     discovered = []
     for room_name, room_data in game_state.get("rooms", {}).items():
@@ -1091,8 +1056,6 @@ def get_discovered_events(game_state: dict) -> list:
             discovered.append({"room": room_name, "type": "merchant", "name": "🧙 Marchand"})
         if room_data.get("has_resurrection_stele", False) and room_data.get("resurrection_stele_killer_visible", False):
             discovered.append({"room": room_name, "type": "resurrection_stele", "name": "🪦 Stèle de résurrection"})
-        if room_data.get("has_cartographer", False) and room_data.get("cartographer_discovered", False):
-            discovered.append({"room": room_name, "type": "cartographer", "name": "🗺️ Cartographe"})
         if room_data.get("has_forge", False) and room_data.get("forge_discovered", False):
             discovered.append({"room": room_name, "type": "forge", "name": "🔥 Forge"})
         # Crystal event is visible to killers as soon as it is placed (has_crystal_event)
@@ -1107,7 +1070,7 @@ def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optio
     Returns the new room name, or None if no valid relocation is possible.
 
     Rules:
-    - Destination room must NOT contain another event (merchant, cartographer, forge,
+    - Destination room must NOT contain another event (merchant, forge,
       crystal event/legacy crystal, observation stone, trophy, fleeing goblin or quest).
     - Destination room must not be locked.
     - Destination room must not be a killer's current position.
@@ -1121,7 +1084,6 @@ def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optio
     # Map event_type -> (has_flag, discovered_flag)
     flag_map = {
         "merchant": ("has_merchant", "merchant_discovered"),
-        "cartographer": ("has_cartographer", "cartographer_discovered"),
         "forge": ("has_forge", "forge_discovered"),
         "crystal": ("has_crystal_event", "crystal_discovered"),
     }
@@ -1146,7 +1108,6 @@ def relocate_event(game_state: dict, source_room: str, event_type: str) -> Optio
         # Reject rooms that already contain any event
         if (room_data.get("has_quest", False)
                 or room_data.get("has_merchant", False)
-                or room_data.get("has_cartographer", False)
                 or room_data.get("has_forge", False)
                 or room_data.get("has_crystal_event", False)
                 or room_data.get("has_crystal", False)
@@ -1317,7 +1278,6 @@ async def apply_powers(session_id: str):
             discovered_event_rooms = set()
             for room_name, room_data in game["rooms"].items():
                 if (room_data.get("has_merchant") and (room_data.get("merchant_discovered") or room_data.get("merchant_killer_visible"))) or \
-                   (room_data.get("has_cartographer") and (room_data.get("cartographer_discovered") or room_data.get("cartographer_killer_visible"))) or \
                    (room_data.get("has_forge") and (room_data.get("forge_discovered") or room_data.get("forge_killer_visible"))) or \
                    room_data.get("has_crystal_event"):
                     discovered_event_rooms.add(room_name)
@@ -1372,7 +1332,6 @@ async def apply_powers(session_id: str):
             # Pretty label for events
             type_label_map = {
                 "merchant": "🧙 Marchand",
-                "cartographer": "🗺️ Cartographe",
                 "forge": "🔥 Forge",
                 "crystal": "💎 Cristal",
             }
@@ -3246,13 +3205,6 @@ async def start_game(session_id: str):
     else:
         logger.warning("Could not place merchant - no available rooms")
 
-    # Place the cartographer at game start (once per game)
-    cartographer_room = place_cartographer(game)
-    if cartographer_room:
-        logger.info(f"Cartographer placed in: {cartographer_room}")
-    else:
-        logger.warning("Could not place cartographer - no available rooms")
-
     # Place the forge at game start (once per game)
     forge_room = place_forge(game)
     if forge_room:
@@ -3671,163 +3623,6 @@ async def sell_item(session_id: str = Query(...), player_id: str = Query(...), s
     })
 
     return {"status": "success", "message": f"Vendu pour {sell_price} pièces !", "gold_gained": sell_price, "new_balance": player["gold"]}
-
-
-# ── MODIFICATION 9 : Cartographer hint generation ──────────────────────────────
-
-def get_adjacent_rooms(room_name: str, all_rooms: dict) -> List[str]:
-    """Get the list of rooms adjacent to the given room (left and right in the same floor)"""
-    # Get the floor and position of the target room
-    target_floor = all_rooms[room_name]["floor"]
-
-    # Get all rooms on the same floor
-    rooms_on_floor = [(name, room) for name, room in all_rooms.items() if room["floor"] == target_floor]
-
-    # Sort by room name to get consistent ordering (left to right)
-    rooms_on_floor.sort(key=lambda x: x[0])
-
-    # Find the index of the target room
-    target_index = next((i for i, (name, _) in enumerate(rooms_on_floor) if name == room_name), None)
-
-    if target_index is None:
-        return []
-
-    adjacent = []
-    # Add left neighbor if exists
-    if target_index > 0:
-        adjacent.append(rooms_on_floor[target_index - 1][0])
-    # Add right neighbor if exists
-    if target_index < len(rooms_on_floor) - 1:
-        adjacent.append(rooms_on_floor[target_index + 1][0])
-
-    return adjacent
-
-
-def generate_cartographer_hint(game_state: dict, target_type: str) -> dict:
-    """
-    Generate a hint for finding the merchant or forge.
-    Returns a dict with hint_level (1, 2, or 3) and hint_text.
-
-    Hint levels:
-    - Level 1 (least precise): "You won't find it in [floor]" (eliminates 4 rooms)
-    - Level 2 (precise): "You'll find it in [floor]" (narrows to 4 rooms)
-    - Level 3 (most precise): "Look in the room next to [adjacent_room]"
-    """
-    # Find the target room
-    target_room = None
-    if target_type == "merchant":
-        target_room = next(
-            (room_name for room_name, room_data in game_state["rooms"].items()
-             if room_data.get("has_merchant", False)),
-            None
-        )
-    elif target_type == "forge":
-        target_room = next(
-            (room_name for room_name, room_data in game_state["rooms"].items()
-             if room_data.get("has_forge", False)),
-            None
-        )
-
-    if not target_room:
-        return {
-            "hint_level": 0,
-            "hint_text": "Je ne sais pas où cela se trouve..."
-        }
-
-    target_floor = game_state["rooms"][target_room]["floor"]
-
-    # Floor names in French
-    floor_names = {
-        "basement": "le Sous-sol",
-        "ground_floor": "le Rez-de-chaussée",
-        "upper_floor": "l'Étage"
-    }
-
-    # Randomly choose hint level (1, 2, or 3)
-    hint_level = random.randint(1, 3)
-
-    if hint_level == 1:
-        # Level 1: Eliminate a floor (not the target floor)
-        other_floors = [f for f in ["basement", "ground_floor", "upper_floor"] if f != target_floor]
-        eliminated_floor = random.choice(other_floors)
-        hint_text = f"Tout ce que je sais, c'est que vous ne trouverez rien de cela dans {floor_names[eliminated_floor]}."
-
-    elif hint_level == 2:
-        # Level 2: Indicate the floor
-        hint_text = f"Il me semble que vous trouverez cela dans {floor_names[target_floor]}."
-
-    else:  # hint_level == 3
-        # Level 3: Indicate an adjacent room
-        adjacent_rooms = get_adjacent_rooms(target_room, game_state["rooms"])
-        if adjacent_rooms:
-            adjacent_room = random.choice(adjacent_rooms)
-            hint_text = f"Regardez dans la pièce à côté de {adjacent_room}."
-        else:
-            # Fallback to level 2 if no adjacent rooms
-            hint_text = f"Il me semble que vous trouverez cela dans {floor_names[target_floor]}."
-
-    return {
-        "hint_level": hint_level,
-        "hint_text": hint_text
-    }
-
-
-# ── MODIFICATION 10 : Cartographer pay-for-hint API route ─────────────────────
-
-@api_router.post("/cartographer/pay_for_hint")
-async def cartographer_pay_for_hint(
-    session_id: str = Query(...),
-    player_id: str = Query(...),
-    hint_topic: str = Query(...)  # "merchant" or "forge"
-):
-    """
-    Player pays 300 gold to the cartographer for a hint about merchant or forge location
-    """
-    if session_id not in game_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    game = game_sessions[session_id]
-
-    if player_id not in game["players"]:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    player = game["players"][player_id]
-
-    # Check if player has enough gold
-    if player.get("gold", 0) < 300:
-        raise HTTPException(status_code=400, detail="Pas assez d'or ! (300 pièces requises)")
-
-    # Deduct gold
-    player["gold"] -= 300
-    logger.info(f"Player {player['name']} paid 300 gold to cartographer for {hint_topic} hint")
-
-    # Generate hint
-    hint = generate_cartographer_hint(game, hint_topic)
-
-    # Store hint in game state (for tracking)
-    if "cartographer_hints_given" not in game:
-        game["cartographer_hints_given"] = {}
-    if player_id not in game["cartographer_hints_given"]:
-        game["cartographer_hints_given"][player_id] = []
-
-    game["cartographer_hints_given"][player_id].append({
-        "topic": hint_topic,
-        "hint_text": hint["hint_text"],
-        "hint_level": hint["hint_level"]
-    })
-
-    # Broadcast updated game state
-    await broadcast_to_session(session_id, {
-        "type": "state_update",
-        "game": game
-    })
-
-    return {
-        "status": "success",
-        "hint_text": hint["hint_text"],
-        "hint_level": hint["hint_level"],
-        "remaining_gold": player["gold"]
-    }
 
 
 # Inventory system endpoints
@@ -6929,20 +6724,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                                 "video_path": "/event/marchand.mp4"
                             })
 
-                    # NEW: Check for cartographer
-                    if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_cartographer", False):
-                        is_trapped = game["rooms"][room_name].get("trap_triggered", False)
-
-                        if not is_trapped:
-                            game["rooms"][room_name]["cartographer_discovered"] = True
-                            game["rooms"][room_name]["cartographer_killer_visible"] = False  # NEW: clear killer-only flag
-
-                            await enqueue_player_event(session_id, player_id, "cartographer", {
-                                "type": "cartographer_encounter",
-                                "message": "🗺️ Vous rencontrez le cartographe !",
-                                "video_path": "/event/cartographe.mp4"
-                            })
-
                     # NEW: Check for forge
                     if player["role"] == "survivor" and not goblin_group_triggered and game["rooms"][room_name].get("has_forge", False):
                         is_trapped = game["rooms"][room_name].get("trap_triggered", False)
@@ -7027,10 +6808,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, player_id: s
                             room_data["merchant_killer_visible"] = True
                             killer_event_discovered = True
                             logger.info(f"Killer {player['name']} discovered merchant in {room_name} (killer-only)")
-                        if room_data.get("has_cartographer") and not room_data.get("cartographer_discovered") and not room_data.get("cartographer_killer_visible"):
-                            room_data["cartographer_killer_visible"] = True
-                            killer_event_discovered = True
-                            logger.info(f"Killer {player['name']} discovered cartographer in {room_name} (killer-only)")
                         if room_data.get("has_forge") and not room_data.get("forge_discovered") and not room_data.get("forge_killer_visible"):
                             room_data["forge_killer_visible"] = True
                             killer_event_discovered = True
